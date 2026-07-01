@@ -1,0 +1,97 @@
+package com.jitunicornfx.insightidr.mcp.tools
+
+import com.jitunicornfx.insightidr.mcp.Rapid7Client
+import com.jitunicornfx.insightidr.mcp.apiTool
+import com.jitunicornfx.insightidr.mcp.arrayOrNull
+import com.jitunicornfx.insightidr.mcp.integerParam
+import com.jitunicornfx.insightidr.mcp.intOrNull
+import com.jitunicornfx.insightidr.mcp.putOpt
+import com.jitunicornfx.insightidr.mcp.query
+import com.jitunicornfx.insightidr.mcp.requireString
+import com.jitunicornfx.insightidr.mcp.seg
+import com.jitunicornfx.insightidr.mcp.stringArrayParam
+import com.jitunicornfx.insightidr.mcp.stringOrNull
+import com.jitunicornfx.insightidr.mcp.stringParam
+import com.jitunicornfx.insightidr.mcp.toToolResult
+import com.jitunicornfx.insightidr.mcp.toolSchema
+import io.ktor.http.HttpMethod
+import io.modelcontextprotocol.kotlin.sdk.server.Server
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+
+/** Registers the InsightIDR v1 Comments tools (comments attach to investigations and other targets). */
+fun Server.registerCommentTools(client: Rapid7Client) {
+
+    apiTool(
+        name = "list_comments",
+        description = "List comments for a target resource (e.g. an investigation RRN) (API v1).",
+        readOnly = true,
+        inputSchema = toolSchema("target") {
+            stringParam("target", "RRN of the resource whose comments to list (e.g. an investigation RRN).")
+            integerParam("index", "Zero-based page index.")
+            integerParam("size", "Page size.")
+            stringParam("sortDirection", "Sort direction by creation time.", enum = listOf("ASC", "DESC"))
+        },
+    ) { args ->
+        client.request(
+            HttpMethod.Get,
+            "/idr/v1/comments",
+            query = query(
+                "target" to args.requireString("target"),
+                "index" to args.intOrNull("index"),
+                "size" to args.intOrNull("size"),
+                "sortDirection" to args.stringOrNull("sortDirection"),
+            ),
+        ).toToolResult()
+    }
+
+    apiTool(
+        name = "get_comment",
+        description = "Get a single comment by its RRN (API v1).",
+        readOnly = true,
+        inputSchema = toolSchema("rrn") { stringParam("rrn", "The RRN of the comment.") },
+    ) { args ->
+        val rrn = args.requireString("rrn")
+        client.request(HttpMethod.Get, "/idr/v1/comments/${seg(rrn)}").toToolResult()
+    }
+
+    apiTool(
+        name = "create_comment",
+        description = "Create a comment on a target resource (e.g. an investigation) (API v1).",
+        inputSchema = toolSchema("target") {
+            stringParam("target", "RRN of the resource to comment on (e.g. an investigation RRN).")
+            stringParam("body", "The comment text.")
+            stringArrayParam("attachments", "Optional array of attachment RRNs to associate with the comment.")
+        },
+    ) { args ->
+        val body = buildJsonObject {
+            put("target", args.requireString("target"))
+            putOpt("body", args.stringOrNull("body"))
+            putOpt("attachments", args.arrayOrNull("attachments"))
+        }
+        client.request(HttpMethod.Post, "/idr/v1/comments", jsonBody = body).toToolResult()
+    }
+
+    apiTool(
+        name = "delete_comment",
+        description = "Delete a comment by its RRN (API v1).",
+        destructive = true,
+        inputSchema = toolSchema("rrn") { stringParam("rrn", "The RRN of the comment to delete.") },
+    ) { args ->
+        val rrn = args.requireString("rrn")
+        client.request(HttpMethod.Delete, "/idr/v1/comments/${seg(rrn)}").toToolResult()
+    }
+
+    apiTool(
+        name = "update_comment_visibility",
+        description = "Update the visibility of a comment (API v1).",
+        inputSchema = toolSchema("rrn", "visibility") {
+            stringParam("rrn", "The RRN of the comment.")
+            stringParam("visibility", "The new visibility for the comment: INTERNAL or PUBLIC.", enum = listOf("INTERNAL", "PUBLIC"))
+        },
+    ) { args ->
+        val rrn = args.requireString("rrn")
+        val visibility = args.requireString("visibility")
+        client.request(HttpMethod.Put, "/idr/v1/comments/${seg(rrn)}/${seg(visibility)}").toToolResult()
+    }
+}
