@@ -72,12 +72,16 @@ INSIGHTIDR_API_KEY=xxxx INSIGHTIDR_REGION=us \
 
 ### HTTP (Streamable HTTP / SSE)
 
+Binds to `127.0.0.1:3001` by default. Override the listen address with `--host` (alias `--ip`) and the
+port with `--port`:
+
 ```bash
 INSIGHTIDR_API_KEY=xxxx INSIGHTIDR_REGION=us \
-  java -jar build/libs/rapid7-insightidr-mcp-0.1.0-all.jar --http 3001
+  java -jar build/libs/rapid7-insightidr-mcp-0.1.0-all.jar --http --host 0.0.0.0 --port 3001
 ```
 
-You can also run during development with `./gradlew run --args="--stdio"`.
+Run `--help` to see all options. You can also run during development with
+`./gradlew run --args="--stdio"`.
 
 ## Use with an MCP client (e.g. Claude Desktop)
 

@@ -10,12 +10,15 @@ plugins {
 }
 
 group = "com.jitunicornfx.insightidr"
-version = "0.1.0"
+version = "0.1.1"
 
 dependencies {
     implementation(platform(libs.ktor.bom))
 
     implementation(libs.mcp.kotlin.server)
+
+    // Command-line interface.
+    implementation(libs.clikt)
 
     // HTTP client used to talk to the InsightIDR REST API.
     implementation(libs.ktor.client.core)
