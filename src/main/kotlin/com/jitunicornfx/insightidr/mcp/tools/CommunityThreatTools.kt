@@ -1,17 +1,7 @@
 package com.jitunicornfx.insightidr.mcp.tools
 
-import com.jitunicornfx.insightidr.mcp.Rapid7Client
-import com.jitunicornfx.insightidr.mcp.apiTool
-import com.jitunicornfx.insightidr.mcp.putOpt
-import com.jitunicornfx.insightidr.mcp.query
-import com.jitunicornfx.insightidr.mcp.requireString
-import com.jitunicornfx.insightidr.mcp.seg
-import com.jitunicornfx.insightidr.mcp.stringOrNull
-import com.jitunicornfx.insightidr.mcp.stringParam
-import com.jitunicornfx.insightidr.mcp.toToolResult
-import com.jitunicornfx.insightidr.mcp.toolSchema
-import io.ktor.http.ContentType
-import io.ktor.http.HttpMethod
+import com.jitunicornfx.insightidr.mcp.*
+import io.ktor.http.*
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import kotlinx.serialization.json.buildJsonObject
 
@@ -28,8 +18,8 @@ fun Server.registerCommunityThreatTools(client: Rapid7Client) {
     apiTool(
         name = "create_community_threat",
         description = "Create a Community Threat (custom threat) (API v1). Provide the request body as a JSON string " +
-            "matching the InsightIDR Community Threat schema, e.g. " +
-            "{\"threat\":{\"note\":\"my threat\",\"indicators\":{\"ips\":[\"1.2.3.4\"]}}}.",
+                "matching the InsightIDR Community Threat schema, e.g. " +
+                "{\"threat\":{\"note\":\"my threat\",\"indicators\":{\"ips\":[\"1.2.3.4\"]}}}.",
         inputSchema = toolSchema("request_body") {
             stringParam("request_body", "The Community Threat definition, as a JSON string.")
         },

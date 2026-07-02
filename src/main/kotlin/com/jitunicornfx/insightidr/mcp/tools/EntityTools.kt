@@ -1,18 +1,7 @@
 package com.jitunicornfx.insightidr.mcp.tools
 
-import com.jitunicornfx.insightidr.mcp.Rapid7Client
-import com.jitunicornfx.insightidr.mcp.apiTool
-import com.jitunicornfx.insightidr.mcp.arrayOrNull
-import com.jitunicornfx.insightidr.mcp.integerParam
-import com.jitunicornfx.insightidr.mcp.objectArrayParam
-import com.jitunicornfx.insightidr.mcp.pagingQuery
-import com.jitunicornfx.insightidr.mcp.putOpt
-import com.jitunicornfx.insightidr.mcp.requireString
-import com.jitunicornfx.insightidr.mcp.seg
-import com.jitunicornfx.insightidr.mcp.stringParam
-import com.jitunicornfx.insightidr.mcp.toToolResult
-import com.jitunicornfx.insightidr.mcp.toolSchema
-import io.ktor.http.HttpMethod
+import com.jitunicornfx.insightidr.mcp.*
+import io.ktor.http.*
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import kotlinx.serialization.json.buildJsonObject
 
@@ -55,7 +44,12 @@ private fun Server.getByRrnTool(client: Rapid7Client, name: String, description:
  */
 fun Server.registerEntityTools(client: Rapid7Client) {
     // Accounts
-    searchTool(client, "search_accounts", "Search InsightIDR accounts (directory user accounts) (API v1).", "/idr/v1/accounts/_search")
+    searchTool(
+        client,
+        "search_accounts",
+        "Search InsightIDR accounts (directory user accounts) (API v1).",
+        "/idr/v1/accounts/_search"
+    )
     getByRrnTool(client, "get_account", "Get an InsightIDR account by RRN (API v1).", "/idr/v1/accounts")
 
     // Assets
@@ -67,6 +61,16 @@ fun Server.registerEntityTools(client: Rapid7Client) {
     getByRrnTool(client, "get_user", "Get an InsightIDR user by RRN (API v1).", "/idr/v1/users")
 
     // Local accounts
-    searchTool(client, "search_local_accounts", "Search InsightIDR asset local accounts (API v1).", "/idr/v1/assets/local-accounts/_search")
-    getByRrnTool(client, "get_local_account", "Get an InsightIDR asset local account by RRN (API v1).", "/idr/v1/assets/local-accounts")
+    searchTool(
+        client,
+        "search_local_accounts",
+        "Search InsightIDR asset local accounts (API v1).",
+        "/idr/v1/assets/local-accounts/_search"
+    )
+    getByRrnTool(
+        client,
+        "get_local_account",
+        "Get an InsightIDR asset local account by RRN (API v1).",
+        "/idr/v1/assets/local-accounts"
+    )
 }

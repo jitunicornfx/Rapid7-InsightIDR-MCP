@@ -1,29 +1,9 @@
 package com.jitunicornfx.insightidr.mcp.tools
 
-import com.jitunicornfx.insightidr.mcp.Rapid7Client
-import com.jitunicornfx.insightidr.mcp.apiTool
-import com.jitunicornfx.insightidr.mcp.arrayOrNull
-import com.jitunicornfx.insightidr.mcp.booleanOrNull
-import com.jitunicornfx.insightidr.mcp.integerParam
-import com.jitunicornfx.insightidr.mcp.intOrNull
-import com.jitunicornfx.insightidr.mcp.objectArrayParam
-import com.jitunicornfx.insightidr.mcp.booleanParam
-import com.jitunicornfx.insightidr.mcp.pagingQuery
-import com.jitunicornfx.insightidr.mcp.putOpt
-import com.jitunicornfx.insightidr.mcp.query
-import com.jitunicornfx.insightidr.mcp.requireString
-import com.jitunicornfx.insightidr.mcp.seg
-import com.jitunicornfx.insightidr.mcp.stringOrNull
-import com.jitunicornfx.insightidr.mcp.stringParam
-import com.jitunicornfx.insightidr.mcp.toToolResult
-import com.jitunicornfx.insightidr.mcp.toolSchema
-import io.ktor.http.HttpMethod
+import com.jitunicornfx.insightidr.mcp.*
+import io.ktor.http.*
 import io.modelcontextprotocol.kotlin.sdk.server.Server
-import kotlinx.serialization.json.JsonNull
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonObject
+import kotlinx.serialization.json.*
 
 // Status-change endpoints accept WAITING; the create request body schema does not.
 private val STATUS_VALUES = listOf("OPEN", "INVESTIGATING", "WAITING", "CLOSED")
@@ -36,9 +16,19 @@ private val THREAT_COMMAND_REASONS = listOf(
     "FalsePositive", "LegitimateApplication/Profile", "CompanyOwnedDomain", "Other",
 )
 
+// The MSSP scoping flag: a snake_case tool argument mapped to the hyphenated API query parameter.
+private const val MULTI_CUSTOMER_ARG = "multi_customer"
+private const val MULTI_CUSTOMER_QUERY = "multi-customer"
+private const val MULTI_CUSTOMER_DESC = "MSSP only: include/resolve investigations across managed organizations."
+private const val ID_DESC = "The investigation id or RRN."
+
 /** Build the optional `assignee` object `{ "email": ... }` from an email argument. */
 private fun JsonObject.assigneeObject(): JsonObject? =
     stringOrNull("assignee_email")?.let { email -> buildJsonObject { put("email", email) } }
+
+/** Standard `multi-customer` query parameter derived from the [MULTI_CUSTOMER_ARG] argument. */
+private fun multiCustomerQuery(args: JsonObject): Map<String, List<String>> =
+    query(MULTI_CUSTOMER_QUERY to args.booleanOrNull(MULTI_CUSTOMER_ARG))
 
 /** Registers the InsightIDR v2 Investigations tools. */
 fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
@@ -59,7 +49,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
             stringParam("end_time", "ISO-8601 timestamp; only investigations created at/before this time.")
             stringParam("tags", "Comma-separated tags to filter by.")
             stringParam("sort", "Sort expression, e.g. 'created_time,DESC'.")
-            booleanParam("multi_customer", "MSSP only: include investigations across managed organizations.")
+            booleanParam(MULTI_CUSTOMER_ARG, MULTI_CUSTOMER_DESC)
         },
     ) { args ->
         client.request(
@@ -76,7 +66,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
                 "end_time" to args.stringOrNull("end_time"),
                 "tags" to args.stringOrNull("tags"),
                 "sort" to args.stringOrNull("sort"),
-                "multi-customer" to args.booleanOrNull("multi_customer"),
+                MULTI_CUSTOMER_QUERY to args.booleanOrNull(MULTI_CUSTOMER_ARG),
             ),
         ).toToolResult()
     }
@@ -86,16 +76,12 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         description = "Get a single InsightIDR investigation by its id or RRN (API v2).",
         readOnly = true,
         inputSchema = toolSchema("id") {
-            stringParam("id", "The investigation id or RRN.")
-            booleanParam("multi_customer", "MSSP only: resolve across managed organizations.")
+            stringParam("id", ID_DESC)
+            booleanParam(MULTI_CUSTOMER_ARG, MULTI_CUSTOMER_DESC)
         },
     ) { args ->
         val id = args.requireString("id")
-        client.request(
-            HttpMethod.Get,
-            "/idr/v2/investigations/${seg(id)}",
-            query = query("multi-customer" to args.booleanOrNull("multi_customer")),
-        ).toToolResult()
+        client.request(HttpMethod.Get, "/idr/v2/investigations/${seg(id)}", query = multiCustomerQuery(args)).toToolResult()
     }
 
     apiTool(
@@ -112,7 +98,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
             stringParam("end_time", "ISO-8601 end of the time window to search.")
             integerParam("index", "Zero-based page index.")
             integerParam("size", "Page size.")
-            booleanParam("multi_customer", "MSSP only: search across managed organizations.")
+            booleanParam(MULTI_CUSTOMER_ARG, MULTI_CUSTOMER_DESC)
         },
     ) { args ->
         val body = buildJsonObject {
@@ -127,7 +113,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
             query = query(
                 "index" to args.intOrNull("index"),
                 "size" to args.intOrNull("size"),
-                "multi-customer" to args.booleanOrNull("multi_customer"),
+                MULTI_CUSTOMER_QUERY to args.booleanOrNull(MULTI_CUSTOMER_ARG),
             ),
             jsonBody = body,
         ).toToolResult()
@@ -158,11 +144,11 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         name = "update_investigation",
         description = "Update fields on an existing investigation (API v2). Omitted fields are left unchanged.",
         inputSchema = toolSchema("id") {
-            stringParam("id", "The investigation id or RRN.")
+            stringParam("id", ID_DESC)
             stringParam("title", "New title.")
             stringParam("status", "New status.", enum = STATUS_VALUES)
             stringParam("priority", "New priority.", enum = PRIORITY_VALUES)
-            stringParam("disposition", "New disposition.", enum = listOf("BENIGN", "MALICIOUS", "NOT_APPLICABLE"))
+            stringParam("disposition", "New disposition.", enum = DISPOSITION_PATH_VALUES)
             stringParam("assignee_email", "Email of the user to assign; use an empty string to unassign.")
             stringParam(
                 "threat_command_close_reason",
@@ -170,7 +156,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
                 enum = THREAT_COMMAND_REASONS,
             )
             stringParam("threat_command_free_text", "Additional free text when closing a Threat Command investigation.")
-            booleanParam("multi_customer", "MSSP only: target a managed organization's investigation.")
+            booleanParam(MULTI_CUSTOMER_ARG, MULTI_CUSTOMER_DESC)
         },
     ) { args ->
         val id = args.requireString("id")
@@ -192,7 +178,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         client.request(
             HttpMethod.Patch,
             "/idr/v2/investigations/${seg(id)}",
-            query = query("multi-customer" to args.booleanOrNull("multi_customer")),
+            query = multiCustomerQuery(args),
             jsonBody = body,
         ).toToolResult()
     }
@@ -202,12 +188,12 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         description = "Set an investigation's status (API v2). When closing, optional disposition and Threat " +
             "Command close details may be supplied.",
         inputSchema = toolSchema("id", "status") {
-            stringParam("id", "The investigation id or RRN.")
+            stringParam("id", ID_DESC)
             stringParam("status", "The new status.", enum = STATUS_VALUES)
             stringParam("disposition", "Disposition to set (only applied when closing).", enum = DISPOSITION_PATH_VALUES)
             stringParam("threat_command_close_reason", "Threat Command close reason.", enum = THREAT_COMMAND_REASONS)
             stringParam("threat_command_free_text", "Additional free text for a Threat Command close.")
-            booleanParam("multi_customer", "MSSP only: target a managed organization's investigation.")
+            booleanParam(MULTI_CUSTOMER_ARG, MULTI_CUSTOMER_DESC)
         },
     ) { args ->
         val id = args.requireString("id")
@@ -220,7 +206,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         client.request(
             HttpMethod.Put,
             "/idr/v2/investigations/${seg(id)}/status/${seg(status)}",
-            query = query("multi-customer" to args.booleanOrNull("multi_customer")),
+            query = multiCustomerQuery(args),
             jsonBody = body,
         ).toToolResult()
     }
@@ -229,9 +215,9 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         name = "set_investigation_priority",
         description = "Set an investigation's priority (API v2).",
         inputSchema = toolSchema("id", "priority") {
-            stringParam("id", "The investigation id or RRN.")
+            stringParam("id", ID_DESC)
             stringParam("priority", "The new priority.", enum = PRIORITY_VALUES)
-            booleanParam("multi_customer", "MSSP only: target a managed organization's investigation.")
+            booleanParam(MULTI_CUSTOMER_ARG, MULTI_CUSTOMER_DESC)
         },
     ) { args ->
         val id = args.requireString("id")
@@ -239,7 +225,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         client.request(
             HttpMethod.Put,
             "/idr/v2/investigations/${seg(id)}/priority/${seg(priority)}",
-            query = query("multi-customer" to args.booleanOrNull("multi_customer")),
+            query = multiCustomerQuery(args),
         ).toToolResult()
     }
 
@@ -247,9 +233,9 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         name = "set_investigation_disposition",
         description = "Set an investigation's disposition (API v2).",
         inputSchema = toolSchema("id", "disposition") {
-            stringParam("id", "The investigation id or RRN.")
+            stringParam("id", ID_DESC)
             stringParam("disposition", "The new disposition.", enum = DISPOSITION_PATH_VALUES)
-            booleanParam("multi_customer", "MSSP only: target a managed organization's investigation.")
+            booleanParam(MULTI_CUSTOMER_ARG, MULTI_CUSTOMER_DESC)
         },
     ) { args ->
         val id = args.requireString("id")
@@ -257,7 +243,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         client.request(
             HttpMethod.Put,
             "/idr/v2/investigations/${seg(id)}/disposition/${seg(disposition)}",
-            query = query("multi-customer" to args.booleanOrNull("multi_customer")),
+            query = multiCustomerQuery(args),
         ).toToolResult()
     }
 
@@ -265,9 +251,9 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         name = "assign_investigation",
         description = "Assign a user to an investigation by email (API v2).",
         inputSchema = toolSchema("id", "user_email_address") {
-            stringParam("id", "The investigation id or RRN.")
+            stringParam("id", ID_DESC)
             stringParam("user_email_address", "Email address of the user to assign.")
-            booleanParam("multi_customer", "MSSP only: target a managed organization's investigation.")
+            booleanParam(MULTI_CUSTOMER_ARG, MULTI_CUSTOMER_DESC)
         },
     ) { args ->
         val id = args.requireString("id")
@@ -275,7 +261,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         client.request(
             HttpMethod.Put,
             "/idr/v2/investigations/${seg(id)}/assignee",
-            query = query("multi-customer" to args.booleanOrNull("multi_customer")),
+            query = multiCustomerQuery(args),
             jsonBody = body,
         ).toToolResult()
     }
@@ -311,17 +297,17 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         description = "List the alerts associated with a specific investigation (API v2).",
         readOnly = true,
         inputSchema = toolSchema("identifier") {
-            stringParam("identifier", "The investigation id or RRN.")
+            stringParam("identifier", ID_DESC)
             integerParam("index", "Zero-based page index.")
             integerParam("size", "Page size.")
-            booleanParam("multi_customer", "MSSP only: target a managed organization's investigation.")
+            booleanParam(MULTI_CUSTOMER_ARG, MULTI_CUSTOMER_DESC)
         },
     ) { args ->
         val identifier = args.requireString("identifier")
         client.request(
             HttpMethod.Get,
             "/idr/v2/investigations/${seg(identifier)}/alerts",
-            query = pagingQuery(args) + query("multi-customer" to args.booleanOrNull("multi_customer")),
+            query = pagingQuery(args) + multiCustomerQuery(args),
         ).toToolResult()
     }
 
@@ -330,15 +316,15 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         description = "Get the list of Rapid7 product alerts associated with a specific investigation (API v2).",
         readOnly = true,
         inputSchema = toolSchema("identifier") {
-            stringParam("identifier", "The investigation id or RRN.")
-            booleanParam("multi_customer", "MSSP only: target a managed organization's investigation.")
+            stringParam("identifier", ID_DESC)
+            booleanParam(MULTI_CUSTOMER_ARG, MULTI_CUSTOMER_DESC)
         },
     ) { args ->
         val identifier = args.requireString("identifier")
         client.request(
             HttpMethod.Get,
             "/idr/v2/investigations/${seg(identifier)}/rapid7-product-alerts",
-            query = query("multi-customer" to args.booleanOrNull("multi_customer")),
+            query = multiCustomerQuery(args),
         ).toToolResult()
     }
 
@@ -347,9 +333,9 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         description = "Remove (disassociate) an alert from an investigation (API v2).",
         destructive = true,
         inputSchema = toolSchema("identifier", "alert_rrn") {
-            stringParam("identifier", "The investigation id or RRN.")
+            stringParam("identifier", ID_DESC)
             stringParam("alert_rrn", "The RRN of the alert to remove.")
-            booleanParam("multi_customer", "MSSP only: target a managed organization's investigation.")
+            booleanParam(MULTI_CUSTOMER_ARG, MULTI_CUSTOMER_DESC)
         },
     ) { args ->
         val identifier = args.requireString("identifier")
@@ -357,7 +343,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         client.request(
             HttpMethod.Delete,
             "/idr/v2/investigations/${seg(identifier)}/alerts/${seg(alertRrn)}",
-            query = query("multi-customer" to args.booleanOrNull("multi_customer")),
+            query = multiCustomerQuery(args),
         ).toToolResult()
     }
 }

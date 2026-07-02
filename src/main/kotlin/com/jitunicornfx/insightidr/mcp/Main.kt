@@ -1,10 +1,10 @@
 package com.jitunicornfx.insightidr.mcp
 
-import io.ktor.http.HttpMethod
+import io.ktor.http.*
 import io.ktor.server.application.install
-import io.ktor.server.cio.CIO
-import io.ktor.server.engine.embeddedServer
-import io.ktor.server.plugins.cors.routing.CORS
+import io.ktor.server.cio.*
+import io.ktor.server.engine.*
+import io.ktor.server.plugins.cors.routing.*
 import io.modelcontextprotocol.kotlin.sdk.server.StdioServerTransport
 import io.modelcontextprotocol.kotlin.sdk.server.mcp
 import kotlinx.coroutines.Job
@@ -14,6 +14,8 @@ import kotlinx.io.asSource
 import kotlinx.io.buffered
 import java.io.PrintStream
 import kotlin.system.exitProcess
+
+private const val STDIO = "--stdio"
 
 /**
  * Entry point for the Rapid7 InsightIDR MCP server.
@@ -25,7 +27,7 @@ import kotlin.system.exitProcess
  * All diagnostics are written to stderr so stdout stays reserved for the JSON-RPC channel.
  */
 fun main(args: Array<String>) {
-    val mode = args.firstOrNull() ?: "--stdio"
+    val mode = args.firstOrNull() ?: STDIO
 
     if (mode == "--help" || mode == "-h") {
         printUsage()
@@ -36,7 +38,7 @@ fun main(args: Array<String>) {
     // messages directly to stdout during initialization; capture the real stdout for the
     // transport and redirect System.out to stderr so nothing corrupts the protocol channel.
     val protocolOut: PrintStream = System.out
-    if (mode == "--stdio") {
+    if (mode == STDIO) {
         System.setOut(System.err)
     }
 
@@ -51,7 +53,7 @@ fun main(args: Array<String>) {
     Runtime.getRuntime().addShutdownHook(Thread { runCatching { client.close() } })
 
     when (mode) {
-        "--stdio" -> runStdio(client, config, protocolOut)
+        STDIO -> runStdio(client, config, protocolOut)
         "--http" -> runHttp(client, config, args.getOrNull(1)?.toIntOrNull() ?: DEFAULT_HTTP_PORT)
         else -> {
             System.err.println("[insightidr-mcp] Unknown option: $mode")

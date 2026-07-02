@@ -1,25 +1,13 @@
 package com.jitunicornfx.insightidr.mcp.tools
 
-import com.jitunicornfx.insightidr.mcp.Rapid7Client
-import com.jitunicornfx.insightidr.mcp.apiTool
-import com.jitunicornfx.insightidr.mcp.arrayOrNull
-import com.jitunicornfx.insightidr.mcp.integerParam
-import com.jitunicornfx.insightidr.mcp.objectOrNull
-import com.jitunicornfx.insightidr.mcp.objectParam
-import com.jitunicornfx.insightidr.mcp.pagingQuery
-import com.jitunicornfx.insightidr.mcp.putOpt
-import com.jitunicornfx.insightidr.mcp.requireString
-import com.jitunicornfx.insightidr.mcp.seg
-import com.jitunicornfx.insightidr.mcp.stringArrayParam
-import com.jitunicornfx.insightidr.mcp.stringOrNull
-import com.jitunicornfx.insightidr.mcp.stringParam
-import com.jitunicornfx.insightidr.mcp.toToolResult
-import com.jitunicornfx.insightidr.mcp.toolSchema
-import io.ktor.http.HttpMethod
+import com.jitunicornfx.insightidr.mcp.*
+import io.ktor.http.*
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+
+private const val CLOUDHOOK_STATUS = "The RRN of the cloud webhook."
 
 /** Registers the InsightIDR v1 Cloud Webhooks tools. */
 fun Server.registerCloudWebhookTools(client: Rapid7Client) {
@@ -40,7 +28,7 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
         name = "get_cloud_webhook",
         description = "Get a cloud webhook by its RRN (API v1).",
         readOnly = true,
-        inputSchema = toolSchema("webhook_rrn") { stringParam("webhook_rrn", "The RRN of the cloud webhook.") },
+        inputSchema = toolSchema("webhook_rrn") { stringParam("webhook_rrn", CLOUDHOOK_STATUS) },
     ) { args ->
         val rrn = args.requireString("webhook_rrn")
         client.request(HttpMethod.Get, "/idr/v1/cloud-webhooks/${seg(rrn)}").toToolResult()
@@ -67,7 +55,7 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
         name = "update_cloud_webhook",
         description = "Update a cloud webhook's name and/or URL (API v1).",
         inputSchema = toolSchema("webhook_rrn") {
-            stringParam("webhook_rrn", "The RRN of the cloud webhook.")
+            stringParam("webhook_rrn", CLOUDHOOK_STATUS)
             stringParam("name", "New name.")
             stringParam("url", "New endpoint URL.")
         },
@@ -84,7 +72,12 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
         name = "delete_cloud_webhook",
         description = "Delete a cloud webhook by its RRN (API v1).",
         destructive = true,
-        inputSchema = toolSchema("webhook_rrn") { stringParam("webhook_rrn", "The RRN of the cloud webhook to delete.") },
+        inputSchema = toolSchema("webhook_rrn") {
+            stringParam(
+                "webhook_rrn",
+                "The RRN of the cloud webhook to delete."
+            )
+        },
     ) { args ->
         val rrn = args.requireString("webhook_rrn")
         client.request(HttpMethod.Delete, "/idr/v1/cloud-webhooks/${seg(rrn)}").toToolResult()
@@ -103,7 +96,7 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
         name = "replay_cloud_webhook_events",
         description = "Replay events for a cloud webhook, by explicit event ids or a time window (API v1).",
         inputSchema = toolSchema("webhook_rrn") {
-            stringParam("webhook_rrn", "The RRN of the cloud webhook.")
+            stringParam("webhook_rrn", CLOUDHOOK_STATUS)
             stringArrayParam("event_ids", "List of event ids to replay.")
             stringParam("start_time", "ISO-8601 UTC timestamp to replay events from (inclusive).")
             stringParam("end_time", "ISO-8601 UTC timestamp to replay events to (inclusive).")
@@ -122,11 +115,11 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
         name = "add_cloud_webhook_validation",
         description = "Add a validation configuration to a cloud webhook (API v1). The config is required.",
         inputSchema = toolSchema("webhook_rrn", "validation_config") {
-            stringParam("webhook_rrn", "The RRN of the cloud webhook.")
+            stringParam("webhook_rrn", CLOUDHOOK_STATUS)
             objectParam(
                 "validation_config",
                 "The validation configuration object. For OAuth, include type=\"OAUTH\", client_id, " +
-                    "client_secret_grant_rrn, and auth_service_url.",
+                        "client_secret_grant_rrn, and auth_service_url.",
             )
         },
     ) { args ->
@@ -140,7 +133,7 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
         name = "update_cloud_webhook_validation",
         description = "Update the validation configuration of a cloud webhook (API v1). The config is required.",
         inputSchema = toolSchema("webhook_rrn", "validation_config") {
-            stringParam("webhook_rrn", "The RRN of the cloud webhook.")
+            stringParam("webhook_rrn", CLOUDHOOK_STATUS)
             objectParam(
                 "validation_config",
                 "The updated validation configuration object. Must include the type discriminator (e.g. type=\"OAUTH\").",
@@ -150,14 +143,15 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
         val rrn = args.requireString("webhook_rrn")
         val body: JsonObject = args.objectOrNull("validation_config")
             ?: throw IllegalArgumentException("Missing required parameter 'validation_config'")
-        client.request(HttpMethod.Patch, "/idr/v1/cloud-webhooks/${seg(rrn)}/validation", jsonBody = body).toToolResult()
+        client.request(HttpMethod.Patch, "/idr/v1/cloud-webhooks/${seg(rrn)}/validation", jsonBody = body)
+            .toToolResult()
     }
 
     apiTool(
         name = "delete_cloud_webhook_validation",
         description = "Remove the validation configuration from a cloud webhook (API v1).",
         destructive = true,
-        inputSchema = toolSchema("webhook_rrn") { stringParam("webhook_rrn", "The RRN of the cloud webhook.") },
+        inputSchema = toolSchema("webhook_rrn") { stringParam("webhook_rrn", CLOUDHOOK_STATUS) },
     ) { args ->
         val rrn = args.requireString("webhook_rrn")
         client.request(HttpMethod.Delete, "/idr/v1/cloud-webhooks/${seg(rrn)}/validation").toToolResult()

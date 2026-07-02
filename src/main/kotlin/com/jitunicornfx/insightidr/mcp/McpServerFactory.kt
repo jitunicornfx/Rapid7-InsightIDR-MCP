@@ -1,15 +1,6 @@
 package com.jitunicornfx.insightidr.mcp
 
-import com.jitunicornfx.insightidr.mcp.tools.registerAttachmentTools
-import com.jitunicornfx.insightidr.mcp.tools.registerCloudWebhookTools
-import com.jitunicornfx.insightidr.mcp.tools.registerCollectorTools
-import com.jitunicornfx.insightidr.mcp.tools.registerCommentTools
-import com.jitunicornfx.insightidr.mcp.tools.registerCommunityThreatTools
-import com.jitunicornfx.insightidr.mcp.tools.registerEntityTools
-import com.jitunicornfx.insightidr.mcp.tools.registerHealthMetricTools
-import com.jitunicornfx.insightidr.mcp.tools.registerInvestigationV1Tools
-import com.jitunicornfx.insightidr.mcp.tools.registerInvestigationV2Tools
-import com.jitunicornfx.insightidr.mcp.tools.registerSystemTools
+import com.jitunicornfx.insightidr.mcp.tools.*
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation

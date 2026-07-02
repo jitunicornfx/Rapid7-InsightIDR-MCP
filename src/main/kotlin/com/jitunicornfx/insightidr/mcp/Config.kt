@@ -22,7 +22,7 @@ enum class Region(val code: String) {
             return entries.firstOrNull { it.code == normalized }
                 ?: throw IllegalArgumentException(
                     "Unknown InsightIDR region '$value'. Valid regions: " +
-                        entries.joinToString(", ") { it.code },
+                            entries.joinToString(", ") { it.code },
                 )
         }
     }
@@ -54,7 +54,7 @@ data class Config(
             val apiKey = env[ENV_API_KEY]?.takeIf { it.isNotBlank() }
                 ?: throw IllegalStateException(
                     "Missing required environment variable $ENV_API_KEY. " +
-                        "Create an Insight platform API key and expose it to the server.",
+                            "Create an Insight platform API key and expose it to the server.",
                 )
 
             val region = Region.fromCode(env[ENV_REGION]?.takeIf { it.isNotBlank() } ?: DEFAULT_REGION)

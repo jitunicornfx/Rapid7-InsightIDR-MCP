@@ -1,19 +1,13 @@
 package com.jitunicornfx.insightidr.mcp
 
-import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
-import io.ktor.client.plugins.HttpTimeout
-import io.ktor.client.request.forms.MultiPartFormDataContent
-import io.ktor.client.request.forms.formData
-import io.ktor.client.request.header
-import io.ktor.client.request.request
-import io.ktor.client.request.setBody
-import io.ktor.client.statement.bodyAsText
-import io.ktor.http.ContentType
-import io.ktor.http.Headers
-import io.ktor.http.HttpHeaders
-import io.ktor.http.HttpMethod
-import io.ktor.http.contentType
+import io.ktor.client.*
+import io.ktor.client.engine.HttpClientEngine
+import io.ktor.client.engine.cio.*
+import io.ktor.client.plugins.*
+import io.ktor.client.request.*
+import io.ktor.client.request.forms.*
+import io.ktor.client.statement.*
+import io.ktor.http.*
 import kotlinx.serialization.json.JsonElement
 
 /**
@@ -25,9 +19,19 @@ import kotlinx.serialization.json.JsonElement
  *  - never throws on non-2xx responses (they are surfaced to the caller as [ApiResponse]),
  *    so tool handlers can report API errors back to the model instead of crashing.
  */
-class Rapid7Client(private val config: Config) : AutoCloseable {
+class Rapid7Client(
+    private val config: Config,
+    engine: HttpClientEngine? = null,
+) : AutoCloseable {
 
-    private val http: HttpClient = HttpClient(CIO) {
+    // Production uses the CIO engine; tests inject a MockEngine to avoid real network calls.
+    private val http: HttpClient = if (engine != null) {
+        HttpClient(engine) { configureClient() }
+    } else {
+        HttpClient(CIO) { configureClient() }
+    }
+
+    private fun HttpClientConfig<*>.configureClient() {
         expectSuccess = false
         install(HttpTimeout) {
             requestTimeoutMillis = config.requestTimeoutMillis
@@ -76,6 +80,7 @@ class Rapid7Client(private val config: Config) : AutoCloseable {
                     contentType(ContentType.Application.Json)
                     setBody(JsonCodec.compact.encodeToString(JsonElement.serializer(), jsonBody))
                 }
+
                 rawBody != null -> {
                     contentType(rawContentType)
                     setBody(rawBody)
@@ -123,7 +128,7 @@ class Rapid7Client(private val config: Config) : AutoCloseable {
         return response.toApiResponse()
     }
 
-    private suspend fun io.ktor.client.statement.HttpResponse.toApiResponse(): ApiResponse {
+    private suspend fun HttpResponse.toApiResponse(): ApiResponse {
         val text = bodyAsText()
         return ApiResponse(
             status = status.value,

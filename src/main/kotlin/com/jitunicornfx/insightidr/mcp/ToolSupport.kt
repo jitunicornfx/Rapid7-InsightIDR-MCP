@@ -1,29 +1,14 @@
 package com.jitunicornfx.insightidr.mcp
 
 import com.jitunicornfx.insightidr.mcp.Rapid7Client.ApiResponse
-import io.ktor.http.encodeURLPathPart
+import io.ktor.http.*
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.ToolAnnotations
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.coroutines.CancellationException
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonObjectBuilder
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.add
-import kotlinx.serialization.json.booleanOrNull
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.longOrNull
-import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonArray
-import kotlinx.serialization.json.putJsonObject
+import kotlinx.serialization.json.*
 
 /** Shared JSON encoder/decoder instances. */
 object JsonCodec {
@@ -166,7 +151,9 @@ fun query(vararg pairs: Pair<String, Any?>): Map<String, List<String>> {
     val out = LinkedHashMap<String, MutableList<String>>()
     for ((key, value) in pairs) {
         when (value) {
-            null -> {}
+            null -> {
+                // Do nothing here
+            }
             is List<*> -> value.filterNotNull().forEach { out.getOrPut(key) { mutableListOf() }.add(it.toString()) }
             else -> out.getOrPut(key) { mutableListOf() }.add(value.toString())
         }

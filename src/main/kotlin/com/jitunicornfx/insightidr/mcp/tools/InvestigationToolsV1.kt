@@ -1,18 +1,7 @@
 package com.jitunicornfx.insightidr.mcp.tools
 
-import com.jitunicornfx.insightidr.mcp.Rapid7Client
-import com.jitunicornfx.insightidr.mcp.apiTool
-import com.jitunicornfx.insightidr.mcp.integerParam
-import com.jitunicornfx.insightidr.mcp.intOrNull
-import com.jitunicornfx.insightidr.mcp.putOpt
-import com.jitunicornfx.insightidr.mcp.query
-import com.jitunicornfx.insightidr.mcp.requireString
-import com.jitunicornfx.insightidr.mcp.seg
-import com.jitunicornfx.insightidr.mcp.stringOrNull
-import com.jitunicornfx.insightidr.mcp.stringParam
-import com.jitunicornfx.insightidr.mcp.toToolResult
-import com.jitunicornfx.insightidr.mcp.toolSchema
-import io.ktor.http.HttpMethod
+import com.jitunicornfx.insightidr.mcp.*
+import io.ktor.http.*
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -78,7 +67,11 @@ fun Server.registerInvestigationV1Tools(client: Rapid7Client) {
         name = "bulk_close_investigations_v1",
         description = "Close investigations in bulk using the legacy v1 API.",
         inputSchema = toolSchema("source", "from", "to") {
-            stringParam("source", "Investigation source whose investigations should be closed.", enum = listOf("ALERT", "MANUAL", "HUNT"))
+            stringParam(
+                "source",
+                "Investigation source whose investigations should be closed.",
+                enum = listOf("ALERT", "MANUAL", "HUNT")
+            )
             stringParam("from", "ISO-8601 timestamp; close investigations created at/after this time.")
             stringParam("to", "ISO-8601 timestamp; close investigations created at/before this time.")
             stringParam("alert_type", "Category of alert types to close (required for some sources).")

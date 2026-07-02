@@ -1,20 +1,7 @@
 package com.jitunicornfx.insightidr.mcp.tools
 
-import com.jitunicornfx.insightidr.mcp.Rapid7Client
-import com.jitunicornfx.insightidr.mcp.apiTool
-import com.jitunicornfx.insightidr.mcp.arrayOrNull
-import com.jitunicornfx.insightidr.mcp.integerParam
-import com.jitunicornfx.insightidr.mcp.intOrNull
-import com.jitunicornfx.insightidr.mcp.putOpt
-import com.jitunicornfx.insightidr.mcp.query
-import com.jitunicornfx.insightidr.mcp.requireString
-import com.jitunicornfx.insightidr.mcp.seg
-import com.jitunicornfx.insightidr.mcp.stringArrayParam
-import com.jitunicornfx.insightidr.mcp.stringOrNull
-import com.jitunicornfx.insightidr.mcp.stringParam
-import com.jitunicornfx.insightidr.mcp.toToolResult
-import com.jitunicornfx.insightidr.mcp.toolSchema
-import io.ktor.http.HttpMethod
+import com.jitunicornfx.insightidr.mcp.*
+import io.ktor.http.*
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -87,7 +74,11 @@ fun Server.registerCommentTools(client: Rapid7Client) {
         description = "Update the visibility of a comment (API v1).",
         inputSchema = toolSchema("rrn", "visibility") {
             stringParam("rrn", "The RRN of the comment.")
-            stringParam("visibility", "The new visibility for the comment: INTERNAL or PUBLIC.", enum = listOf("INTERNAL", "PUBLIC"))
+            stringParam(
+                "visibility",
+                "The new visibility for the comment: INTERNAL or PUBLIC.",
+                enum = listOf("INTERNAL", "PUBLIC")
+            )
         },
     ) { args ->
         val rrn = args.requireString("rrn")

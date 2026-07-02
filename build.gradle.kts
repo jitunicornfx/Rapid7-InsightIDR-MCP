@@ -4,7 +4,9 @@ plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.shadow)
+    id ("org.sonarqube") version "7.3.0.8198"
     application
+    jacoco
 }
 
 group = "com.jitunicornfx.insightidr"
@@ -32,6 +34,14 @@ dependencies {
 
     testImplementation(kotlin("test"))
     testImplementation(libs.mcp.kotlin.client)
+
+    // Ktor MockEngine lets tests drive the tool handlers without real network calls.
+    testImplementation("io.ktor:ktor-client-mock")
+
+    // JUnit Platform engine so `useJUnitPlatform()` can actually discover and run tests.
+    testImplementation(platform("org.junit:junit-bom:5.12.2"))
+    testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine")
+
 }
 
 application {
@@ -52,6 +62,44 @@ java {
 
 tasks.test {
     useJUnitPlatform()
+    // Always refresh the coverage report after the tests run.
+    finalizedBy(tasks.jacocoTestReport)
+}
+
+jacoco {
+    // 0.8.13 is required to instrument/run under recent JDKs (this project builds on JDK 21+).
+    toolVersion = "0.8.13"
+}
+
+tasks.jacocoTestReport {
+    dependsOn(tasks.test)
+    reports {
+        xml.required.set(true)   // machine-readable; consumed by SonarQube
+        html.required.set(true)  // human-readable report
+        csv.required.set(false)
+    }
+}
+
+// Optional coverage gate. Raise `minimum` once tests exist to fail the build below a threshold.
+tasks.jacocoTestCoverageVerification {
+    violationRules {
+        rule {
+            limit {
+                counter = "LINE"
+                minimum = "0.00".toBigDecimal()
+            }
+        }
+    }
+}
+
+// Point SonarQube at the JaCoCo XML report.
+sonar {
+    properties {
+        property(
+            "sonar.coverage.jacoco.xmlReportPaths",
+            layout.buildDirectory.file("reports/jacoco/test/jacocoTestReport.xml").get().asFile.path,
+        )
+    }
 }
 
 tasks.shadowJar {

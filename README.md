@@ -143,6 +143,18 @@ Then ask the assistant to `validate_connection` first to confirm the key and reg
 - `add_collector`
 - `get_health_metrics`
 
+## Testing & coverage
+
+Unit tests live under `src/test/kotlin/` and run on the JUnit Platform. Coverage is measured with JaCoCo:
+
+```bash
+./gradlew test jacocoTestReport      # Windows: gradlew.bat test jacocoTestReport
+```
+
+Open `build/reports/jacoco/test/html/index.html` for the report. Full details — thresholds, SonarQube
+integration, and how to cover the HTTP layer with Ktor `MockEngine` — are in
+[docs/CODE_COVERAGE.md](docs/CODE_COVERAGE.md).
+
 ## Design notes
 
 - Search endpoints (`search_*`) accept structured `search`/`sort` arrays that pass straight through to the
