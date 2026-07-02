@@ -5,6 +5,7 @@ import io.ktor.http.*
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import kotlinx.serialization.json.*
 
+// List of status and dispositions to set for incidents.
 // Status-change endpoints accept WAITING; the create request body schema does not.
 private val STATUS_VALUES = listOf("OPEN", "INVESTIGATING", "WAITING", "CLOSED")
 private val CREATE_STATUS_VALUES = listOf("OPEN", "INVESTIGATING", "CLOSED")
@@ -30,7 +31,7 @@ private fun JsonObject.assigneeObject(): JsonObject? =
 private fun multiCustomerQuery(args: JsonObject): Map<String, List<String>> =
     query(MULTI_CUSTOMER_QUERY to args.booleanOrNull(MULTI_CUSTOMER_ARG))
 
-/** Registers the InsightIDR v2 Investigations tools. */
+/** Registers the InsightIDR API v2 Investigations tools. */
 fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
 
     apiTool(

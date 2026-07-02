@@ -6,7 +6,7 @@ import io.modelcontextprotocol.kotlin.sdk.server.Server
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
-/** Registers the InsightIDR v1 Collectors tools. */
+/** Registers the InsightIDR API v1 Collectors tools. */
 fun Server.registerCollectorTools(client: Rapid7Client) {
 
     apiTool(

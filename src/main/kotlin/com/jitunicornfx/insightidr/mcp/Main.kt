@@ -15,6 +15,7 @@ import kotlinx.io.buffered
 import java.io.PrintStream
 import kotlin.system.exitProcess
 
+// STDIO switch
 private const val STDIO = "--stdio"
 
 /**

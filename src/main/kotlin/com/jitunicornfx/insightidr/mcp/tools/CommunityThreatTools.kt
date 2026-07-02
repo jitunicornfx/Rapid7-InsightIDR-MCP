@@ -12,7 +12,7 @@ private fun contentTypeForFormat(format: String): ContentType = when (format.tri
     else -> throw IllegalArgumentException("Unsupported indicator format '$format'. Use json, csv, or stix_xml.")
 }
 
-/** Registers the InsightIDR v1 Community Threats tools (custom threat feeds and their indicators). */
+/** Registers the InsightIDR API v1 Community Threats tools (custom threat feeds and their indicators). */
 fun Server.registerCommunityThreatTools(client: Rapid7Client) {
 
     apiTool(

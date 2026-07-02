@@ -5,7 +5,7 @@ import io.ktor.http.*
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import java.io.File
 
-/** Registers the InsightIDR v1 Attachments tools. */
+/** Registers the InsightIDR API v1 Attachments tools. */
 fun Server.registerAttachmentTools(client: Rapid7Client) {
 
     apiTool(

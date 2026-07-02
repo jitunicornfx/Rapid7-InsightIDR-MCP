@@ -4,7 +4,7 @@ import com.jitunicornfx.insightidr.mcp.*
 import io.ktor.http.*
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 
-/** Registers the InsightIDR v1 Health Metrics tool. */
+/** Registers the InsightIDR API v1 Health Metrics tool. */
 fun Server.registerHealthMetricTools(client: Rapid7Client) {
 
     apiTool(

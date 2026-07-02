@@ -6,7 +6,7 @@ import com.jitunicornfx.insightidr.mcp.toToolResult
 import io.ktor.http.*
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 
-/** Registers connectivity / diagnostics tools. */
+/** Registers connectivity / diagnostics tools for InsightIDR connectivity. */
 fun Server.registerSystemTools(client: Rapid7Client) {
 
     apiTool(

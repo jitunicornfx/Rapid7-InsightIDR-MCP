@@ -128,6 +128,7 @@ class Rapid7Client(
         return response.toApiResponse()
     }
 
+    // 2xx responses are valid
     private suspend fun HttpResponse.toApiResponse(): ApiResponse {
         val text = bodyAsText()
         return ApiResponse(

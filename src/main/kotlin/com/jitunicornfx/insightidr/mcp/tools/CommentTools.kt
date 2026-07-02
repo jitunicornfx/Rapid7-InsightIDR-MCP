@@ -6,7 +6,7 @@ import io.modelcontextprotocol.kotlin.sdk.server.Server
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
-/** Registers the InsightIDR v1 Comments tools (comments attach to investigations and other targets). */
+/** Registers the InsightIDR API v1 Comments tools (comments attach to investigations and other targets). */
 fun Server.registerCommentTools(client: Rapid7Client) {
 
     apiTool(

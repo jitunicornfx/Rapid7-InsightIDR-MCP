@@ -9,7 +9,7 @@ import kotlinx.serialization.json.put
 
 private const val CLOUDHOOK_STATUS = "The RRN of the cloud webhook."
 
-/** Registers the InsightIDR v1 Cloud Webhooks tools. */
+/** Registers the InsightIDR API v1 Cloud Webhooks tools. */
 fun Server.registerCloudWebhookTools(client: Rapid7Client) {
 
     apiTool(

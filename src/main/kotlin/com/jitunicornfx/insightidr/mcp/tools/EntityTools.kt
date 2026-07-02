@@ -26,6 +26,7 @@ private fun Server.searchTool(client: Rapid7Client, name: String, description: S
     }
 }
 
+// Retrieve Rapid7 entity by RRN
 private fun Server.getByRrnTool(client: Rapid7Client, name: String, description: String, pathPrefix: String) {
     apiTool(
         name = name,
@@ -39,7 +40,7 @@ private fun Server.getByRrnTool(client: Rapid7Client, name: String, description:
 }
 
 /**
- * Registers the InsightIDR v1 entity tools: Accounts, Assets, Users, and Local Accounts.
+ * Registers the InsightIDR API v1 entity tools: Accounts, Assets, Users, and Local Accounts.
  * Each entity supports a structured `_search` and a get-by-RRN lookup.
  */
 fun Server.registerEntityTools(client: Rapid7Client) {
@@ -60,7 +61,7 @@ fun Server.registerEntityTools(client: Rapid7Client) {
     searchTool(client, "search_users", "Search InsightIDR users (API v1).", "/idr/v1/users/_search")
     getByRrnTool(client, "get_user", "Get an InsightIDR user by RRN (API v1).", "/idr/v1/users")
 
-    // Local accounts
+    // InsightIDR local accounts
     searchTool(
         client,
         "search_local_accounts",

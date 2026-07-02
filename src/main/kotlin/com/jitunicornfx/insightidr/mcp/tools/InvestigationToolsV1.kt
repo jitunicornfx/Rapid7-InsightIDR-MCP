@@ -7,7 +7,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 /**
- * Registers the legacy InsightIDR v1 Investigations tools. Prefer the v2 tools where possible;
+ * Registers the legacy InsightIDR API v1 Investigations tools. Prefer the v2 tools where possible;
  * these are provided for parity and for environments that still rely on the v1 endpoints.
  */
 fun Server.registerInvestigationV1Tools(client: Rapid7Client) {
