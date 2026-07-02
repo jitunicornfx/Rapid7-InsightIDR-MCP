@@ -75,21 +75,26 @@ line-by-line highlighting.
 
 ## Current baseline
 
-Current overall coverage is roughly **65% line / 46% branch / 70% method**. Well-covered units include:
+Current overall coverage is roughly **84% line / 84% method**. Well-covered units include:
 
 | Unit | Line coverage |
 |------|---------------|
 | `InvestigationToolsV2.kt` | ~100% |
+| `InvestigationToolsV1.kt` | ~100% |
 | `AttachmentTools.kt` | ~100% |
+| `CommentTools.kt` | ~100% |
+| `EntityTools.kt` | ~100% |
+| `Rapid7Client.kt` | ~100% |
 | `CloudWebhookTools.kt` | ~99% |
 | `ToolSupport.kt` | ~98% |
 | `Config.kt` | high |
 
-`Main.kt` sits low (~13%) by design — only the `--help` path is unit-testable; the rest calls
-`exitProcess` or blocks on a transport. The remaining tool domains (`EntityTools`, `CommentTools`,
-`CommunityThreatTools`, `InvestigationToolsV1`, `CollectorTools`, `HealthMetricTools`) follow the same
-pattern as the covered ones and are the next candidates. Branch coverage trails line coverage because
-each tool has many independent optional parameters; exercising every combination isn't necessary.
+`Main.kt` sits around **38%** by design: the Clikt command (option parsing, the `run()` dispatch, and
+the config-error path) is tested via injected seams, but `runStdio`/`runHttp`/`runServer` start real,
+blocking servers and are not unit-tested. The remaining tool domains (`CommunityThreatTools`,
+`CollectorTools`, `HealthMetricTools`) follow the same pattern as the covered ones and are the next
+candidates. Branch coverage trails line coverage because each tool has many independent optional
+parameters; exercising every combination isn't necessary.
 
 ## Adding more tests
 

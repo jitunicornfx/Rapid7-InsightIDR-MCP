@@ -26,7 +26,7 @@ import java.io.PrintStream
 private const val DEFAULT_HTTP_HOST = "127.0.0.1"
 private const val DEFAULT_HTTP_PORT = 3001
 
-private enum class Transport { STDIO, HTTP }
+internal enum class Transport { STDIO, HTTP }
 
 /**
  * Command-line entry point for the Rapid7 InsightIDR MCP server (built with Clikt).
@@ -36,8 +36,17 @@ private enum class Transport { STDIO, HTTP }
  *  - `--http`: Streamable HTTP / SSE transport, bound to `--host`/`--port`.
  *
  * All diagnostics are written to stderr so stdout stays reserved for the JSON-RPC channel.
+ *
+ * The [configProvider] and [serve] seams exist so tests can drive option parsing and the
+ * run() dispatch without reading the real environment or starting a (blocking) server.
  */
-class Rapid7InsightIdrCommand : CliktCommand() {
+class Rapid7InsightIdrCommand internal constructor(
+    private val configProvider: () -> Config,
+    private val serve: (transport: Transport, host: String, port: Int, config: Config) -> Unit,
+) : CliktCommand() {
+
+    /** Production entry point: reads config from the environment and starts a real server. */
+    constructor() : this({ Config.fromEnv() }, ::runServer)
 
     override fun help(context: Context): String =
         "Run the Rapid7 InsightIDR MCP server over stdio (default) or HTTP."
@@ -72,30 +81,34 @@ class Rapid7InsightIdrCommand : CliktCommand() {
 
     override fun run() {
         val config = try {
-            Config.fromEnv()
+            configProvider()
         } catch (e: Exception) {
             echo("Configuration error: ${e.message}", err = true)
             throw ProgramResult(1)
         }
-
-        val client = Rapid7Client(config)
-        Runtime.getRuntime().addShutdownHook(Thread { runCatching { client.close() } })
-
-        when (transport) {
-            Transport.STDIO -> {
-                // In stdio mode stdout carries the JSON-RPC stream. Capture the real stdout for the
-                // transport and redirect System.out to stderr so stray writes can't corrupt the channel.
-                val protocolOut: PrintStream = System.out
-                System.setOut(System.err)
-                runStdio(client, config, protocolOut)
-            }
-
-            Transport.HTTP -> runHttp(client, config, host, port)
-        }
+        serve(transport, host, port, config)
     }
 }
 
 fun main(args: Array<String>) = Rapid7InsightIdrCommand().main(args)
+
+/** Creates the shared client and dispatches to the selected transport. */
+private fun runServer(transport: Transport, host: String, port: Int, config: Config) {
+    val client = Rapid7Client(config)
+    Runtime.getRuntime().addShutdownHook(Thread { runCatching { client.close() } })
+
+    when (transport) {
+        Transport.STDIO -> {
+            // In stdio mode stdout carries the JSON-RPC stream. Capture the real stdout for the
+            // transport and redirect System.out to stderr so stray writes can't corrupt the channel.
+            val protocolOut: PrintStream = System.out
+            System.setOut(System.err)
+            runStdio(client, config, protocolOut)
+        }
+
+        Transport.HTTP -> runHttp(client, config, host, port)
+    }
+}
 
 private fun runStdio(client: Rapid7Client, config: Config, protocolOut: PrintStream) = runBlocking {
     System.err.println("[insightidr-mcp] Starting over stdio — region=${config.region.code}, baseUrl=${config.baseUrl}")
