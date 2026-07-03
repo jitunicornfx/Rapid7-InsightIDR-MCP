@@ -17,8 +17,11 @@ existing Insight platform API key.
 
 ## Features
 
-- **~50 tools** spanning the documented InsightIDR v1 and v2 endpoints.
+- **~130 tools** spanning the documented InsightIDR v1 and v2 endpoints plus the complete
+  Log Search API (queries, saved queries, logs/log sets, usage, CSV exports, LEQL variables,
+  pre-computed queries, basic detection rules, and audit logs — everything except S3 archiving).
 - Region-aware base URL resolution (`https://<region>.api.insight.rapid7.com`).
+- Asynchronous Log Search queries are polled to completion automatically (202 + continuation links).
 - `X-Api-Key` authentication from an environment variable — no secrets in code.
 - Robust error handling: HTTP and network errors are returned to the model as tool errors
   (with the API's response body) instead of crashing the session.
@@ -41,16 +44,19 @@ Configuration is read from environment variables:
 | `INSIGHTIDR_API_KEY`     | ✅       | —                                         | Insight platform API key.                                      |
 | `INSIGHTIDR_REGION`      |          | `us`                                      | Region code: `us`, `us2`, `us3`, `eu`, `ca`, `au`, `ap`.       |
 | `INSIGHTIDR_BASE_URL`    |          | `https://<region>.api.insight.rapid7.com` | Full base URL override (advanced / testing).                   |
+| `INSIGHTIDR_LOG_SEARCH_BASE_URL` |  | `<base URL>/log_search`                   | Log Search API base override (e.g. `https://<region>.rest.logs.insight.rapid7.com` to hit the direct host). |
 | `INSIGHTIDR_TIMEOUT_MS`  |          | `60000`                                   | Per-request timeout in milliseconds.                           |
 
 See [`.env.example`](.env.example).
 
 ## Build
 
-```bash
+```PowerShell
 # Windows
-gradlew.bat shadowJar
+.\gradlew.bat shadowJar
+```
 
+```bash
 # macOS / Linux
 ./gradlew shadowJar
 ```
@@ -65,7 +71,17 @@ build/libs/rapid7-insightidr-mcp-0.1.0-all.jar
 
 ### stdio (default)
 
+```PowerShell
+# PowerShell 5.1
+powershell.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.1.2-all.jar --stdio }
+
+# PowerShell 7
+pwsh.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.1.2-all.jar --stdio }
+
+```
+
 ```bash
+# Linux
 INSIGHTIDR_API_KEY=xxxx INSIGHTIDR_REGION=us \
   java -jar build/libs/rapid7-insightidr-mcp-0.1.0-all.jar --stdio
 ```
@@ -146,6 +162,38 @@ Then ask the assistant to `validate_connection` first to confirm the key and reg
 ### Collectors & Health (API v1)
 - `add_collector`
 - `get_health_metrics`
+
+### Log Search API (`logsearch_*`)
+
+Complete coverage of the [Log Search API](https://docs.rapid7.com/insightidr/log-search-api/)
+except S3 archiving. Defaults to the unified route (`<base>/log_search`); see
+`INSIGHTIDR_LOG_SEARCH_BASE_URL` to target `rest.logs.insight.rapid7.com` directly.
+
+- **Query log data** (async queries auto-poll to completion; disable with `wait_for_completion=false`):
+  `logsearch_query_log`, `logsearch_query_logs`, `logsearch_query_logset`,
+  `logsearch_query_logsets_by_name`, `logsearch_poll_query`, `logsearch_get_context_events`,
+  `logsearch_get_search_stats`, `logsearch_list_query_endpoints`
+- **Saved queries:** `logsearch_list_saved_queries`, `logsearch_get_saved_query`,
+  `logsearch_create_saved_query`, `logsearch_replace_saved_query`, `logsearch_update_saved_query`,
+  `logsearch_delete_saved_query`, `logsearch_run_saved_query`, `logsearch_run_saved_query_on_logs`
+- **Logs & log sets:** `logsearch_list_logs`, `logsearch_get_log`, `logsearch_delete_log`,
+  `logsearch_get_log_event_sources`, `logsearch_get_log_top_keys`, `logsearch_list_logsets`,
+  `logsearch_get_logset`, `logsearch_replace_logset`, `logsearch_delete_logset`
+- **Download & usage:** `logsearch_download_log_data`, `logsearch_get_usage_total`,
+  `logsearch_get_usage_per_log`, `logsearch_get_log_usage`
+- **CSV export jobs:** `logsearch_list_export_jobs`, `logsearch_get_export_job`, `logsearch_delete_export_job`
+- **LEQL variables:** `logsearch_list_variables`, `logsearch_get_variable`, `logsearch_create_variable`,
+  `logsearch_update_variable`, `logsearch_delete_variable`
+- **Pre-computed queries:** `logsearch_list_metrics`, `logsearch_get_metric`, `logsearch_query_metric`,
+  `logsearch_create_metric`, `logsearch_replace_metric`, `logsearch_delete_metric`
+- **Basic detection rules:** `logsearch_list_detection_rules`, `logsearch_get_detection_rule`,
+  `logsearch_create_detection_rule`, `logsearch_replace_detection_rule`, `logsearch_update_detection_rule`,
+  `logsearch_delete_detection_rule`, plus notifications (`logsearch_*_notification`,
+  `logsearch_list_notification_targets`, `logsearch_update_notification_targets`),
+  targets (`logsearch_*_target`), and labels (`logsearch_*_label`)
+- **Audit logs:** `logsearch_list_audit_logs`, `logsearch_get_audit_log`, `logsearch_audit_query_log`,
+  `logsearch_audit_query_logs`, `logsearch_audit_poll_query`, `logsearch_audit_list_export_jobs`,
+  `logsearch_audit_get_export_job`, `logsearch_audit_list_query_endpoints`
 
 ## Testing & coverage
 

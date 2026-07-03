@@ -113,6 +113,38 @@ class Rapid7ClientTest {
     }
 
     @Test
+    fun `log search base routes requests under the log_search prefix`() = runBlocking {
+        val engine = jsonEngine(HttpStatusCode.OK, "{}")
+        val client = Rapid7Client(config, engine)
+        client.request(HttpMethod.Get, "/query/logs/abc", base = Rapid7Client.ApiBase.LOG_SEARCH)
+        val req = engine.requestHistory.last()
+        assertEquals("/log_search/query/logs/abc", req.url.encodedPath)
+        assertEquals("secret-key", req.headers["X-Api-Key"])
+        client.close()
+    }
+
+    @Test
+    fun `requestAbsolute follows rapid7 URLs and attaches auth`() = runBlocking {
+        val engine = jsonEngine(HttpStatusCode.OK, """{"events":[]}""")
+        val client = Rapid7Client(config, engine)
+        val resp = client.requestAbsolute("https://us.api.insight.rapid7.com/log_search/query/cont-1")
+        assertTrue(resp.ok)
+        assertEquals("secret-key", engine.requestHistory.last().headers["X-Api-Key"])
+        client.close()
+    }
+
+    @Test
+    fun `requestAbsolute refuses non-rapid7 URLs`() = runBlocking {
+        val engine = jsonEngine(HttpStatusCode.OK, "{}")
+        val client = Rapid7Client(config, engine)
+        kotlin.test.assertFailsWith<IllegalArgumentException> {
+            client.requestAbsolute("https://evil.example.com/steal")
+        }
+        assertEquals(0, engine.requestHistory.size, "no request must be sent to a disallowed host")
+        client.close()
+    }
+
+    @Test
     fun `uploadFile posts multipart and sanitizes the filename`() = runBlocking {
         val engine = jsonEngine(HttpStatusCode.OK, """{"rrn":"att1"}""")
         val client = Rapid7Client(config, engine)

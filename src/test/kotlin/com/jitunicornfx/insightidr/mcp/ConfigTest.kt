@@ -50,4 +50,21 @@ class ConfigTest {
         val config = Config.fromEnv(mapOf(Config.ENV_API_KEY to "super-secret-value"))
         assertTrue("super-secret-value" !in config.toString())
     }
+
+    @Test
+    fun `log search base url defaults to the unified log_search route`() {
+        val config = Config.fromEnv(mapOf(Config.ENV_API_KEY to "key", Config.ENV_REGION to "eu"))
+        assertEquals("https://eu.api.insight.rapid7.com/log_search", config.logSearchBaseUrl)
+    }
+
+    @Test
+    fun `log search base url can be overridden to the direct host`() {
+        val config = Config.fromEnv(
+            mapOf(
+                Config.ENV_API_KEY to "key",
+                Config.ENV_LOG_SEARCH_BASE_URL to "https://us.rest.logs.insight.rapid7.com/",
+            ),
+        )
+        assertEquals("https://us.rest.logs.insight.rapid7.com", config.logSearchBaseUrl)
+    }
 }

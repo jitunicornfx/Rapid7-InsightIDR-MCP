@@ -34,5 +34,13 @@ fun buildInsightIdrServer(client: Rapid7Client): Server {
     server.registerCollectorTools(client)
     server.registerHealthMetricTools(client)
 
+    // Log Search API (queries, saved queries, logs/log sets, usage, exports,
+    // LEQL variables, pre-computed queries, detection rules, audit logs).
+    server.registerLogSearchQueryTools(client)
+    server.registerLogSearchManagementTools(client)
+    server.registerLogSearchVariableTools(client)
+    server.registerLogSearchDetectionRuleTools(client)
+    server.registerLogSearchAuditTools(client)
+
     return server
 }

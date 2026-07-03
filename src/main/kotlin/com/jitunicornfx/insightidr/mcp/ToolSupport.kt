@@ -100,6 +100,10 @@ fun JsonObject.requireString(key: String): String =
     stringOrNull(key)?.takeIf { it.isNotBlank() }
         ?: throw IllegalArgumentException("Missing required parameter '$key'")
 
+/** Like [requireString], but a present-yet-empty value is allowed (e.g. an empty LEQL statement). */
+fun JsonObject.requireStringAllowEmpty(key: String): String =
+    stringOrNull(key) ?: throw IllegalArgumentException("Missing required parameter '$key'")
+
 fun JsonObject.intOrNull(key: String): Int? =
     primitive(key)?.let { it.intOrNull ?: it.contentOrNull?.toIntOrNull() }
 

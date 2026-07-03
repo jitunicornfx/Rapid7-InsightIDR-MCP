@@ -36,15 +36,23 @@ data class Config(
     val region: Region,
     val baseUrl: String,
     val requestTimeoutMillis: Long,
+    /**
+     * Base URL for the Log Search REST API. Defaults to the unified platform route
+     * (`https://<region>.api.insight.rapid7.com/log_search`); can be overridden to the direct
+     * host (`https://<region>.rest.logs.insight.rapid7.com`) via [ENV_LOG_SEARCH_BASE_URL].
+     */
+    val logSearchBaseUrl: String = "$baseUrl/log_search",
 ) {
     /** The API key is a secret; never include it in [toString] output or logs. */
     override fun toString(): String =
-        "Config(region=${region.code}, baseUrl=$baseUrl, requestTimeoutMillis=$requestTimeoutMillis, apiKey=***)"
+        "Config(region=${region.code}, baseUrl=$baseUrl, logSearchBaseUrl=$logSearchBaseUrl, " +
+            "requestTimeoutMillis=$requestTimeoutMillis, apiKey=***)"
 
     companion object {
         const val ENV_API_KEY = "INSIGHTIDR_API_KEY"
         const val ENV_REGION = "INSIGHTIDR_REGION"
         const val ENV_BASE_URL = "INSIGHTIDR_BASE_URL"
+        const val ENV_LOG_SEARCH_BASE_URL = "INSIGHTIDR_LOG_SEARCH_BASE_URL"
         const val ENV_TIMEOUT_MS = "INSIGHTIDR_TIMEOUT_MS"
 
         const val DEFAULT_REGION = "us"
@@ -63,9 +71,19 @@ data class Config(
                 ?: "https://${region.code}.api.insight.rapid7.com")
                 .trimEnd('/')
 
+            val logSearchBaseUrl = (env[ENV_LOG_SEARCH_BASE_URL]?.takeIf { it.isNotBlank() }
+                ?: "$baseUrl/log_search")
+                .trimEnd('/')
+
             val timeout = env[ENV_TIMEOUT_MS]?.toLongOrNull()?.takeIf { it > 0 } ?: DEFAULT_TIMEOUT_MS
 
-            return Config(apiKey = apiKey, region = region, baseUrl = baseUrl, requestTimeoutMillis = timeout)
+            return Config(
+                apiKey = apiKey,
+                region = region,
+                baseUrl = baseUrl,
+                requestTimeoutMillis = timeout,
+                logSearchBaseUrl = logSearchBaseUrl,
+            )
         }
     }
 }

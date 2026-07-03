@@ -42,18 +42,24 @@ class McpTestHarness(
 /**
  * Build a connected harness. [register] registers the tools under test on the server; [status] and
  * [responseBody] control the canned HTTP response the MockEngine returns for every request.
+ *
+ * For multi-step flows (e.g. 202-continuation polling), pass [responses]: each entry answers one
+ * request in order, and the last entry repeats for any further requests.
  */
 suspend fun mcpHarness(
     status: HttpStatusCode = HttpStatusCode.OK,
     responseBody: String = "{}",
+    responses: List<Pair<HttpStatusCode, String>>? = null,
     register: Server.(Rapid7Client) -> Unit,
 ): McpTestHarness {
     val bodies = mutableListOf<String?>()
+    var requestIndex = 0
     val engine = MockEngine { request ->
         bodies += (request.body as? TextContent)?.text
+        val (st, body) = responses?.let { it[minOf(requestIndex++, it.size - 1)] } ?: (status to responseBody)
         respond(
-            content = responseBody,
-            status = status,
+            content = body,
+            status = st,
             headers = headersOf(HttpHeaders.ContentType, "application/json"),
         )
     }

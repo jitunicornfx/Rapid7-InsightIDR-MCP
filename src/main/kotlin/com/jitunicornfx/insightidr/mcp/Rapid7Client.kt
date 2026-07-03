@@ -48,6 +48,14 @@ class Rapid7Client(
         val contentType: String?,
     )
 
+    /** Which API family a request targets; each resolves to its own base URL. */
+    enum class ApiBase { IDR, LOG_SEARCH }
+
+    private fun baseUrlFor(base: ApiBase): String = when (base) {
+        ApiBase.IDR -> config.baseUrl
+        ApiBase.LOG_SEARCH -> config.logSearchBaseUrl
+    }
+
     /**
      * Perform a request against the InsightIDR API.
      *
@@ -65,8 +73,9 @@ class Rapid7Client(
         jsonBody: JsonElement? = null,
         rawBody: String? = null,
         rawContentType: ContentType = ContentType.Application.Json,
+        base: ApiBase = ApiBase.IDR,
     ): ApiResponse {
-        val response = http.request(config.baseUrl + path) {
+        val response = http.request(baseUrlFor(base) + path) {
             this.method = method
             header("X-Api-Key", config.apiKey)
             header(HttpHeaders.Accept, ContentType.Application.Json.toString())
@@ -86,6 +95,29 @@ class Rapid7Client(
                     setBody(rawBody)
                 }
             }
+        }
+        return response.toApiResponse()
+    }
+
+    /**
+     * GET an absolute URL returned by the API itself — used to follow the `links[].href`
+     * continuation URLs that Log Search queries return with HTTP 202.
+     *
+     * As a safety measure the URL must resolve back to one of the configured API bases or a
+     * `*.rapid7.com` host, so a crafted response body can't redirect requests elsewhere.
+     */
+    suspend fun requestAbsolute(url: String): ApiResponse {
+        val allowed = url.startsWith(config.baseUrl) ||
+            url.startsWith(config.logSearchBaseUrl) ||
+            runCatching { Url(url) }.getOrNull()?.let {
+                it.protocol == URLProtocol.HTTPS && it.host.endsWith(".rapid7.com")
+            } == true
+        require(allowed) { "Refusing to follow non-Rapid7 continuation URL: $url" }
+
+        val response = http.request(url) {
+            method = HttpMethod.Get
+            header("X-Api-Key", config.apiKey)
+            header(HttpHeaders.Accept, ContentType.Application.Json.toString())
         }
         return response.toApiResponse()
     }
