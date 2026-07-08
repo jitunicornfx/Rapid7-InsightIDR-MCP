@@ -113,12 +113,25 @@ class Rapid7ClientTest {
     }
 
     @Test
-    fun `log search base routes requests under the log_search prefix`() = runBlocking {
+    fun `v1 base routes requests to the rest logs host`() = runBlocking {
+        val engine = jsonEngine(HttpStatusCode.OK, "{}")
+        val client = Rapid7Client(config, engine)
+        client.requestV1(HttpMethod.Get, "/idr/v1/investigations")
+        val req = engine.requestHistory.last()
+        assertEquals("us.rest.logs.insight.rapid7.com", req.url.host)
+        assertEquals("/idr/v1/investigations", req.url.encodedPath)
+        assertEquals("secret-key", req.headers["X-Api-Key"])
+        client.close()
+    }
+
+    @Test
+    fun `log search base routes requests to the rest logs host per the spec`() = runBlocking {
         val engine = jsonEngine(HttpStatusCode.OK, "{}")
         val client = Rapid7Client(config, engine)
         client.request(HttpMethod.Get, "/query/logs/abc", base = Rapid7Client.ApiBase.LOG_SEARCH)
         val req = engine.requestHistory.last()
-        assertEquals("/log_search/query/logs/abc", req.url.encodedPath)
+        assertEquals("us.rest.logs.insight.rapid7.com", req.url.host)
+        assertEquals("/query/logs/abc", req.url.encodedPath)
         assertEquals("secret-key", req.headers["X-Api-Key"])
         client.close()
     }
@@ -127,7 +140,7 @@ class Rapid7ClientTest {
     fun `requestAbsolute follows rapid7 URLs and attaches auth`() = runBlocking {
         val engine = jsonEngine(HttpStatusCode.OK, """{"events":[]}""")
         val client = Rapid7Client(config, engine)
-        val resp = client.requestAbsolute("https://us.api.insight.rapid7.com/log_search/query/cont-1")
+        val resp = client.requestAbsolute("https://us.rest.logs.insight.rapid7.com/query/cont-1")
         assertTrue(resp.ok)
         assertEquals("secret-key", engine.requestHistory.last().headers["X-Api-Key"])
         client.close()

@@ -21,6 +21,8 @@ class InvestigationToolsV1Test {
             mapOf("index" to 1, "size" to 20, "statuses" to "OPEN", "start_time" to "2026-01-01T00:00:00Z"),
         )
         assertEquals(HttpMethod.Get, h.lastRequest.method)
+        // v1 calls target the rest.logs host per the v1 spec's servers block.
+        assertEquals("us.rest.logs.insight.rapid7.com", h.lastRequest.url.host)
         assertEquals("/idr/v1/investigations", h.lastRequest.url.encodedPath)
         assertEquals("20", h.lastRequest.url.parameters["size"])
         assertEquals("OPEN", h.lastRequest.url.parameters["statuses"])

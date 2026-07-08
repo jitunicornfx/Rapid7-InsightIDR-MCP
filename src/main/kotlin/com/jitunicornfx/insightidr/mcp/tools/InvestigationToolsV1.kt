@@ -18,13 +18,13 @@ fun Server.registerInvestigationV1Tools(client: Rapid7Client) {
         readOnly = true,
         inputSchema = toolSchema {
             integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size.")
+            integerParam("size", "Page size (max 1000). Defaults to 20.")
             stringParam("statuses", "Comma-separated statuses (OPEN, INVESTIGATING, CLOSED).")
             stringParam("start_time", "ISO-8601 timestamp; only investigations created at/after this time.")
             stringParam("end_time", "ISO-8601 timestamp; only investigations created at/before this time.")
         },
     ) { args ->
-        client.request(
+        client.requestV1(
             HttpMethod.Get,
             "/idr/v1/investigations",
             query = query(
@@ -47,7 +47,7 @@ fun Server.registerInvestigationV1Tools(client: Rapid7Client) {
     ) { args ->
         val id = args.requireString("id")
         val status = args.requireString("status")
-        client.request(HttpMethod.Put, "/idr/v1/investigations/${seg(id)}/status/${seg(status)}").toToolResult()
+        client.requestV1(HttpMethod.Put, "/idr/v1/investigations/${seg(id)}/status/${seg(status)}").toToolResult()
     }
 
     apiTool(
@@ -60,7 +60,7 @@ fun Server.registerInvestigationV1Tools(client: Rapid7Client) {
     ) { args ->
         val id = args.requireString("id")
         val body = buildJsonObject { put("user_email_address", args.requireString("user_email_address")) }
-        client.request(HttpMethod.Put, "/idr/v1/investigations/${seg(id)}/assignee", jsonBody = body).toToolResult()
+        client.requestV1(HttpMethod.Put, "/idr/v1/investigations/${seg(id)}/assignee", jsonBody = body).toToolResult()
     }
 
     apiTool(
@@ -87,6 +87,6 @@ fun Server.registerInvestigationV1Tools(client: Rapid7Client) {
             putOpt("detection_rule_rrn", args.stringOrNull("detection_rule_rrn"))
             putOpt("max_investigations_to_close", args.intOrNull("max_investigations_to_close"))
         }
-        client.request(HttpMethod.Post, "/idr/v1/investigations/bulk_close", jsonBody = body).toToolResult()
+        client.requestV1(HttpMethod.Post, "/idr/v1/investigations/bulk_close", jsonBody = body).toToolResult()
     }
 }

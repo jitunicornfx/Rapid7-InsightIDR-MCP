@@ -25,6 +25,9 @@ internal const val LS_POLL_INTERVAL_MS = 500L
 internal const val LS_DEFAULT_POLL_TIMEOUT_MS = 25_000L
 internal const val LS_MAX_POLL_TIMEOUT_MS = 120_000L
 
+/** The maximum (and our default) number of log entries per page, per the spec's `per_page` parameter. */
+internal const val LS_MAX_PER_PAGE = 500
+
 /**
  * Extract the in-progress continuation URL (the `rel="Self"` link) from a Log Search response
  * body. Per the spec, a query is still running exactly while its body carries a Self link —
@@ -32,10 +35,18 @@ internal const val LS_MAX_POLL_TIMEOUT_MS = 120_000L
  * the status code) is the completion signal. A finished, paginated result may carry only a
  * `rel="Next"` link, which must NOT be followed here.
  */
-internal fun continuationLink(body: String): String? = try {
+internal fun continuationLink(body: String): String? = linkWithRel(body, "Self")
+
+/**
+ * Extract the next-page URL (the `rel="Next"` link) from a completed, paginated Log Search
+ * result. Present when more pages of events are available.
+ */
+internal fun nextPageLink(body: String): String? = linkWithRel(body, "Next")
+
+private fun linkWithRel(body: String, rel: String): String? = try {
     JsonCodec.compact.parseToJsonElement(body).jsonObject["links"]
         ?.jsonArray
-        ?.firstOrNull { it.jsonObject["rel"]?.jsonPrimitive?.contentOrNull.equals("Self", ignoreCase = true) }
+        ?.firstOrNull { it.jsonObject["rel"]?.jsonPrimitive?.contentOrNull.equals(rel, ignoreCase = true) }
         ?.jsonObject?.get("href")?.jsonPrimitive?.contentOrNull
 } catch (_: Exception) {
     null
@@ -99,7 +110,7 @@ internal fun requireTimeWindow(args: JsonObject) {
 
 /** Pagination / result-shaping parameters shared by the query endpoints. */
 internal fun JsonObjectBuilder.queryResultParams() {
-    integerParam("per_page", "Number of log entries per page, up to 500. Defaults to 50.")
+    integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to the maximum ($LS_MAX_PER_PAGE).")
     booleanParam("most_recent_first", "When true, return the most recent events first. Defaults to false.")
     booleanParam("kvp_info", "When true, include parsed key-value-pair info for each returned log entry.")
     integerParam("sequence_number", "Include entries in the 'from' millisecond with sequence numbers at/after this value.")
@@ -124,9 +135,9 @@ internal fun timeWindowQuery(args: JsonObject): Map<String, List<String>> = quer
     "time_range" to args.stringOrNull("time_range"),
 )
 
-/** Standard result-shaping query-parameter map from tool args. */
+/** Standard result-shaping query-parameter map from tool args; `per_page` defaults to the maximum. */
 internal fun queryResultQuery(args: JsonObject): Map<String, List<String>> = query(
-    "per_page" to args.intOrNull("per_page"),
+    "per_page" to (args.intOrNull("per_page") ?: LS_MAX_PER_PAGE),
     "most_recent_first" to args.booleanOrNull("most_recent_first"),
     "kvp_info" to args.booleanOrNull("kvp_info"),
     "sequence_number" to args.longOrNull("sequence_number"),

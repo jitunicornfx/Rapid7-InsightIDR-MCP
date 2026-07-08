@@ -13,7 +13,7 @@ private fun searchSchema() = toolSchema {
     )
     objectArrayParam("sort", "Array of sort objects: { \"field\": string, \"order\": \"ASC\"|\"DESC\" }.")
     integerParam("index", "Zero-based page index.")
-    integerParam("size", "Page size.")
+    integerParam("size", "Page size (max 1000). Defaults to 20.")
 }
 
 private fun Server.searchTool(client: Rapid7Client, name: String, description: String, path: String) {
@@ -22,7 +22,7 @@ private fun Server.searchTool(client: Rapid7Client, name: String, description: S
             putOpt("search", args.arrayOrNull("search"))
             putOpt("sort", args.arrayOrNull("sort"))
         }
-        client.request(HttpMethod.Post, path, query = pagingQuery(args), jsonBody = body).toToolResult()
+        client.requestV1(HttpMethod.Post, path, query = pagingQuery(args), jsonBody = body).toToolResult()
     }
 }
 
@@ -35,7 +35,7 @@ private fun Server.getByRrnTool(client: Rapid7Client, name: String, description:
         inputSchema = toolSchema("rrn") { stringParam("rrn", "The Rapid7 Resource Name (RRN) of the entity.") },
     ) { args ->
         val rrn = args.requireString("rrn")
-        client.request(HttpMethod.Get, "$pathPrefix/${seg(rrn)}").toToolResult()
+        client.requestV1(HttpMethod.Get, "$pathPrefix/${seg(rrn)}").toToolResult()
     }
 }
 

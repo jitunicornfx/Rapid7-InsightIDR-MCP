@@ -52,19 +52,36 @@ class ConfigTest {
     }
 
     @Test
-    fun `log search base url defaults to the unified log_search route`() {
+    fun `log search base url defaults to the rest logs host per the spec servers`() {
         val config = Config.fromEnv(mapOf(Config.ENV_API_KEY to "key", Config.ENV_REGION to "eu"))
-        assertEquals("https://eu.api.insight.rapid7.com/log_search", config.logSearchBaseUrl)
+        assertEquals("https://eu.rest.logs.insight.rapid7.com", config.logSearchBaseUrl)
     }
 
     @Test
-    fun `log search base url can be overridden to the direct host`() {
+    fun `v1 base url defaults to the rest logs host per the v1 spec servers`() {
+        val config = Config.fromEnv(mapOf(Config.ENV_API_KEY to "key", Config.ENV_REGION to "eu"))
+        assertEquals("https://eu.rest.logs.insight.rapid7.com", config.v1BaseUrl)
+    }
+
+    @Test
+    fun `v1 base url can be overridden`() {
         val config = Config.fromEnv(
             mapOf(
                 Config.ENV_API_KEY to "key",
-                Config.ENV_LOG_SEARCH_BASE_URL to "https://us.rest.logs.insight.rapid7.com/",
+                Config.ENV_V1_BASE_URL to "https://us.api.insight.rapid7.com/",
             ),
         )
-        assertEquals("https://us.rest.logs.insight.rapid7.com", config.logSearchBaseUrl)
+        assertEquals("https://us.api.insight.rapid7.com", config.v1BaseUrl)
+    }
+
+    @Test
+    fun `log search base url can be overridden to the unified route`() {
+        val config = Config.fromEnv(
+            mapOf(
+                Config.ENV_API_KEY to "key",
+                Config.ENV_LOG_SEARCH_BASE_URL to "https://us.api.insight.rapid7.com/log_search/",
+            ),
+        )
+        assertEquals("https://us.api.insight.rapid7.com/log_search", config.logSearchBaseUrl)
     }
 }

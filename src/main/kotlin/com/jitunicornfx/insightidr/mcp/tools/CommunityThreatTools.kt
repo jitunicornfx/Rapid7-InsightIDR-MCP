@@ -25,7 +25,7 @@ fun Server.registerCommunityThreatTools(client: Rapid7Client) {
         },
     ) { args ->
         val rawBody = args.requireString("request_body")
-        client.request(
+        client.requestV1(
             HttpMethod.Post,
             "/idr/v1/customthreats",
             rawBody = rawBody,
@@ -45,7 +45,7 @@ fun Server.registerCommunityThreatTools(client: Rapid7Client) {
         val key = args.requireString("key")
         val format = args.requireString("format")
         val indicators = args.requireString("indicators")
-        client.request(
+        client.requestV1(
             HttpMethod.Post,
             "/idr/v1/customthreats/key/${seg(key)}/indicators/add",
             query = query("format" to format),
@@ -66,7 +66,7 @@ fun Server.registerCommunityThreatTools(client: Rapid7Client) {
         val key = args.requireString("key")
         val format = args.requireString("format")
         val indicators = args.requireString("indicators")
-        client.request(
+        client.requestV1(
             HttpMethod.Post,
             "/idr/v1/customthreats/key/${seg(key)}/indicators/replace",
             query = query("format" to format),
@@ -86,6 +86,6 @@ fun Server.registerCommunityThreatTools(client: Rapid7Client) {
     ) { args ->
         val key = args.requireString("key")
         val body = buildJsonObject { putOpt("reason", args.stringOrNull("reason")) }
-        client.request(HttpMethod.Post, "/idr/v1/customthreats/key/${seg(key)}/delete", jsonBody = body).toToolResult()
+        client.requestV1(HttpMethod.Post, "/idr/v1/customthreats/key/${seg(key)}/delete", jsonBody = body).toToolResult()
     }
 }

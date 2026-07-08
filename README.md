@@ -30,8 +30,9 @@ Configuration is read from environment variables:
 |--------------------------|----------|-------------------------------------------|----------------------------------------------------------------|
 | `INSIGHTIDR_API_KEY`     | ✅       | —                                         | Insight platform API key.                                      |
 | `INSIGHTIDR_REGION`      |          | `us`                                      | Region code: `us`, `us2`, `us3`, `eu`, `ca`, `au`, `ap`.       |
-| `INSIGHTIDR_BASE_URL`    |          | `https://<region>.api.insight.rapid7.com` | Full base URL override (advanced / testing).                   |
-| `INSIGHTIDR_LOG_SEARCH_BASE_URL` |  | `<base URL>/log_search`                   | Log Search API base override (e.g. `https://<region>.rest.logs.insight.rapid7.com` to hit the direct host). |
+| `INSIGHTIDR_BASE_URL`    |          | `https://<region>.api.insight.rapid7.com` | v2 API base URL override (per the v2 spec servers).            |
+| `INSIGHTIDR_V1_BASE_URL` |          | `https://<region>.rest.logs.insight.rapid7.com` | v1 API base URL override (default follows the v1 spec servers; set to `https://<region>.api.insight.rapid7.com` if your tenant routes v1 there). |
+| `INSIGHTIDR_LOG_SEARCH_BASE_URL` |  | `https://<region>.rest.logs.insight.rapid7.com` | Log Search API base override (default follows the Log Search spec servers; set to `https://<region>.api.insight.rapid7.com/log_search` for the unified platform route). |
 | `INSIGHTIDR_TIMEOUT_MS`  |          | `60000`                                   | Per-request timeout in milliseconds.                           |
 
 See [`.env.example`](.env.example).
@@ -162,13 +163,16 @@ Then ask the assistant to `validate_connection` first to confirm the key and reg
 ### Log Search API (`logsearch_*`)
 
 Complete coverage of the [Log Search API](https://docs.rapid7.com/insightidr/log-search-api/)
-except S3 archiving. Defaults to the unified route (`<base>/log_search`); see
-`INSIGHTIDR_LOG_SEARCH_BASE_URL` to target `rest.logs.insight.rapid7.com` directly.
+except S3 archiving. Defaults to the spec's servers (`https://<region>.rest.logs.insight.rapid7.com`);
+see `INSIGHTIDR_LOG_SEARCH_BASE_URL` to target the unified route
+(`https://<region>.api.insight.rapid7.com/log_search`) instead.
 
-- **Query log data** (async queries auto-poll to completion; disable with `wait_for_completion=false`):
+- **Query log data** (async queries auto-poll to completion; disable with `wait_for_completion=false`;
+  `per_page` defaults to the maximum of 500, and paginated results expose a `rel: "Next"` link —
+  pass its href to `logsearch_get_next_page` for the next page):
   `logsearch_query_log`, `logsearch_query_logs`, `logsearch_query_logset`,
-  `logsearch_query_logsets_by_name`, `logsearch_poll_query`, `logsearch_get_context_events`,
-  `logsearch_get_search_stats`, `logsearch_list_query_endpoints`
+  `logsearch_query_logsets_by_name`, `logsearch_poll_query`, `logsearch_get_next_page`,
+  `logsearch_get_context_events`, `logsearch_get_search_stats`, `logsearch_list_query_endpoints`
 - **Saved queries:** `logsearch_list_saved_queries`, `logsearch_get_saved_query`,
   `logsearch_create_saved_query`, `logsearch_replace_saved_query`, `logsearch_update_saved_query`,
   `logsearch_delete_saved_query`, `logsearch_run_saved_query`, `logsearch_run_saved_query_on_logs`

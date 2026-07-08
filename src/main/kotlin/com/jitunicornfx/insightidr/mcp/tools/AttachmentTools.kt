@@ -15,10 +15,10 @@ fun Server.registerAttachmentTools(client: Rapid7Client) {
         inputSchema = toolSchema("target") {
             stringParam("target", "RRN of the resource whose attachments to list.")
             integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size.")
+            integerParam("size", "Page size (max 100). Defaults to 20.")
         },
     ) { args ->
-        client.request(
+        client.requestV1(
             HttpMethod.Get,
             "/idr/v1/attachments",
             query = query(
@@ -36,7 +36,7 @@ fun Server.registerAttachmentTools(client: Rapid7Client) {
         inputSchema = toolSchema("rrn") { stringParam("rrn", "The RRN of the attachment.") },
     ) { args ->
         val rrn = args.requireString("rrn")
-        client.request(HttpMethod.Get, "/idr/v1/attachments/${seg(rrn)}/metadata").toToolResult()
+        client.requestV1(HttpMethod.Get, "/idr/v1/attachments/${seg(rrn)}/metadata").toToolResult()
     }
 
     apiTool(
@@ -47,7 +47,7 @@ fun Server.registerAttachmentTools(client: Rapid7Client) {
         inputSchema = toolSchema("rrn") { stringParam("rrn", "The RRN of the attachment to download.") },
     ) { args ->
         val rrn = args.requireString("rrn")
-        client.request(HttpMethod.Get, "/idr/v1/attachments/${seg(rrn)}").toToolResult()
+        client.requestV1(HttpMethod.Get, "/idr/v1/attachments/${seg(rrn)}").toToolResult()
     }
 
     apiTool(
@@ -57,7 +57,7 @@ fun Server.registerAttachmentTools(client: Rapid7Client) {
         inputSchema = toolSchema("rrn") { stringParam("rrn", "The RRN of the attachment to delete.") },
     ) { args ->
         val rrn = args.requireString("rrn")
-        client.request(HttpMethod.Delete, "/idr/v1/attachments/${seg(rrn)}").toToolResult()
+        client.requestV1(HttpMethod.Delete, "/idr/v1/attachments/${seg(rrn)}").toToolResult()
     }
 
     apiTool(
@@ -73,6 +73,11 @@ fun Server.registerAttachmentTools(client: Rapid7Client) {
         val file = File(path)
         require(file.isFile) { "File not found or not a regular file: $path" }
         val fileName = args.stringOrNull("filename")?.takeIf { it.isNotBlank() } ?: file.name
-        client.uploadFile("/idr/v1/attachments", fileName = fileName, bytes = file.readBytes()).toToolResult()
+        client.uploadFile(
+            "/idr/v1/attachments",
+            fileName = fileName,
+            bytes = file.readBytes(),
+            base = Rapid7Client.ApiBase.IDR_V1,
+        ).toToolResult()
     }
 }

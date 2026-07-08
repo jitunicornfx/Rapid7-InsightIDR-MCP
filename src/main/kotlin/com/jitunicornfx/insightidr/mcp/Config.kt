@@ -3,9 +3,10 @@ package com.jitunicornfx.insightidr.mcp
 /**
  * Insight platform regional data centers.
  *
- * The InsightIDR REST API (both v1 and v2) is served from a region-specific host of the form
- * `https://<region>.api.insight.rapid7.com`. The region code is the prefix of your Insight
- * platform URL (e.g. `us` in `us.idr.insight.rapid7.com`).
+ * Per the OpenAPI specifications, the v2 API is served from
+ * `https://{region}.api.insight.rapid7.com` and the v1 API from
+ * `https://{region}.rest.logs.insight.rapid7.com`. The region code is the prefix of your
+ * Insight platform URL (e.g. `us` in `us.idr.insight.rapid7.com`).
  */
 enum class Region(val code: String) {
     US("us"),
@@ -34,24 +35,33 @@ enum class Region(val code: String) {
 data class Config(
     val apiKey: String,
     val region: Region,
+    /** Base URL for the v2 API, per the v2 spec servers: `https://{region}.api.insight.rapid7.com`. */
     val baseUrl: String,
     val requestTimeoutMillis: Long,
     /**
-     * Base URL for the Log Search REST API. Defaults to the unified platform route
-     * (`https://<region>.api.insight.rapid7.com/log_search`); can be overridden to the direct
-     * host (`https://<region>.rest.logs.insight.rapid7.com`) via [ENV_LOG_SEARCH_BASE_URL].
+     * Base URL for the Log Search REST API. The Log Search spec's servers are the
+     * `https://<region>.rest.logs.insight.rapid7.com` hosts; override via
+     * [ENV_LOG_SEARCH_BASE_URL] (e.g. to the unified platform route
+     * `https://<region>.api.insight.rapid7.com/log_search`).
      */
-    val logSearchBaseUrl: String = "$baseUrl/log_search",
+    val logSearchBaseUrl: String = "https://${region.code}.rest.logs.insight.rapid7.com",
+    /**
+     * Base URL for the v1 API. The v1 spec's servers are the
+     * `https://<region>.rest.logs.insight.rapid7.com` hosts; override via [ENV_V1_BASE_URL]
+     * (e.g. back to `https://<region>.api.insight.rapid7.com` if your tenant routes v1 there).
+     */
+    val v1BaseUrl: String = "https://${region.code}.rest.logs.insight.rapid7.com",
 ) {
     /** The API key is a secret; never include it in [toString] output or logs. */
     override fun toString(): String =
-        "Config(region=${region.code}, baseUrl=$baseUrl, logSearchBaseUrl=$logSearchBaseUrl, " +
+        "Config(region=${region.code}, baseUrl=$baseUrl, v1BaseUrl=$v1BaseUrl, logSearchBaseUrl=$logSearchBaseUrl, " +
             "requestTimeoutMillis=$requestTimeoutMillis, apiKey=***)"
 
     companion object {
         const val ENV_API_KEY = "INSIGHTIDR_API_KEY"
         const val ENV_REGION = "INSIGHTIDR_REGION"
         const val ENV_BASE_URL = "INSIGHTIDR_BASE_URL"
+        const val ENV_V1_BASE_URL = "INSIGHTIDR_V1_BASE_URL"
         const val ENV_LOG_SEARCH_BASE_URL = "INSIGHTIDR_LOG_SEARCH_BASE_URL"
         const val ENV_TIMEOUT_MS = "INSIGHTIDR_TIMEOUT_MS"
 
@@ -72,7 +82,11 @@ data class Config(
                 .trimEnd('/')
 
             val logSearchBaseUrl = (env[ENV_LOG_SEARCH_BASE_URL]?.takeIf { it.isNotBlank() }
-                ?: "$baseUrl/log_search")
+                ?: "https://${region.code}.rest.logs.insight.rapid7.com")
+                .trimEnd('/')
+
+            val v1BaseUrl = (env[ENV_V1_BASE_URL]?.takeIf { it.isNotBlank() }
+                ?: "https://${region.code}.rest.logs.insight.rapid7.com")
                 .trimEnd('/')
 
             val timeout = env[ENV_TIMEOUT_MS]?.toLongOrNull()?.takeIf { it > 0 } ?: DEFAULT_TIMEOUT_MS
@@ -83,6 +97,7 @@ data class Config(
                 baseUrl = baseUrl,
                 requestTimeoutMillis = timeout,
                 logSearchBaseUrl = logSearchBaseUrl,
+                v1BaseUrl = v1BaseUrl,
             )
         }
     }

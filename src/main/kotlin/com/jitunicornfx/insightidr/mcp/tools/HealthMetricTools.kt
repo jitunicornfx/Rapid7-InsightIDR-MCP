@@ -13,12 +13,12 @@ fun Server.registerHealthMetricTools(client: Rapid7Client) {
         readOnly = true,
         inputSchema = toolSchema {
             integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size.")
+            integerParam("size", "Page size (max 100). Defaults to 20.")
             stringParam("resourceTypes", "Comma-separated resource types to filter metrics by.")
             stringParam("orgId", "Optional organization id to scope the metrics to.")
         },
     ) { args ->
-        client.request(
+        client.requestV1(
             HttpMethod.Get,
             "/idr/v1/health-metrics",
             query = query(

@@ -21,7 +21,7 @@ class LogSearchQueryToolsTest {
     ) = mcpHarness(responseBody = body, responses = responses) { registerLogSearchQueryTools(it) }
 
     @Test
-    fun `query_log hits the log_search base with query params and auth`() = runBlocking {
+    fun `query_log hits the Log Search base with query params and auth`() = runBlocking {
         val h = harness(body = """{"events":[]}""")
         val result = h.call(
             "logsearch_query_log",
@@ -35,7 +35,7 @@ class LogSearchQueryToolsTest {
         )
         val req = h.lastRequest
         assertEquals(HttpMethod.Get, req.method)
-        assertEquals("/log_search/query/logs/lk1", req.url.encodedPath)
+        assertEquals("/query/logs/lk1", req.url.encodedPath)
         assertEquals("where(status=404) calculate(count)", req.url.parameters["query"])
         assertEquals("last 1 hour", req.url.parameters["time_range"])
         assertEquals("100", req.url.parameters["per_page"])
@@ -46,7 +46,7 @@ class LogSearchQueryToolsTest {
 
     @Test
     fun `query_log auto-polls a 202 continuation to completion`() = runBlocking {
-        val poll = "https://us.api.insight.rapid7.com/log_search/query/cont-1"
+        val poll = "https://us.rest.logs.insight.rapid7.com/query/cont-1"
         val h = harness(
             responses = listOf(
                 HttpStatusCode.Accepted to """{"id":"cont-1","progress":10,"links":[{"rel":"Self","href":"$poll"}]}""",
@@ -60,7 +60,7 @@ class LogSearchQueryToolsTest {
         )
         assertFalse(result.isError == true)
         assertEquals(3, h.requests.size, "should have polled twice after the initial request")
-        assertEquals("/log_search/query/cont-1", h.lastRequest.url.encodedPath)
+        assertEquals("/query/cont-1", h.lastRequest.url.encodedPath)
         assertTrue("done" in (result.content.first() as TextContent).text)
     }
 
@@ -68,7 +68,7 @@ class LogSearchQueryToolsTest {
     fun `polling continues on a 200 that still carries a Self link`() = runBlocking {
         // Per the spec, the poll endpoint returns 200 for ongoing queries; completion is
         // signalled by the absence of a rel=Self link, not by the HTTP status.
-        val poll = "https://us.api.insight.rapid7.com/log_search/query/cont-3"
+        val poll = "https://us.rest.logs.insight.rapid7.com/query/cont-3"
         val h = harness(
             responses = listOf(
                 HttpStatusCode.Accepted to """{"id":"cont-3","links":[{"rel":"Self","href":"$poll"}]}""",
@@ -79,6 +79,44 @@ class LogSearchQueryToolsTest {
         val result = h.call("logsearch_query_log", mapOf("log_key" to "lk1", "time_range" to "today"))
         assertEquals(3, h.requests.size, "must poll through the 200-with-Self response and stop at Next-only")
         assertTrue("finished" in (result.content.first() as TextContent).text)
+    }
+
+    @Test
+    fun `per_page defaults to the maximum and explicit values are honored`() = runBlocking {
+        val h = harness()
+        h.call("logsearch_query_log", mapOf("log_key" to "lk1", "time_range" to "today"))
+        assertEquals("500", h.lastRequest.url.parameters["per_page"], "per_page must default to the max (500)")
+
+        h.call("logsearch_query_log", mapOf("log_key" to "lk1", "time_range" to "today", "per_page" to 25))
+        assertEquals("25", h.lastRequest.url.parameters["per_page"])
+
+        h.call("logsearch_run_saved_query", mapOf("saved_query_id" to "sq1"))
+        assertEquals("500", h.lastRequest.url.parameters["per_page"])
+    }
+
+    @Test
+    fun `get_next_page follows a Next href and polls to completion`() = runBlocking {
+        val next = "https://us.rest.logs.insight.rapid7.com/query/logs/lk1?per_page=500&sequence_number=42"
+        val poll = "https://us.rest.logs.insight.rapid7.com/query/cont-7"
+        val h = harness(
+            responses = listOf(
+                HttpStatusCode.Accepted to """{"id":"cont-7","links":[{"rel":"Self","href":"$poll"}]}""",
+                HttpStatusCode.OK to """{"events":[{"message":"page2"}]}""",
+            ),
+        )
+        val result = h.call("logsearch_get_next_page", mapOf("next_link" to next))
+        assertEquals(2, h.requests.size)
+        assertEquals("/query/logs/lk1", h.requests.first().url.encodedPath)
+        assertEquals("42", h.requests.first().url.parameters["sequence_number"])
+        assertTrue("page2" in (result.content.first() as TextContent).text)
+    }
+
+    @Test
+    fun `get_next_page refuses non-rapid7 URLs`() = runBlocking {
+        val h = harness()
+        val result = h.call("logsearch_get_next_page", mapOf("next_link" to "https://evil.example.com/steal"))
+        assertTrue(result.isError == true)
+        assertEquals(0, h.requests.size, "no request may be sent to a disallowed host")
     }
 
     @Test
@@ -94,7 +132,7 @@ class LogSearchQueryToolsTest {
     fun `query_log with wait_for_completion=false returns the 202 immediately`() = runBlocking {
         val h = harness(
             responses = listOf(
-                HttpStatusCode.Accepted to """{"id":"cont-2","links":[{"rel":"Self","href":"https://us.api.insight.rapid7.com/log_search/query/cont-2"}]}""",
+                HttpStatusCode.Accepted to """{"id":"cont-2","links":[{"rel":"Self","href":"https://us.rest.logs.insight.rapid7.com/query/cont-2"}]}""",
             ),
         )
         val result = h.call(
@@ -122,7 +160,7 @@ class LogSearchQueryToolsTest {
         )
         val req = h.lastRequest
         assertEquals(HttpMethod.Post, req.method)
-        assertEquals("/log_search/query/logs", req.url.encodedPath)
+        assertEquals("/query/logs", req.url.encodedPath)
         assertEquals("25", req.url.parameters["per_page"])
         assertEquals("uuid1:uuid2", req.url.parameters["labels"])
         assertEquals("csv", req.url.parameters["export_format"])
@@ -140,7 +178,7 @@ class LogSearchQueryToolsTest {
             "logsearch_query_logsets_by_name",
             mapOf("logset_name" to listOf("Firewall", "DNS"), "time_range" to "today"),
         )
-        assertEquals("/log_search/query/logsets", h.lastRequest.url.encodedPath)
+        assertEquals("/query/logsets", h.lastRequest.url.encodedPath)
         assertEquals(listOf("Firewall", "DNS"), h.lastRequest.url.parameters.getAll("logset_name"))
     }
 
@@ -148,14 +186,14 @@ class LogSearchQueryToolsTest {
     fun `query_logset queries by id`() = runBlocking {
         val h = harness()
         h.call("logsearch_query_logset", mapOf("logset_id" to "ls1", "query" to "where(x)", "time_range" to "today"))
-        assertEquals("/log_search/query/logsets/ls1", h.lastRequest.url.encodedPath)
+        assertEquals("/query/logsets/ls1", h.lastRequest.url.encodedPath)
     }
 
     @Test
     fun `poll_query polls by continuation id`() = runBlocking {
         val h = harness()
         h.call("logsearch_poll_query", mapOf("query_id" to "cont-9"))
-        assertEquals("/log_search/query/cont-9", h.lastRequest.url.encodedPath)
+        assertEquals("/query/cont-9", h.lastRequest.url.encodedPath)
     }
 
     @Test
@@ -171,7 +209,7 @@ class LogSearchQueryToolsTest {
             ),
         )
         val req = h.lastRequest
-        assertEquals("/log_search/query/context/12345", req.url.encodedPath)
+        assertEquals("/query/context/12345", req.url.encodedPath)
         assertEquals("1700000000000", req.url.parameters["timestamp"])
         assertEquals("lk1", req.url.parameters["log_keys"])
         assertEquals("SURROUND", req.url.parameters["context_type"])
@@ -181,19 +219,19 @@ class LogSearchQueryToolsTest {
     fun `search stats and endpoint discovery hit their paths`() = runBlocking {
         val h = harness()
         h.call("logsearch_get_search_stats")
-        assertEquals("/log_search/search-stats", h.lastRequest.url.encodedPath)
+        assertEquals("/search-stats", h.lastRequest.url.encodedPath)
         h.call("logsearch_list_query_endpoints")
-        assertEquals("/log_search/query", h.lastRequest.url.encodedPath)
+        assertEquals("/query", h.lastRequest.url.encodedPath)
     }
 
     @Test
     fun `saved query crud maps to the saved_queries endpoints`() = runBlocking {
         val h = harness(body = "[]")
         h.call("logsearch_list_saved_queries")
-        assertEquals("/log_search/query/saved_queries", h.lastRequest.url.encodedPath)
+        assertEquals("/query/saved_queries", h.lastRequest.url.encodedPath)
 
         h.call("logsearch_get_saved_query", mapOf("saved_query_id" to "sq1"))
-        assertEquals("/log_search/query/saved_queries/sq1", h.lastRequest.url.encodedPath)
+        assertEquals("/query/saved_queries/sq1", h.lastRequest.url.encodedPath)
 
         h.call(
             "logsearch_create_saved_query",
@@ -210,7 +248,7 @@ class LogSearchQueryToolsTest {
             mapOf("saved_query_id" to "sq1", "name" to "new", "statement" to "where(x)"),
         )
         assertEquals(HttpMethod.Put, h.lastRequest.method)
-        assertEquals("/log_search/query/saved_queries/sq1", h.lastRequest.url.encodedPath)
+        assertEquals("/query/saved_queries/sq1", h.lastRequest.url.encodedPath)
 
         h.call("logsearch_update_saved_query", mapOf("saved_query_id" to "sq1", "name" to "renamed"))
         assertEquals(HttpMethod.Patch, h.lastRequest.method)
@@ -231,12 +269,12 @@ class LogSearchQueryToolsTest {
     fun `run saved query endpoints hit both variants`() = runBlocking {
         val h = harness()
         h.call("logsearch_run_saved_query", mapOf("saved_query_id" to "sq1", "time_range" to "today"))
-        assertEquals("/log_search/query/saved_query/sq1", h.lastRequest.url.encodedPath)
+        assertEquals("/query/saved_query/sq1", h.lastRequest.url.encodedPath)
         assertEquals("today", h.lastRequest.url.parameters["time_range"])
 
         h.call("logsearch_run_saved_query_on_logs", mapOf("log_keys" to "lk1:lk2", "saved_query_id" to "sq1"))
         // ':' may be percent-encoded in the path; both forms are equivalent to the API.
-        assertEquals("/log_search/query/logs/lk1:lk2/sq1", h.lastRequest.url.encodedPath.replace("%3A", ":"))
+        assertEquals("/query/logs/lk1:lk2/sq1", h.lastRequest.url.encodedPath.replace("%3A", ":"))
     }
 
     @Test

@@ -18,10 +18,10 @@ class LogSearchVariableToolsTest {
     fun `variable crud maps to query-variables endpoints`() = runBlocking {
         val h = harness(body = "[]")
         h.call("logsearch_list_variables")
-        assertEquals("/log_search/query/variables", h.lastRequest.url.encodedPath)
+        assertEquals("/query/variables", h.lastRequest.url.encodedPath)
 
         h.call("logsearch_get_variable", mapOf("variable_id" to "v1"))
-        assertEquals("/log_search/query/variables/v1", h.lastRequest.url.encodedPath)
+        assertEquals("/query/variables/v1", h.lastRequest.url.encodedPath)
 
         h.call("logsearch_create_variable", mapOf("name" to "bad_ips", "value" to "1.2.3.4", "description" to "d"))
         assertEquals(HttpMethod.Post, h.lastRequest.method)
@@ -31,7 +31,7 @@ class LogSearchVariableToolsTest {
 
         h.call("logsearch_update_variable", mapOf("variable_id" to "v1", "name" to "n", "value" to "x"))
         assertEquals(HttpMethod.Put, h.lastRequest.method)
-        assertEquals("/log_search/query/variables/v1", h.lastRequest.url.encodedPath)
+        assertEquals("/query/variables/v1", h.lastRequest.url.encodedPath)
 
         h.call("logsearch_delete_variable", mapOf("variable_id" to "v1"))
         assertEquals(HttpMethod.Delete, h.lastRequest.method)
@@ -41,10 +41,10 @@ class LogSearchVariableToolsTest {
     fun `metric crud maps to management-metrics endpoints`() = runBlocking {
         val h = harness(body = "[]")
         h.call("logsearch_list_metrics")
-        assertEquals("/log_search/management/metrics", h.lastRequest.url.encodedPath)
+        assertEquals("/management/metrics", h.lastRequest.url.encodedPath)
 
         h.call("logsearch_get_metric", mapOf("metric_id" to "m1"))
-        assertEquals("/log_search/management/metrics/m1", h.lastRequest.url.encodedPath)
+        assertEquals("/management/metrics/m1", h.lastRequest.url.encodedPath)
 
         val metric = mapOf("name" to "pcq", "leql" to mapOf("statement" to "where(x)", "function" to "calculate(count)"))
         h.call("logsearch_create_metric", mapOf("metric" to metric))
@@ -53,7 +53,7 @@ class LogSearchVariableToolsTest {
 
         h.call("logsearch_replace_metric", mapOf("metric_id" to "m1", "metric" to metric))
         assertEquals(HttpMethod.Put, h.lastRequest.method)
-        assertEquals("/log_search/management/metrics/m1", h.lastRequest.url.encodedPath)
+        assertEquals("/management/metrics/m1", h.lastRequest.url.encodedPath)
 
         h.call("logsearch_delete_metric", mapOf("metric_id" to "m1"))
         assertEquals(HttpMethod.Delete, h.lastRequest.method)
@@ -63,7 +63,7 @@ class LogSearchVariableToolsTest {
     fun `query_metric fetches results with a time window`() = runBlocking {
         val h = harness()
         h.call("logsearch_query_metric", mapOf("metric_id" to "m1", "time_range" to "last 1 day"))
-        assertEquals("/log_search/query/metrics/m1", h.lastRequest.url.encodedPath)
+        assertEquals("/query/metrics/m1", h.lastRequest.url.encodedPath)
         assertEquals("last 1 day", h.lastRequest.url.parameters["time_range"])
     }
 

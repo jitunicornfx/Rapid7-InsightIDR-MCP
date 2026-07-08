@@ -48,11 +48,16 @@ class Rapid7Client(
         val contentType: String?,
     )
 
-    /** Which API family a request targets; each resolves to its own base URL. */
-    enum class ApiBase { IDR, LOG_SEARCH }
+    /**
+     * Which API family a request targets; each resolves to its own base URL per the
+     * OpenAPI specifications ([IDR_V2] -> `api.insight`, [IDR_V1] -> `rest.logs.insight`,
+     * [LOG_SEARCH] -> the configured Log Search route).
+     */
+    enum class ApiBase { IDR_V2, IDR_V1, LOG_SEARCH }
 
     private fun baseUrlFor(base: ApiBase): String = when (base) {
-        ApiBase.IDR -> config.baseUrl
+        ApiBase.IDR_V2 -> config.baseUrl
+        ApiBase.IDR_V1 -> config.v1BaseUrl
         ApiBase.LOG_SEARCH -> config.logSearchBaseUrl
     }
 
@@ -73,7 +78,7 @@ class Rapid7Client(
         jsonBody: JsonElement? = null,
         rawBody: String? = null,
         rawContentType: ContentType = ContentType.Application.Json,
-        base: ApiBase = ApiBase.IDR,
+        base: ApiBase = ApiBase.IDR_V2,
     ): ApiResponse {
         val response = http.request(baseUrlFor(base) + path) {
             this.method = method
@@ -99,6 +104,16 @@ class Rapid7Client(
         return response.toApiResponse()
     }
 
+    /** [request] against the v1 API base (`https://<region>.rest.logs.insight.rapid7.com` per the v1 spec). */
+    suspend fun requestV1(
+        method: HttpMethod,
+        path: String,
+        query: Map<String, List<String>> = emptyMap(),
+        jsonBody: JsonElement? = null,
+        rawBody: String? = null,
+        rawContentType: ContentType = ContentType.Application.Json,
+    ): ApiResponse = request(method, path, query, jsonBody, rawBody, rawContentType, base = ApiBase.IDR_V1)
+
     /**
      * GET an absolute URL returned by the API itself — used to follow the `links[].href`
      * continuation URLs that Log Search queries return with HTTP 202.
@@ -109,6 +124,7 @@ class Rapid7Client(
     suspend fun requestAbsolute(url: String): ApiResponse {
         val allowed = url.startsWith(config.baseUrl) ||
             url.startsWith(config.logSearchBaseUrl) ||
+            url.startsWith(config.v1BaseUrl) ||
             runCatching { Url(url) }.getOrNull()?.let {
                 it.protocol == URLProtocol.HTTPS && it.host.endsWith(".rapid7.com")
             } == true
@@ -131,8 +147,9 @@ class Rapid7Client(
         fileName: String,
         bytes: ByteArray,
         query: Map<String, List<String>> = emptyMap(),
+        base: ApiBase = ApiBase.IDR_V2,
     ): ApiResponse {
-        val response = http.request(config.baseUrl + path) {
+        val response = http.request(baseUrlFor(base) + path) {
             this.method = HttpMethod.Post
             header("X-Api-Key", config.apiKey)
             header(HttpHeaders.Accept, ContentType.Application.Json.toString())

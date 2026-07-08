@@ -75,26 +75,16 @@ line-by-line highlighting.
 
 ## Current baseline
 
-Current overall coverage is roughly **84% line / 84% method**. Well-covered units include:
-
-| Unit | Line coverage |
-|------|---------------|
-| `InvestigationToolsV2.kt` | ~100% |
-| `InvestigationToolsV1.kt` | ~100% |
-| `AttachmentTools.kt` | ~100% |
-| `CommentTools.kt` | ~100% |
-| `EntityTools.kt` | ~100% |
-| `Rapid7Client.kt` | ~100% |
-| `CloudWebhookTools.kt` | ~99% |
-| `ToolSupport.kt` | ~98% |
-| `Config.kt` | high |
+Current overall coverage is roughly **98% line / 97% method / 62% branch** across ~133 tests.
+Every source file — all v1/v2 IDR tool domains, all Log Search tool domains, `Rapid7Client`,
+`Config`, `ToolSupport`, `LogSearchSupport`, and `McpServerFactory` (verified by listing the full
+129-tool inventory through an in-process MCP client) — sits at **98–100% line coverage**, with one
+deliberate exception:
 
 `Main.kt` sits around **38%** by design: the Clikt command (option parsing, the `run()` dispatch, and
 the config-error path) is tested via injected seams, but `runStdio`/`runHttp`/`runServer` start real,
-blocking servers and are not unit-tested. The remaining tool domains (`CommunityThreatTools`,
-`CollectorTools`, `HealthMetricTools`) follow the same pattern as the covered ones and are the next
-candidates. Branch coverage trails line coverage because each tool has many independent optional
-parameters; exercising every combination isn't necessary.
+blocking servers and are not unit-tested. Branch coverage trails line coverage because each tool has
+many independent optional parameters; exercising every combination isn't necessary.
 
 ## Adding more tests
 

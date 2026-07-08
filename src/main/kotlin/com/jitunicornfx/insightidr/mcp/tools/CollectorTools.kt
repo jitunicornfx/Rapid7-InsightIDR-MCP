@@ -23,6 +23,6 @@ fun Server.registerCollectorTools(client: Rapid7Client) {
             put("key", args.requireString("key"))
             putOpt("deployment_type", args.stringOrNull("deployment_type"))
         }
-        client.request(HttpMethod.Post, "/idr/v1/collectors", jsonBody = body).toToolResult()
+        client.requestV1(HttpMethod.Post, "/idr/v1/collectors", jsonBody = body).toToolResult()
     }
 }

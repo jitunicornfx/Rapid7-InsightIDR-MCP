@@ -18,10 +18,10 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
         readOnly = true,
         inputSchema = toolSchema {
             integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size.")
+            integerParam("size", "Page size (max 100). Defaults to 10.")
         },
     ) { args ->
-        client.request(HttpMethod.Get, "/idr/v1/cloud-webhooks", query = pagingQuery(args)).toToolResult()
+        client.requestV1(HttpMethod.Get, "/idr/v1/cloud-webhooks", query = pagingQuery(args)).toToolResult()
     }
 
     apiTool(
@@ -31,7 +31,7 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
         inputSchema = toolSchema("webhook_rrn") { stringParam("webhook_rrn", CLOUDHOOK_STATUS) },
     ) { args ->
         val rrn = args.requireString("webhook_rrn")
-        client.request(HttpMethod.Get, "/idr/v1/cloud-webhooks/${seg(rrn)}").toToolResult()
+        client.requestV1(HttpMethod.Get, "/idr/v1/cloud-webhooks/${seg(rrn)}").toToolResult()
     }
 
     apiTool(
@@ -48,7 +48,7 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
             put("url", args.requireString("url"))
             putOpt("validation_config", args.objectOrNull("validation_config"))
         }
-        client.request(HttpMethod.Post, "/idr/v1/cloud-webhooks", jsonBody = body).toToolResult()
+        client.requestV1(HttpMethod.Post, "/idr/v1/cloud-webhooks", jsonBody = body).toToolResult()
     }
 
     apiTool(
@@ -65,7 +65,7 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
             putOpt("name", args.stringOrNull("name"))
             putOpt("url", args.stringOrNull("url"))
         }
-        client.request(HttpMethod.Patch, "/idr/v1/cloud-webhooks/${seg(rrn)}", jsonBody = body).toToolResult()
+        client.requestV1(HttpMethod.Patch, "/idr/v1/cloud-webhooks/${seg(rrn)}", jsonBody = body).toToolResult()
     }
 
     apiTool(
@@ -80,7 +80,7 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
         },
     ) { args ->
         val rrn = args.requireString("webhook_rrn")
-        client.request(HttpMethod.Delete, "/idr/v1/cloud-webhooks/${seg(rrn)}").toToolResult()
+        client.requestV1(HttpMethod.Delete, "/idr/v1/cloud-webhooks/${seg(rrn)}").toToolResult()
     }
 
     apiTool(
@@ -89,7 +89,7 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
         inputSchema = toolSchema("webhook_rrn") { stringParam("webhook_rrn", "The RRN of the cloud webhook to test.") },
     ) { args ->
         val rrn = args.requireString("webhook_rrn")
-        client.request(HttpMethod.Post, "/idr/v1/cloud-webhooks/${seg(rrn)}/test").toToolResult()
+        client.requestV1(HttpMethod.Post, "/idr/v1/cloud-webhooks/${seg(rrn)}/test").toToolResult()
     }
 
     apiTool(
@@ -108,7 +108,7 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
             putOpt("start_time", args.stringOrNull("start_time"))
             putOpt("end_time", args.stringOrNull("end_time"))
         }
-        client.request(HttpMethod.Post, "/idr/v1/cloud-webhooks/${seg(rrn)}/replay", jsonBody = body).toToolResult()
+        client.requestV1(HttpMethod.Post, "/idr/v1/cloud-webhooks/${seg(rrn)}/replay", jsonBody = body).toToolResult()
     }
 
     apiTool(
@@ -126,7 +126,7 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
         val rrn = args.requireString("webhook_rrn")
         val body: JsonObject = args.objectOrNull("validation_config")
             ?: throw IllegalArgumentException("Missing required parameter 'validation_config'")
-        client.request(HttpMethod.Post, "/idr/v1/cloud-webhooks/${seg(rrn)}/validation", jsonBody = body).toToolResult()
+        client.requestV1(HttpMethod.Post, "/idr/v1/cloud-webhooks/${seg(rrn)}/validation", jsonBody = body).toToolResult()
     }
 
     apiTool(
@@ -143,7 +143,7 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
         val rrn = args.requireString("webhook_rrn")
         val body: JsonObject = args.objectOrNull("validation_config")
             ?: throw IllegalArgumentException("Missing required parameter 'validation_config'")
-        client.request(HttpMethod.Patch, "/idr/v1/cloud-webhooks/${seg(rrn)}/validation", jsonBody = body)
+        client.requestV1(HttpMethod.Patch, "/idr/v1/cloud-webhooks/${seg(rrn)}/validation", jsonBody = body)
             .toToolResult()
     }
 
@@ -154,6 +154,6 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
         inputSchema = toolSchema("webhook_rrn") { stringParam("webhook_rrn", CLOUDHOOK_STATUS) },
     ) { args ->
         val rrn = args.requireString("webhook_rrn")
-        client.request(HttpMethod.Delete, "/idr/v1/cloud-webhooks/${seg(rrn)}/validation").toToolResult()
+        client.requestV1(HttpMethod.Delete, "/idr/v1/cloud-webhooks/${seg(rrn)}/validation").toToolResult()
     }
 }

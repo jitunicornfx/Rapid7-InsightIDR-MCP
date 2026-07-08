@@ -16,11 +16,11 @@ fun Server.registerCommentTools(client: Rapid7Client) {
         inputSchema = toolSchema("target") {
             stringParam("target", "RRN of the resource whose comments to list (e.g. an investigation RRN).")
             integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size.")
+            integerParam("size", "Page size (max 100). Defaults to 20.")
             stringParam("sortDirection", "Sort direction by creation time.", enum = listOf("ASC", "DESC"))
         },
     ) { args ->
-        client.request(
+        client.requestV1(
             HttpMethod.Get,
             "/idr/v1/comments",
             query = query(
@@ -39,7 +39,7 @@ fun Server.registerCommentTools(client: Rapid7Client) {
         inputSchema = toolSchema("rrn") { stringParam("rrn", "The RRN of the comment.") },
     ) { args ->
         val rrn = args.requireString("rrn")
-        client.request(HttpMethod.Get, "/idr/v1/comments/${seg(rrn)}").toToolResult()
+        client.requestV1(HttpMethod.Get, "/idr/v1/comments/${seg(rrn)}").toToolResult()
     }
 
     apiTool(
@@ -56,7 +56,7 @@ fun Server.registerCommentTools(client: Rapid7Client) {
             putOpt("body", args.stringOrNull("body"))
             putOpt("attachments", args.arrayOrNull("attachments"))
         }
-        client.request(HttpMethod.Post, "/idr/v1/comments", jsonBody = body).toToolResult()
+        client.requestV1(HttpMethod.Post, "/idr/v1/comments", jsonBody = body).toToolResult()
     }
 
     apiTool(
@@ -66,7 +66,7 @@ fun Server.registerCommentTools(client: Rapid7Client) {
         inputSchema = toolSchema("rrn") { stringParam("rrn", "The RRN of the comment to delete.") },
     ) { args ->
         val rrn = args.requireString("rrn")
-        client.request(HttpMethod.Delete, "/idr/v1/comments/${seg(rrn)}").toToolResult()
+        client.requestV1(HttpMethod.Delete, "/idr/v1/comments/${seg(rrn)}").toToolResult()
     }
 
     apiTool(
@@ -83,6 +83,6 @@ fun Server.registerCommentTools(client: Rapid7Client) {
     ) { args ->
         val rrn = args.requireString("rrn")
         val visibility = args.requireString("visibility")
-        client.request(HttpMethod.Put, "/idr/v1/comments/${seg(rrn)}/${seg(visibility)}").toToolResult()
+        client.requestV1(HttpMethod.Put, "/idr/v1/comments/${seg(rrn)}/${seg(visibility)}").toToolResult()
     }
 }

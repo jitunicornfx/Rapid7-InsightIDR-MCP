@@ -22,10 +22,10 @@ class LogSearchAuditToolsTest {
     fun `audit log management endpoints resolve their paths`() = runBlocking {
         val h = harness(body = "[]")
         h.call("logsearch_list_audit_logs")
-        assertEquals("/log_search/audit/management/logs", h.lastRequest.url.encodedPath)
+        assertEquals("/audit/management/logs", h.lastRequest.url.encodedPath)
 
         h.call("logsearch_get_audit_log", mapOf("log_id" to "al1"))
-        assertEquals("/log_search/audit/management/logs/al1", h.lastRequest.url.encodedPath)
+        assertEquals("/audit/management/logs/al1", h.lastRequest.url.encodedPath)
     }
 
     @Test
@@ -36,7 +36,7 @@ class LogSearchAuditToolsTest {
             mapOf("log_key" to "al1", "query" to "where(action=login)", "time_range" to "today"),
         )
         assertEquals(HttpMethod.Get, h.lastRequest.method)
-        assertEquals("/log_search/audit/query/logs/al1", h.lastRequest.url.encodedPath)
+        assertEquals("/audit/query/logs/al1", h.lastRequest.url.encodedPath)
         assertEquals("where(action=login)", h.lastRequest.url.parameters["query"])
 
         h.call(
@@ -44,21 +44,21 @@ class LogSearchAuditToolsTest {
             mapOf("log_keys" to listOf("al1", "al2"), "query" to "where(x)", "time_range" to "today"),
         )
         assertEquals(HttpMethod.Post, h.lastRequest.method)
-        assertEquals("/log_search/audit/query/logs", h.lastRequest.url.encodedPath)
+        assertEquals("/audit/query/logs", h.lastRequest.url.encodedPath)
         val body = h.lastBodyJson()
         assertEquals(2, body["logs"]!!.jsonArray.size)
         assertEquals("where(x)", body["leql"]!!.jsonObject["statement"]!!.jsonPrimitive.content)
 
         h.call("logsearch_audit_poll_query", mapOf("query_id" to "cont-a"))
-        assertEquals("/log_search/audit/query/cont-a", h.lastRequest.url.encodedPath)
+        assertEquals("/audit/query/cont-a", h.lastRequest.url.encodedPath)
 
         h.call("logsearch_audit_list_query_endpoints")
-        assertEquals("/log_search/audit/query", h.lastRequest.url.encodedPath)
+        assertEquals("/audit/query", h.lastRequest.url.encodedPath)
     }
 
     @Test
     fun `audit query auto-polls 202 continuations`() = runBlocking {
-        val poll = "https://us.api.insight.rapid7.com/log_search/audit/query/cont-b"
+        val poll = "https://us.rest.logs.insight.rapid7.com/audit/query/cont-b"
         val h = harness(
             responses = listOf(
                 HttpStatusCode.Accepted to """{"id":"cont-b","links":[{"rel":"Self","href":"$poll"}]}""",
@@ -67,7 +67,7 @@ class LogSearchAuditToolsTest {
         )
         val result = h.call("logsearch_audit_query_log", mapOf("log_key" to "al1", "time_range" to "today"))
         assertEquals(2, h.requests.size)
-        assertEquals("/log_search/audit/query/cont-b", h.lastRequest.url.encodedPath)
+        assertEquals("/audit/query/cont-b", h.lastRequest.url.encodedPath)
         assertTrue(result.isError != true)
     }
 
@@ -75,9 +75,9 @@ class LogSearchAuditToolsTest {
     fun `audit export endpoints resolve their paths`() = runBlocking {
         val h = harness(body = "[]")
         h.call("logsearch_audit_list_export_jobs")
-        assertEquals("/log_search/audit/exports", h.lastRequest.url.encodedPath)
+        assertEquals("/audit/exports", h.lastRequest.url.encodedPath)
 
         h.call("logsearch_audit_get_export_job", mapOf("export_job_id" to "ex1"))
-        assertEquals("/log_search/audit/exports/ex1", h.lastRequest.url.encodedPath)
+        assertEquals("/audit/exports/ex1", h.lastRequest.url.encodedPath)
     }
 }

@@ -41,7 +41,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         readOnly = true,
         inputSchema = toolSchema {
             integerParam("index", "Zero-based page index. Defaults to 0.")
-            integerParam("size", "Number of investigations per page (max 1000). Defaults to 20.")
+            integerParam("size", "Number of investigations per page (max 100). Defaults to 20.")
             stringParam("statuses", "Comma-separated statuses to include (OPEN, INVESTIGATING, WAITING, CLOSED).")
             stringParam("sources", "Comma-separated investigation sources to include (e.g. ALERT, MANUAL, HUNT).")
             stringParam("priorities", "Comma-separated priorities to include (UNSPECIFIED, LOW, MEDIUM, HIGH, CRITICAL).")
@@ -98,7 +98,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
             stringParam("start_time", "ISO-8601 start of the time window to search.")
             stringParam("end_time", "ISO-8601 end of the time window to search.")
             integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size.")
+            integerParam("size", "Page size (max 100). Defaults to 20.")
             booleanParam(MULTI_CUSTOMER_ARG, MULTI_CUSTOMER_DESC)
         },
     ) { args ->
@@ -300,7 +300,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         inputSchema = toolSchema("identifier") {
             stringParam("identifier", ID_DESC)
             integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size.")
+            integerParam("size", "Page size (max 100). Defaults to 20.")
             booleanParam(MULTI_CUSTOMER_ARG, MULTI_CUSTOMER_DESC)
         },
     ) { args ->
