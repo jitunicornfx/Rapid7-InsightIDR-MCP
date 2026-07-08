@@ -2,7 +2,7 @@
 
 An [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server, written in Kotlin with the
 [MCP Kotlin SDK](https://github.com/modelcontextprotocol/kotlin-sdk), that exposes the
-[Rapid7 InsightIDR](https://www.rapid7.com/products/insightidr/) REST API (v1 and v2) as MCP tools.
+[Rapid7 InsightIDR](https://www.rapid7.com/products/insightidr/) REST API as MCP tools.
 
 It lets an MCP-capable assistant triage and manage InsightIDR **investigations**, look up **accounts,
 assets, users and local accounts**, work with **comments and attachments**, manage **cloud webhooks**
@@ -10,24 +10,11 @@ and **community threats**, register **collectors**, and read **health metrics** 
 existing Insight platform API key.
 
 > Coverage is based on the official API references:
+> [InsightIDR Log Search REST API](https://docs.rapid7.com/insightidr/log-search-api/), 
 > [InsightIDR API v2 (Investigations)](https://help.rapid7.com/insightidr/en-us/api/v2/docs.html) and
 > [InsightIDR API v1](https://help.rapid7.com/insightidr/en-us/api/v1/docs.html).
 
 ---
-
-## Features
-
-- **~130 tools** spanning the documented InsightIDR v1 and v2 endpoints plus the complete
-  Log Search API (queries, saved queries, logs/log sets, usage, CSV exports, LEQL variables,
-  pre-computed queries, basic detection rules, and audit logs — everything except S3 archiving).
-- Region-aware base URL resolution (`https://<region>.api.insight.rapid7.com`).
-- Asynchronous Log Search queries are polled to completion automatically (202 + continuation links).
-- `X-Api-Key` authentication from an environment variable — no secrets in code.
-- Robust error handling: HTTP and network errors are returned to the model as tool errors
-  (with the API's response body) instead of crashing the session.
-- Two transports: **stdio** (default, for local desktop clients) and **HTTP** (Streamable HTTP/SSE).
-- Self-contained fat JAR via the Shadow plugin.
-
 ## Requirements
 
 - **JDK 21+** (developed and tested against a newer JDK; bytecode targets Java 21).
@@ -81,9 +68,9 @@ pwsh.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"
 ```
 
 ```bash
-# Linux
+# macOS / Linux
 INSIGHTIDR_API_KEY=xxxx INSIGHTIDR_REGION=us \
-  java -jar build/libs/rapid7-insightidr-mcp-0.1.0-all.jar --stdio
+  java -jar build/libs/rapid7-insightidr-mcp-0.1.2-all.jar --stdio
 ```
 
 ### HTTP (Streamable HTTP / SSE)
@@ -91,9 +78,18 @@ INSIGHTIDR_API_KEY=xxxx INSIGHTIDR_REGION=us \
 Binds to `127.0.0.1:3001` by default. Override the listen address with `--host` (alias `--ip`) and the
 port with `--port`:
 
+```PowerShell
+# PowerShell 5.1
+powershell.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.1.2-all.jar --stdio }
+
+# PowerShell 7
+pwsh.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.1.2-all.jar --stdio }
+```
+
 ```bash
+# macOS / Linux
 INSIGHTIDR_API_KEY=xxxx INSIGHTIDR_REGION=us \
-  java -jar build/libs/rapid7-insightidr-mcp-0.1.0-all.jar --http --host 0.0.0.0 --port 3001
+  java -jar build/libs/rapid7-insightidr-mcp-0.1.2-all.jar --http --host 0.0.0.0 --port 3001
 ```
 
 Run `--help` to see all options. You can also run during development with
@@ -110,7 +106,7 @@ Add to your client's MCP server configuration (adjust the JAR path):
       "command": "java",
       "args": [
         "-jar",
-        "C:\\MCP Dev\\Rapid7-InsightIDR-MCP\\build\\libs\\rapid7-insightidr-mcp-0.1.0-all.jar",
+        "C:\\MCP Dev\\Rapid7-InsightIDR-MCP\\build\\libs\\rapid7-insightidr-mcp-0.1.2-all.jar",
         "--stdio"
       ],
       "env": {
@@ -195,18 +191,6 @@ except S3 archiving. Defaults to the unified route (`<base>/log_search`); see
   `logsearch_audit_query_logs`, `logsearch_audit_poll_query`, `logsearch_audit_list_export_jobs`,
   `logsearch_audit_get_export_job`, `logsearch_audit_list_query_endpoints`
 
-## Testing & coverage
-
-Unit tests live under `src/test/kotlin/` and run on the JUnit Platform. Coverage is measured with JaCoCo:
-
-```bash
-./gradlew test jacocoTestReport      # Windows: gradlew.bat test jacocoTestReport
-```
-
-Open `build/reports/jacoco/test/html/index.html` for the report. Full details — thresholds, SonarQube
-integration, and how to cover the HTTP layer with Ktor `MockEngine` — are in
-[docs/CODE_COVERAGE.md](docs/CODE_COVERAGE.md).
-
 ## Design notes
 
 - Search endpoints (`search_*`) accept structured `search`/`sort` arrays that pass straight through to the
@@ -216,18 +200,6 @@ integration, and how to cover the HTTP layer with Ktor `MockEngine` — are in
 - Results are returned as pretty-printed JSON text. Non-2xx responses are marked as tool errors and
   include the API's response body to help the model self-correct.
 - Logging goes to **stderr**; **stdout** is reserved for the MCP JSON-RPC stream in stdio mode.
-
-## Project layout
-
-```
-src/main/kotlin/com/jitunicornfx/insightidr/mcp/
-  Main.kt                 # entry point + transport selection (stdio / http)
-  Config.kt               # env-based configuration + region resolution
-  Rapid7Client.kt         # Ktor HTTP client wrapper (auth, timeouts, error passthrough)
-  ToolSupport.kt          # schema DSL, argument accessors, result formatting, tool registration
-  McpServerFactory.kt     # assembles the Server and registers all tools
-  tools/                  # one file per API domain
-```
 
 ## License
 
