@@ -133,9 +133,6 @@ Then ask the assistant to `validate_connection` first to confirm the key and reg
 - `assign_investigation`, `bulk_close_investigations`
 - `list_investigation_alerts`, `get_investigation_product_alerts`, `remove_alert_from_investigation`
 
-### Investigations (API v1 — legacy parity)
-- `list_investigations_v1`, `set_investigation_status_v1`, `assign_investigation_v1`, `bulk_close_investigations_v1`
-
 ### Entities (API v1)
 - Accounts: `search_accounts`, `get_account`
 - Assets: `search_assets`, `get_asset`
