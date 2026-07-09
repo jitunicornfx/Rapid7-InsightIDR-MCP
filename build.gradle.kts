@@ -10,7 +10,7 @@ plugins {
 }
 
 group = "com.jitunicornfx.insightidr"
-version = "0.1.2"
+version = "0.1.3"
 
 dependencies {
     implementation(platform(libs.ktor.bom))
