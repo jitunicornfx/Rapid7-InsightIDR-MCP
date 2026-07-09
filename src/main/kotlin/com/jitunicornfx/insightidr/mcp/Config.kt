@@ -51,6 +51,14 @@ data class Config(
      * (e.g. back to `https://<region>.api.insight.rapid7.com` if your tenant routes v1 there).
      */
     val v1BaseUrl: String = "https://${region.code}.rest.logs.insight.rapid7.com",
+    /**
+     * Browser origins permitted to call the server in `--http` mode (CORS). Empty by default, so
+     * cross-origin browser requests are denied — the server holds a secret API key and is intended
+     * for local/non-browser MCP clients (which don't send an `Origin` header and are unaffected).
+     * Set [ENV_HTTP_ALLOWED_ORIGINS] to a comma-separated list (e.g. `https://app.example.com`) only
+     * if a trusted browser client must reach it. Never use `*`.
+     */
+    val httpAllowedOrigins: List<String> = emptyList(),
 ) {
     /** The API key is a secret; never include it in [toString] output or logs. */
     override fun toString(): String =
@@ -64,6 +72,7 @@ data class Config(
         const val ENV_V1_BASE_URL = "INSIGHTIDR_V1_BASE_URL"
         const val ENV_LOG_SEARCH_BASE_URL = "INSIGHTIDR_LOG_SEARCH_BASE_URL"
         const val ENV_TIMEOUT_MS = "INSIGHTIDR_TIMEOUT_MS"
+        const val ENV_HTTP_ALLOWED_ORIGINS = "INSIGHTIDR_HTTP_ALLOWED_ORIGINS"
 
         const val DEFAULT_REGION = "us"
         const val DEFAULT_TIMEOUT_MS = 60_000L
@@ -91,6 +100,12 @@ data class Config(
 
             val timeout = env[ENV_TIMEOUT_MS]?.toLongOrNull()?.takeIf { it > 0 } ?: DEFAULT_TIMEOUT_MS
 
+            val httpAllowedOrigins = env[ENV_HTTP_ALLOWED_ORIGINS]
+                ?.split(',')
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() && it != "*" }
+                ?: emptyList()
+
             return Config(
                 apiKey = apiKey,
                 region = region,
@@ -98,6 +113,7 @@ data class Config(
                 requestTimeoutMillis = timeout,
                 logSearchBaseUrl = logSearchBaseUrl,
                 v1BaseUrl = v1BaseUrl,
+                httpAllowedOrigins = httpAllowedOrigins,
             )
         }
     }

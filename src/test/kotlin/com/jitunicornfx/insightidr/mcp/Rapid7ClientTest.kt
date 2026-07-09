@@ -158,6 +158,44 @@ class Rapid7ClientTest {
     }
 
     @Test
+    fun `follow-url allow-list validates the origin, not a URL prefix`() {
+        val client = Rapid7Client(config)
+        try {
+            // Legitimate hosts over HTTPS.
+            assertTrue(client.isAllowedFollowUrl("https://us.api.insight.rapid7.com/x"))
+            assertTrue(client.isAllowedFollowUrl("https://us.rest.logs.insight.rapid7.com/query/1"))
+            assertTrue(client.isAllowedFollowUrl("https://anything.rapid7.com/x"))
+
+            // Prefix-confusion: a foreign host that merely starts with a base URL string.
+            assertFalse(client.isAllowedFollowUrl("https://us.api.insight.rapid7.com.evil.com/steal"))
+            // Userinfo trick: real host is evil.com.
+            assertFalse(client.isAllowedFollowUrl("https://us.api.insight.rapid7.com@evil.com/steal"))
+            // Look-alikes.
+            assertFalse(client.isAllowedFollowUrl("https://rapid7.com.evil.com/x"))
+            assertFalse(client.isAllowedFollowUrl("https://notrapid7.com/x"))
+            // Scheme downgrade to a real Rapid7 host must be refused (no cleartext key egress).
+            assertFalse(client.isAllowedFollowUrl("http://us.api.insight.rapid7.com/x"))
+            assertFalse(client.isAllowedFollowUrl("http://evil.com/x"))
+            // Non-HTTP(S) schemes and unparseable input.
+            assertFalse(client.isAllowedFollowUrl("file:///etc/passwd"))
+            assertFalse(client.isAllowedFollowUrl("not a url"))
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
+    fun `requestAbsolute does not leak the api key to a prefix-confusion host`() = runBlocking {
+        val engine = jsonEngine(HttpStatusCode.OK, "{}")
+        val client = Rapid7Client(config, engine)
+        kotlin.test.assertFailsWith<IllegalArgumentException> {
+            client.requestAbsolute("https://us.api.insight.rapid7.com.attacker.example/exfil")
+        }
+        assertEquals(0, engine.requestHistory.size, "the X-Api-Key must never reach the attacker host")
+        client.close()
+    }
+
+    @Test
     fun `uploadFile posts multipart and sanitizes the filename`() = runBlocking {
         val engine = jsonEngine(HttpStatusCode.OK, """{"rrn":"att1"}""")
         val client = Rapid7Client(config, engine)

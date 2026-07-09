@@ -33,6 +33,10 @@ class Rapid7Client(
 
     private fun HttpClientConfig<*>.configureClient() {
         expectSuccess = false
+        // Never auto-follow redirects: every request carries the secret X-Api-Key, and a 3xx from an
+        // allow-listed host could otherwise bounce that credential to an arbitrary Location. The API
+        // returns data directly; continuations are followed explicitly via the validated allow-list.
+        followRedirects = false
         install(HttpTimeout) {
             requestTimeoutMillis = config.requestTimeoutMillis
             connectTimeoutMillis = 15_000
@@ -59,6 +63,35 @@ class Rapid7Client(
         ApiBase.IDR_V2 -> config.baseUrl
         ApiBase.IDR_V1 -> config.v1BaseUrl
         ApiBase.LOG_SEARCH -> config.logSearchBaseUrl
+    }
+
+    /** Normalize a URL to a `scheme://host:port` origin (lowercased), or null if it can't be parsed. */
+    private fun originOf(url: String): String? =
+        runCatching { Url(url) }.getOrNull()?.takeIf { it.host.isNotEmpty() }?.let {
+            "${it.protocol.name}://${it.host.lowercase()}:${it.port}"
+        }
+
+    /** Origins (scheme+host+port) of the configured API bases; continuation links may target these exactly. */
+    private val allowedFollowOrigins: Set<String> =
+        listOfNotNull(originOf(config.baseUrl), originOf(config.v1BaseUrl), originOf(config.logSearchBaseUrl)).toSet()
+
+    /**
+     * Whether an API-provided (or model-provided) URL may be followed with the API key attached.
+     *
+     * Validation is on the PARSED origin — never a string prefix of the URL — so tricks like
+     * `https://us.api.insight.rapid7.com.evil.com/...` (prefix match) or
+     * `https://us.api.insight.rapid7.com@evil.com/...` (userinfo) resolve to a foreign host and are
+     * rejected. A URL is allowed only if its scheme+host+port exactly matches a configured base
+     * (whatever scheme the operator chose — supporting local http test overrides), or it is HTTPS on
+     * a `rapid7.com` host. A cleartext `http://` link to a real Rapid7 host is refused, so the
+     * `X-Api-Key` is never sent over an unencrypted or downgraded connection to a discovered host.
+     */
+    internal fun isAllowedFollowUrl(url: String): Boolean {
+        val parsed = runCatching { Url(url) }.getOrNull() ?: return false
+        val host = parsed.host.lowercase()
+        if (host.isEmpty()) return false
+        if (originOf(url) in allowedFollowOrigins) return true
+        return parsed.protocol == URLProtocol.HTTPS && (host == "rapid7.com" || host.endsWith(".rapid7.com"))
     }
 
     /**
@@ -116,19 +149,14 @@ class Rapid7Client(
 
     /**
      * GET an absolute URL returned by the API itself — used to follow the `links[].href`
-     * continuation URLs that Log Search queries return with HTTP 202.
+     * continuation / next-page URLs that Log Search queries return.
      *
-     * As a safety measure the URL must resolve back to one of the configured API bases or a
-     * `*.rapid7.com` host, so a crafted response body can't redirect requests elsewhere.
+     * The URL's parsed host must be a configured API base host or a `rapid7.com` host
+     * ([isAllowedFollowUrl]); otherwise the request is refused so the `X-Api-Key` credential
+     * can never be sent to an attacker-controlled host embedded in a response body or argument.
      */
     suspend fun requestAbsolute(url: String): ApiResponse {
-        val allowed = url.startsWith(config.baseUrl) ||
-            url.startsWith(config.logSearchBaseUrl) ||
-            url.startsWith(config.v1BaseUrl) ||
-            runCatching { Url(url) }.getOrNull()?.let {
-                it.protocol == URLProtocol.HTTPS && it.host.endsWith(".rapid7.com")
-            } == true
-        require(allowed) { "Refusing to follow non-Rapid7 continuation URL: $url" }
+        require(isAllowedFollowUrl(url)) { "Refusing to follow non-Rapid7 URL: $url" }
 
         val response = http.request(url) {
             method = HttpMethod.Get

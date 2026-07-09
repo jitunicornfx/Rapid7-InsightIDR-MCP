@@ -34,8 +34,9 @@ Configuration is read from environment variables:
 | `INSIGHTIDR_V1_BASE_URL` |          | `https://<region>.rest.logs.insight.rapid7.com` | v1 API base URL override (default follows the v1 spec servers; set to `https://<region>.api.insight.rapid7.com` if your tenant routes v1 there). |
 | `INSIGHTIDR_LOG_SEARCH_BASE_URL` |  | `https://<region>.rest.logs.insight.rapid7.com` | Log Search API base override (default follows the Log Search spec servers; set to `https://<region>.api.insight.rapid7.com/log_search` for the unified platform route). |
 | `INSIGHTIDR_TIMEOUT_MS`  |          | `60000`                                   | Per-request timeout in milliseconds.                           |
+| `INSIGHTIDR_HTTP_ALLOWED_ORIGINS` |  | *(empty — deny cross-origin)*    | `--http` mode only: comma-separated browser origins allowed via CORS (e.g. `https://app.example.com`). Empty denies all cross-origin browser access; non-browser MCP clients are unaffected. Never use `*`. |
 
-See [`.env.example`](.env.example).
+See [`.env.example`](.env.example) and [Security](#security).
 
 ## Build
 

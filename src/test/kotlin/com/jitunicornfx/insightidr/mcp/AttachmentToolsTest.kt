@@ -60,4 +60,38 @@ class AttachmentToolsTest {
         val result = h.call("upload_attachment", mapOf("file_path" to "/definitely/not/here.bin"))
         assertTrue(result.isError == true)
     }
+
+    @Test
+    fun `upload_attachment refuses UNC and remote paths without issuing a request`() = runBlocking {
+        val h = harness()
+        for (p in listOf("""\\attacker.example.com\share\x""", "//attacker.example.com/share/x", """\\?\C:\Windows\win.ini""")) {
+            val result = h.call("upload_attachment", mapOf("file_path" to p))
+            assertTrue(result.isError == true, "UNC/remote path must be refused: $p")
+            val text = (result.content.first() as io.modelcontextprotocol.kotlin.sdk.types.TextContent).text
+            assertTrue("UNC/remote" in text, "error should explain the refusal: $text")
+        }
+        // No upload request should ever have been issued for a refused path.
+        assertTrue(h.requests.isEmpty(), "a refused UNC path must not reach the network")
+    }
+
+    @Test
+    fun `requireLocalFilePath allows ordinary local paths`() {
+        // Ordinary absolute paths on either platform must pass.
+        com.jitunicornfx.insightidr.mcp.tools.requireLocalFilePath("""C:\Users\me\evidence.txt""")
+        com.jitunicornfx.insightidr.mcp.tools.requireLocalFilePath("/home/me/evidence.txt")
+        com.jitunicornfx.insightidr.mcp.tools.requireLocalFilePath("evidence.txt")
+    }
+
+    @Test
+    fun `upload_attachment refuses a file over the size cap`() = runBlocking {
+        // A sparse file whose reported length exceeds the cap: guarded by file.length() before readBytes.
+        val big = File.createTempFile("idr-big", ".bin").apply { deleteOnExit() }
+        java.io.RandomAccessFile(big, "rw").use { it.setLength(com.jitunicornfx.insightidr.mcp.tools.MAX_UPLOAD_BYTES + 1) }
+        val h = harness()
+        val result = h.call("upload_attachment", mapOf("file_path" to big.absolutePath))
+        assertTrue(result.isError == true, "oversize file must be refused")
+        val text = (result.content.first() as io.modelcontextprotocol.kotlin.sdk.types.TextContent).text
+        assertTrue("upload limit" in text, "error should mention the size limit: $text")
+        assertTrue(h.requests.isEmpty(), "an oversize file must not reach the network")
+    }
 }

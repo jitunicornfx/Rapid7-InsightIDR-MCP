@@ -48,6 +48,10 @@ private fun linkWithRel(body: String, rel: String): String? = try {
         ?.jsonArray
         ?.firstOrNull { it.jsonObject["rel"]?.jsonPrimitive?.contentOrNull.equals(rel, ignoreCase = true) }
         ?.jsonObject?.get("href")?.jsonPrimitive?.contentOrNull
+} catch (_: StackOverflowError) {
+    // Deeply-nested JSON can overflow the recursive parser; treat it as "no link" rather than
+    // letting an Error escape and tear down the session.
+    null
 } catch (_: Exception) {
     null
 }

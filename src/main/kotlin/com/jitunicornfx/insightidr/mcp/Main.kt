@@ -135,7 +135,15 @@ private fun runHttp(client: Rapid7Client, config: Config, host: String, port: In
     System.err.println("[insightidr-mcp] Starting over HTTP on $host:$port — region=${config.region.code}, baseUrl=${config.baseUrl}")
     val engine = embeddedServer(CIO, host = host, port = port) {
         install(CORS) {
-            anyHost()
+            // The server holds a secret API key and has no auth of its own, so arbitrary cross-origin
+            // browser access is NOT allowed (no anyHost()). Non-browser MCP clients send no Origin
+            // header and are unaffected; a browser origin is permitted only if the operator explicitly
+            // allow-lists it via INSIGHTIDR_HTTP_ALLOWED_ORIGINS.
+            config.httpAllowedOrigins.forEach { origin ->
+                val scheme = origin.substringBefore("://", missingDelimiterValue = "https")
+                val hostAndPort = origin.substringAfter("://")
+                if (hostAndPort.isNotBlank()) allowHost(hostAndPort, schemes = listOf(scheme))
+            }
             allowMethod(HttpMethod.Get)
             allowMethod(HttpMethod.Post)
             allowMethod(HttpMethod.Delete)

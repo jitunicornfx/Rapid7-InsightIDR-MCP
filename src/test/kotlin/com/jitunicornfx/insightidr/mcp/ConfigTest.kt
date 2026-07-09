@@ -84,4 +84,21 @@ class ConfigTest {
         )
         assertEquals("https://us.api.insight.rapid7.com/log_search", config.logSearchBaseUrl)
     }
+
+    @Test
+    fun `http allowed origins default to empty so cross-origin browser access is denied`() {
+        val config = Config.fromEnv(mapOf(Config.ENV_API_KEY to "key"))
+        assertTrue(config.httpAllowedOrigins.isEmpty())
+    }
+
+    @Test
+    fun `http allowed origins parse a comma list, trim, and drop blanks and wildcard`() {
+        val config = Config.fromEnv(
+            mapOf(
+                Config.ENV_API_KEY to "key",
+                Config.ENV_HTTP_ALLOWED_ORIGINS to " https://app.example.com , , * ,https://b.example.com:8443 ",
+            ),
+        )
+        assertEquals(listOf("https://app.example.com", "https://b.example.com:8443"), config.httpAllowedOrigins)
+    }
 }
