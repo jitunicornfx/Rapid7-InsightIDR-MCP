@@ -7,7 +7,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
 
 const val SERVER_NAME = "rapid7-insightidr-mcp"
-const val SERVER_VERSION = "0.1.0"
+const val SERVER_VERSION = "0.1.4"
 
 /**
  * Build a fully-configured MCP [Server] with every InsightIDR tool registered.
