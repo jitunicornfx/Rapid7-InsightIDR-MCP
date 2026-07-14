@@ -75,11 +75,11 @@ line-by-line highlighting.
 
 ## Current baseline
 
-Current overall coverage is roughly **98% line / 97% method / 62% branch** across ~128 tests.
-Every source file — all v1/v2 IDR tool domains, all Log Search tool domains, `Rapid7Client`,
-`Config`, `ToolSupport`, `LogSearchSupport`, and `McpServerFactory` (verified by listing the full
-125-tool inventory through an in-process MCP client) — sits at **98–100% line coverage**, with one
-deliberate exception:
+Current overall coverage is roughly **98% line / 97% method / 63% branch** across ~156 tests.
+Every source file — all v1/v2 IDR tool domains, the SIEM Alerts API tools (`AlertTools`, at 100%),
+all Log Search tool domains, `Rapid7Client`, `Config`, `ToolSupport`, `LogSearchSupport`, and
+`McpServerFactory` (verified by listing the full 144-tool inventory through an in-process MCP client)
+— sits at **98–100% line coverage**, with one deliberate exception:
 
 `Main.kt` sits around **38%** by design: the Clikt command (option parsing, the `run()` dispatch, and
 the config-error path) is tested via injected seams, but `runStdio`/`runHttp`/`runServer` start real,

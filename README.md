@@ -36,7 +36,7 @@ Configuration is read from environment variables:
 | `INSIGHTIDR_TIMEOUT_MS`  |          | `60000`                                   | Per-request timeout in milliseconds.                           |
 | `INSIGHTIDR_HTTP_ALLOWED_ORIGINS` |  | *(empty — deny cross-origin)*    | `--http` mode only: comma-separated browser origins allowed via CORS (e.g. `https://app.example.com`). Empty denies all cross-origin browser access; non-browser MCP clients are unaffected. Never use `*`. |
 
-See [`.env.example`](.env.example) and [Security](#security).
+See [`.env.example`](.env.example).
 
 ## Build
 
@@ -133,6 +133,25 @@ Then ask the assistant to `validate_connection` first to confirm the key and reg
 - `set_investigation_status`, `set_investigation_priority`, `set_investigation_disposition`
 - `assign_investigation`, `bulk_close_investigations`
 - `list_investigation_alerts`, `get_investigation_product_alerts`, `remove_alert_from_investigation`
+
+### SIEM Alerts (API `/idr/at`)
+
+Alert triage endpoints from the SIEM Alerts API, served from the v2 host
+(`https://<region>.api.insight.rapid7.com`) under the `/idr/at` path — no extra configuration needed.
+The deprecated `/alerts/fields` endpoint is intentionally omitted in favour of its V2 replacement
+(`list_alert_fields`).
+
+- **Alerts:** `search_alerts`, `get_alert`, `get_alerts_by_rrn`, `patch_alert`, `patch_alerts`,
+  `investigate_alerts`, `generate_alert_report`
+- **Alert context:** `get_alert_evidences`, `get_alert_actors`, `get_alert_assignee_options`,
+  `get_assignee_options`
+- **Alert fields:** `get_alert_field`, `get_alert_field_values`, `list_alert_fields`
+- **Actions (alert jobs):** `list_alert_actions`, `get_alert_action_result`, `get_alert_action_tasks`
+- **Process trees:** `get_alert_process_tree`, `get_alert_process_trees`
+
+`search`/`patch`/`sorts`/`aggregates` are passed through as structured JSON matching the API schema;
+`patch_alerts` and `investigate_alerts` are asynchronous and return an `action_rrn` you can track with
+the Actions tools.
 
 ### Entities (API v1)
 - Accounts: `search_accounts`, `get_account`

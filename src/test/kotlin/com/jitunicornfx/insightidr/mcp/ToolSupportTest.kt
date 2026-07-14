@@ -23,6 +23,16 @@ class ToolSupportTest {
     @Test
     fun `seg url-encodes path segments`() {
         assertEquals("a%20b", seg("a b"))
+        // Embedded separators are encoded, so a value stays a single path segment.
+        assertFalse("/" in seg("a/b"), "slash must be percent-encoded")
+        // Dots that aren't a whole dot-segment are fine.
+        assertEquals("process.cmd_line", seg("process.cmd_line"))
+    }
+
+    @Test
+    fun `seg rejects dot-segment path traversal`() {
+        assertFailsWith<IllegalArgumentException> { seg("..") }
+        assertFailsWith<IllegalArgumentException> { seg(".") }
     }
 
     @Test

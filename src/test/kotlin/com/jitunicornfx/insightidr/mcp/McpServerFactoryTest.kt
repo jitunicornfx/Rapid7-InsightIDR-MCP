@@ -38,13 +38,16 @@ class McpServerFactoryTest {
         val tools = client.listTools().tools
         val names = tools.map { it.name }.toSet()
 
-        assertEquals(125, tools.size, "expected the full tool inventory")
+        assertEquals(144, tools.size, "expected the full tool inventory")
         assertEquals(tools.size, names.size, "tool names must be unique")
 
         // One representative per registry group.
         for (probe in listOf(
             "validate_connection",           // system
             "list_investigations",           // v2 investigations
+            "search_alerts",                 // SIEM alerts
+            "list_alert_actions",            // SIEM alert actions
+            "get_alert_process_tree",        // SIEM alert process trees
             "search_accounts",               // entities
             "list_comments",                 // comments
             "list_attachments",              // attachments

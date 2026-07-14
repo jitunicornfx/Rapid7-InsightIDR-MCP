@@ -169,8 +169,19 @@ fun query(vararg pairs: Pair<String, Any?>): Map<String, List<String>> {
 fun pagingQuery(args: JsonObject): Map<String, List<String>> =
     query("index" to args.intOrNull("index"), "size" to args.intOrNull("size"))
 
-/** URL-encode a value for safe inclusion as a path segment (e.g. an RRN or id). */
-fun seg(value: String): String = value.encodeURLPathPart()
+/**
+ * URL-encode a value for safe inclusion as a single path segment (e.g. an RRN or id).
+ *
+ * [encodeURLPathPart] neutralizes `/`, `?`, `#`, `%`, and CR/LF, but leaves the RFC 3986 dot-segments
+ * `.` and `..` intact. Since path-parameter values can be model-supplied (and influenced by untrusted
+ * content), a value of exactly `.`/`..` would be interpolated raw and could collapse a path level once
+ * a gateway normalizes it — retargeting the credentialed request to a sibling/parent endpoint. Reject
+ * those outright so every path-param tool keeps its intended single-segment invariant.
+ */
+fun seg(value: String): String {
+    require(value != "." && value != "..") { "Invalid path segment '$value': must not be '.' or '..'." }
+    return value.encodeURLPathPart()
+}
 
 // ---------------------------------------------------------------------------
 // Result formatting

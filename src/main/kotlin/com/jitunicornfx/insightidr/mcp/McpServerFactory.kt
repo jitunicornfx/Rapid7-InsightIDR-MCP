@@ -25,6 +25,9 @@ fun buildInsightIdrServer(client: Rapid7Client): Server {
 
     server.registerSystemTools(client)
     server.registerInvestigationV2Tools(client)
+    server.registerAlertTools(client)
+    server.registerAlertActionTools(client)
+    server.registerAlertProcessTreeTools(client)
     server.registerEntityTools(client)
     server.registerCommentTools(client)
     server.registerAttachmentTools(client)
