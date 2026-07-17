@@ -17,9 +17,14 @@ import kotlinx.serialization.json.*
 /** Common path prefix for the Alerts API (the v2 host carries it under `/idr/at`). */
 private const val AT = "/idr/at"
 
-private const val ALERT_RRN_DESC = "The Rapid7 Resource Name (RRN) of the alert."
-private const val ACTION_RRN_DESC = "The Rapid7 Resource Name (RRN) of the action (alert job)."
-private const val FIELD_ID_DESC = "The unique identifier of the alert field."
+private const val ALERT_RRN_DESC =
+    "The Rapid7 Resource Name (RRN) of the alert — an opaque `rrn:`-prefixed identifier, as returned " +
+        "in the `rrn` field of search_alerts results."
+private const val ACTION_RRN_DESC =
+    "The Rapid7 Resource Name (RRN) of the action (alert job) — as returned in the `action_rrn` field " +
+        "of patch_alerts / investigate_alerts responses, or in the `rrn` field of each action from list_alert_actions."
+private const val FIELD_ID_DESC =
+    "The unique identifier of the alert field, e.g. `process.cmd_line`. Discover ids with list_alert_fields."
 
 // The query key for the free-text SearchOptions filter. Exposed to callers as `search_text` to avoid
 // colliding with the structured `search` request-body object on the same endpoints.
@@ -29,7 +34,7 @@ private const val SEARCH_TEXT_DESC = "Case-insensitive free-text filter limiting
 
 private const val SEARCH_DESC =
     "The structured search criteria object (top-level terms are AND'ed): " +
-        "{ \"start_time\": ISO-8601 (required), \"end_time\": ISO-8601, \"leql\": \"LEQL WHERE clause\", " +
+        "{ \"start_time\": ISO-8601, e.g. \"2026-07-01T00:00:00Z\" (required), \"end_time\": ISO-8601, \"leql\": \"LEQL WHERE clause\", " +
         "\"terms\": [ { \"field_ids\": [string], " +
         "\"operator\": \"EQUALS\"|\"NOT_EQUALS\"|\"CONTAINS\"|\"GREATER_THAN\"|\"LESS_THAN\", " +
         "\"terms\": [value, ...] } ] (required) }."
@@ -71,8 +76,7 @@ fun Server.registerAlertTools(client: Rapid7Client) {
             stringArrayParam("field_ids", "Additional field identifiers to include for each alert.")
             objectArrayParam("aggregates", "Aggregations to apply across all matching results.")
             booleanParam("rrns_only", "If true, return only alert RRNs instead of full alert details. Defaults to false.")
-            integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size.")
+            pagingParams()
         },
     ) { args ->
         val body = buildJsonObject {
@@ -84,11 +88,7 @@ fun Server.registerAlertTools(client: Rapid7Client) {
         client.request(
             HttpMethod.Post,
             "$AT/alerts/ops/search",
-            query = query(
-                "rrns_only" to args.booleanOrNull("rrns_only"),
-                "index" to args.intOrNull("index"),
-                "size" to args.intOrNull("size"),
-            ),
+            query = pagingQuery(args) + query("rrns_only" to args.booleanOrNull("rrns_only")),
             jsonBody = body,
         ).toToolResult()
     }
@@ -164,8 +164,7 @@ fun Server.registerAlertTools(client: Rapid7Client) {
         readOnly = true,
         inputSchema = toolSchema("alert_rrn") {
             stringParam("alert_rrn", ALERT_RRN_DESC)
-            integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size.")
+            pagingParams()
         },
     ) { args ->
         val alertRrn = args.requireString("alert_rrn")
@@ -182,8 +181,7 @@ fun Server.registerAlertTools(client: Rapid7Client) {
         readOnly = true,
         inputSchema = toolSchema("alert_rrn") {
             stringParam("alert_rrn", ALERT_RRN_DESC)
-            integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size.")
+            pagingParams()
         },
     ) { args ->
         val alertRrn = args.requireString("alert_rrn")
@@ -201,8 +199,7 @@ fun Server.registerAlertTools(client: Rapid7Client) {
         inputSchema = toolSchema("alert_rrn") {
             stringParam("alert_rrn", ALERT_RRN_DESC)
             stringParam(SEARCH_TEXT_ARG, SEARCH_TEXT_DESC)
-            integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size.")
+            pagingParams()
         },
     ) { args ->
         val alertRrn = args.requireString("alert_rrn")
@@ -220,8 +217,7 @@ fun Server.registerAlertTools(client: Rapid7Client) {
         inputSchema = toolSchema("search") {
             objectParam("search", SEARCH_DESC)
             stringParam(SEARCH_TEXT_ARG, SEARCH_TEXT_DESC)
-            integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size.")
+            pagingParams()
         },
     ) { args ->
         val body = buildJsonObject { put("search", args.requireObject("search")) }
@@ -252,8 +248,7 @@ fun Server.registerAlertTools(client: Rapid7Client) {
         inputSchema = toolSchema("field_id") {
             stringParam("field_id", FIELD_ID_DESC)
             stringParam(SEARCH_TEXT_ARG, SEARCH_TEXT_DESC)
-            integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size.")
+            pagingParams()
         },
     ) { args ->
         val fieldId = args.requireString("field_id")
@@ -272,8 +267,7 @@ fun Server.registerAlertTools(client: Rapid7Client) {
             stringParam("path", "Limit results to descendants of this node in the field hierarchy (period-separated).")
             integerParam("path_depth", "Depth to round results to after the path filter is applied (minimum 1).")
             stringParam(SEARCH_TEXT_ARG, SEARCH_TEXT_DESC)
-            integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size.")
+            pagingParams()
         },
     ) { args ->
         client.request(
@@ -341,14 +335,13 @@ fun Server.registerAlertActionTools(client: Rapid7Client) {
         description = "List the alert actions (alert jobs) created within a time period, with filtering and sorting.",
         readOnly = true,
         inputSchema = toolSchema {
-            stringParam("start_time", "ISO-8601 timestamp; only actions created at/after this time.")
+            stringParam("start_time", "ISO-8601 timestamp (e.g. 2026-07-01T00:00:00Z); only actions created at/after this time.")
             stringArrayParam("types", "Action types to include (PATCH_ALERT, CREATE_INVESTIGATION).")
             stringParam("sort_field", "Field to sort on.", enum = listOf("CREATED_AT", "TASK_COUNT"))
             stringParam("sort_order", "Sort order.", enum = listOf("ASC", "DESC"))
             stringArrayParam("statuses", "Action statuses to include (PENDING, RUNNING, FAILED, COMPLETE_WITH_ISSUES, COMPLETED).")
             booleanParam("has_failed_tasks", "If true, limit results to actions that have failed tasks.")
-            integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size.")
+            pagingParams()
         },
     ) { args ->
         client.request(
@@ -384,8 +377,7 @@ fun Server.registerAlertActionTools(client: Rapid7Client) {
         inputSchema = toolSchema("action_rrn") {
             stringParam("action_rrn", ACTION_RRN_DESC)
             stringArrayParam("statuses", "Task statuses to include (PENDING, RUNNING, FAILED, COMPLETE_WITH_ISSUES, COMPLETED).")
-            integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size.")
+            pagingParams()
         },
     ) { args ->
         val actionRrn = args.requireString("action_rrn")
@@ -431,8 +423,7 @@ fun Server.registerAlertProcessTreeTools(client: Rapid7Client) {
             stringParam("alert_rrn", ALERT_RRN_DESC)
             booleanParam("force_refresh", "If true, regenerate the trees instead of returning cached versions (expensive).")
             integerParam("branch", "The branch number to generate the process trees with.")
-            integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size.")
+            pagingParams()
         },
     ) { args ->
         val alertRrn = args.requireString("alert_rrn")

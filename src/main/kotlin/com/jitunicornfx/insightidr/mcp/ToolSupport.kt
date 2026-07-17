@@ -88,6 +88,15 @@ fun JsonObjectBuilder.objectParam(name: String, description: String) {
     }
 }
 
+/**
+ * Declare the standard `index` / `size` pagination parameters (paired with [pagingQuery] at
+ * request-build time). [sizeDescription] carries the per-API size limit and default.
+ */
+fun JsonObjectBuilder.pagingParams(sizeDescription: String = "Page size.") {
+    integerParam("index", "Zero-based page index. Defaults to 0.")
+    integerParam("size", sizeDescription)
+}
+
 // ---------------------------------------------------------------------------
 // Argument accessors (over the tool-call arguments JsonObject)
 // ---------------------------------------------------------------------------
@@ -223,11 +232,26 @@ internal fun wrapUntrusted(body: String): String {
     return "$UNTRUSTED_PREAMBLE\n$UNTRUSTED_BEGIN\n$neutralized\n$UNTRUSTED_END"
 }
 
+/** An actionable next step for common HTTP error statuses, appended to error results. */
+private fun statusHint(status: Int): String? = when (status) {
+    400 -> "The API rejected the request as malformed — re-check the parameter values against this tool's input schema."
+    401 -> "Authentication failed — verify INSIGHTIDR_API_KEY holds a valid Insight platform API key for this region."
+    403 -> "The API key lacks the privileges for this operation — an Organization key or additional roles may be required."
+    404 -> "Not found — the id/RRN may be wrong, or the API key cannot access that resource."
+    429 -> "Rate limited — wait briefly before retrying."
+    in 500..599 -> "Server-side error at Rapid7 — retrying may succeed."
+    else -> null
+}
+
 /** Convert an API response into a tool result, marking non-2xx responses as errors. */
 fun ApiResponse.toToolResult(): CallToolResult {
     val rendered = prettyOrRaw(body)
     val text = buildString {
-        if (!ok) append("InsightIDR API returned HTTP $status.\n")
+        if (!ok) {
+            append("InsightIDR API returned HTTP $status.")
+            statusHint(status)?.let { append(" $it") }
+            append("\n")
+        }
         if (rendered.isBlank()) {
             append(if (ok) "Success (HTTP $status, empty response body)." else "(empty response body)")
         } else {
@@ -276,9 +300,15 @@ fun Server.apiTool(
         } catch (e: CancellationException) {
             throw e
         } catch (e: IllegalArgumentException) {
-            errorResult("Invalid arguments for '$name': ${e.message}")
+            errorResult(
+                "Invalid arguments for '$name': ${e.message ?: e::class.simpleName} " +
+                    "— fix the parameter values to match the tool's input schema, then retry.",
+            )
         } catch (e: Exception) {
-            errorResult("Tool '$name' failed: ${e.message}")
+            errorResult(
+                "Tool '$name' failed: ${e.message ?: e::class.simpleName}. " +
+                    "If this looks transient (timeout, connection reset), retrying may succeed.",
+            )
         }
     }
 }

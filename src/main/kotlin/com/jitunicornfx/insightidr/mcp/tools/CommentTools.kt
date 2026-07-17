@@ -15,18 +15,15 @@ fun Server.registerCommentTools(client: Rapid7Client) {
         readOnly = true,
         inputSchema = toolSchema("target") {
             stringParam("target", "RRN of the resource whose comments to list (e.g. an investigation RRN).")
-            integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size (max 100). Defaults to 20.")
+            pagingParams("Page size (max 100). Defaults to 20.")
             stringParam("sortDirection", "Sort direction by creation time.", enum = listOf("ASC", "DESC"))
         },
     ) { args ->
         client.requestV1(
             HttpMethod.Get,
             "/idr/v1/comments",
-            query = query(
+            query = pagingQuery(args) + query(
                 "target" to args.requireString("target"),
-                "index" to args.intOrNull("index"),
-                "size" to args.intOrNull("size"),
                 "sortDirection" to args.stringOrNull("sortDirection"),
             ),
         ).toToolResult()

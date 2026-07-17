@@ -17,8 +17,7 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
         description = "List configured cloud webhooks (API v1).",
         readOnly = true,
         inputSchema = toolSchema {
-            integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size (max 100). Defaults to 10.")
+            pagingParams("Page size (max 100). Defaults to 10.")
         },
     ) { args ->
         client.requestV1(HttpMethod.Get, "/idr/v1/cloud-webhooks", query = pagingQuery(args)).toToolResult()

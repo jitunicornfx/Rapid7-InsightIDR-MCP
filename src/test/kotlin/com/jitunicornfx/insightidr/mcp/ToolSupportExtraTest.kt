@@ -129,6 +129,29 @@ class ToolSupportExtraTest {
     }
 
     @Test
+    fun `toToolResult appends an actionable hint for common error statuses`() {
+        assertTrue("INSIGHTIDR_API_KEY" in textOf(ApiResponse(401, false, "", null).toToolResult()))
+        assertTrue("privileges" in textOf(ApiResponse(403, false, "", null).toToolResult()))
+        assertTrue("id/RRN" in textOf(ApiResponse(404, false, "", null).toToolResult()))
+        assertTrue("input schema" in textOf(ApiResponse(400, false, "", null).toToolResult()))
+        assertTrue("Rate limited" in textOf(ApiResponse(429, false, "", null).toToolResult()))
+        assertTrue("retrying may succeed" in textOf(ApiResponse(503, false, "", null).toToolResult()))
+        // Unmapped statuses stay hint-free but still report the code (pinned exactly).
+        val teapot = textOf(ApiResponse(418, false, "", null).toToolResult())
+        assertEquals("InsightIDR API returned HTTP 418.\n(empty response body)", teapot)
+    }
+
+    @Test
+    fun `pagingParams declares the standard index and size parameters`() {
+        val schema = toolSchema { pagingParams("Page size (max 100). Defaults to 20.") }
+        val props = schema.properties!!
+        assertEquals("integer", props["index"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        assertEquals("integer", props["size"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        assertTrue("max 100" in props["size"]!!.jsonObject["description"]!!.jsonPrimitive.content)
+        assertNull(schema.required)
+    }
+
+    @Test
     fun `toToolResult wraps untrusted body content in the injection-shield envelope`() {
         val text = textOf(ApiResponse(200, true, """{"title":"hello"}""", "application/json").toToolResult())
         assertTrue("UNTRUSTED INSIGHTIDR API DATA" in text, "must announce the data as untrusted")
@@ -158,16 +181,28 @@ class ToolSupportExtraTest {
         val h = mcpHarness {
             apiTool("boom_illegal", "throws IAE") { throw IllegalArgumentException("bad arg") }
             apiTool("boom_generic", "throws RTE") { throw RuntimeException("kaboom") }
+            apiTool("boom_null_iae", "throws message-less IAE") { throw IllegalArgumentException() }
+            apiTool("boom_null_rte", "throws message-less RTE") { throw RuntimeException() }
             apiTool("ok_tool", "fine", readOnly = true) { textResult("hi") }
         }
 
         val illegal = h.call("boom_illegal")
         assertTrue(illegal.isError == true)
         assertTrue("Invalid arguments" in textOf(illegal))
+        assertTrue("input schema" in textOf(illegal), "argument errors must point at the schema")
 
         val generic = h.call("boom_generic")
         assertTrue(generic.isError == true)
         assertTrue("failed" in textOf(generic))
+        assertTrue("retrying" in textOf(generic), "generic failures must suggest a next step")
+
+        // Message-less exceptions fall back to the class name — never the literal word "null".
+        val nullIae = textOf(h.call("boom_null_iae"))
+        assertTrue("IllegalArgumentException" in nullIae)
+        assertFalse(": null" in nullIae)
+        val nullRte = textOf(h.call("boom_null_rte"))
+        assertTrue("RuntimeException" in nullRte)
+        assertFalse(": null" in nullRte)
 
         val ok = h.call("ok_tool")
         assertFalse(ok.isError == true)

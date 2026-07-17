@@ -40,8 +40,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
             "priority, assignee, tags, and a time window, with pagination and sorting.",
         readOnly = true,
         inputSchema = toolSchema {
-            integerParam("index", "Zero-based page index. Defaults to 0.")
-            integerParam("size", "Number of investigations per page (max 100). Defaults to 20.")
+            pagingParams("Number of investigations per page (max 100). Defaults to 20.")
             stringParam("statuses", "Comma-separated statuses to include (OPEN, INVESTIGATING, WAITING, CLOSED).")
             stringParam("sources", "Comma-separated investigation sources to include (e.g. ALERT, MANUAL, HUNT).")
             stringParam("priorities", "Comma-separated priorities to include (UNSPECIFIED, LOW, MEDIUM, HIGH, CRITICAL).")
@@ -56,9 +55,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         client.request(
             HttpMethod.Get,
             "/idr/v2/investigations",
-            query = query(
-                "index" to args.intOrNull("index"),
-                "size" to args.intOrNull("size"),
+            query = pagingQuery(args) + query(
                 "statuses" to args.stringOrNull("statuses"),
                 "sources" to args.stringOrNull("sources"),
                 "priorities" to args.stringOrNull("priorities"),
@@ -97,8 +94,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
             objectArrayParam("sort", "Array of sort objects: { \"field\": string, \"order\": \"ASC\"|\"DESC\" }.")
             stringParam("start_time", "ISO-8601 start of the time window to search.")
             stringParam("end_time", "ISO-8601 end of the time window to search.")
-            integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size (max 100). Defaults to 20.")
+            pagingParams("Page size (max 100). Defaults to 20.")
             booleanParam(MULTI_CUSTOMER_ARG, MULTI_CUSTOMER_DESC)
         },
     ) { args ->
@@ -111,11 +107,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         client.request(
             HttpMethod.Post,
             "/idr/v2/investigations/_search",
-            query = query(
-                "index" to args.intOrNull("index"),
-                "size" to args.intOrNull("size"),
-                MULTI_CUSTOMER_QUERY to args.booleanOrNull(MULTI_CUSTOMER_ARG),
-            ),
+            query = pagingQuery(args) + query(MULTI_CUSTOMER_QUERY to args.booleanOrNull(MULTI_CUSTOMER_ARG)),
             jsonBody = body,
         ).toToolResult()
     }
@@ -299,8 +291,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         readOnly = true,
         inputSchema = toolSchema("identifier") {
             stringParam("identifier", ID_DESC)
-            integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size (max 100). Defaults to 20.")
+            pagingParams("Page size (max 100). Defaults to 20.")
             booleanParam(MULTI_CUSTOMER_ARG, MULTI_CUSTOMER_DESC)
         },
     ) { args ->

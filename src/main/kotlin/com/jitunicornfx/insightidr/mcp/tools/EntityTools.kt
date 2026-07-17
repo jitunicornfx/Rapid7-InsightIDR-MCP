@@ -12,8 +12,7 @@ private fun searchSchema() = toolSchema {
         "Array of criteria objects: { \"field\": string, \"operator\": \"EQUALS\"|\"CONTAINS\"|\"IN\", \"value\": any }.",
     )
     objectArrayParam("sort", "Array of sort objects: { \"field\": string, \"order\": \"ASC\"|\"DESC\" }.")
-    integerParam("index", "Zero-based page index.")
-    integerParam("size", "Page size (max 1000). Defaults to 20.")
+    pagingParams("Page size (max 1000). Defaults to 20.")
 }
 
 private fun Server.searchTool(client: Rapid7Client, name: String, description: String, path: String) {

@@ -34,18 +34,13 @@ fun Server.registerAttachmentTools(client: Rapid7Client) {
         readOnly = true,
         inputSchema = toolSchema("target") {
             stringParam("target", "RRN of the resource whose attachments to list.")
-            integerParam("index", "Zero-based page index.")
-            integerParam("size", "Page size (max 100). Defaults to 20.")
+            pagingParams("Page size (max 100). Defaults to 20.")
         },
     ) { args ->
         client.requestV1(
             HttpMethod.Get,
             "/idr/v1/attachments",
-            query = query(
-                "target" to args.requireString("target"),
-                "index" to args.intOrNull("index"),
-                "size" to args.intOrNull("size"),
-            ),
+            query = pagingQuery(args) + query("target" to args.requireString("target")),
         ).toToolResult()
     }
 
