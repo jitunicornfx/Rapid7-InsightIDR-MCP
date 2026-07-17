@@ -26,7 +26,7 @@ build/reports/jacoco/test/html/index.html
 Coverage is wired into the Gradle build — you don't need to install anything beyond a JDK.
 
 - The `jacoco` plugin is applied in [`build.gradle.kts`](../build.gradle.kts), pinned to
-  `toolVersion = "0.8.13"` (needed to instrument/run on current JDKs — this project builds on JDK 21+
+  `toolVersion = "0.8.15"` (needed to instrument/run on current JDKs — this project builds on JDK 21+
   and has been verified on JDK 25).
 - `test` is `finalizedBy(jacocoTestReport)`, so **every test run refreshes the coverage report**.
 - `jacocoTestReport` produces both **XML** (`xml.required = true`, consumed by SonarQube) and **HTML**

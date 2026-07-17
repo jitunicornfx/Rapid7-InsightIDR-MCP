@@ -4,7 +4,7 @@ plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.shadow)
-    id ("org.sonarqube") version "7.3.0.8198"
+    id ("org.sonarqube") version "7.3.1.8318"
     application
     jacoco
 }
@@ -70,8 +70,8 @@ tasks.test {
 }
 
 jacoco {
-    // 0.8.13 is required to instrument/run under recent JDKs (this project builds on JDK 21+).
-    toolVersion = "0.8.13"
+    // 0.8.15+ is required to instrument/run under recent JDKs (this project builds on JDK 21+).
+    toolVersion = "0.8.15"
 }
 
 tasks.jacocoTestReport {
