@@ -42,8 +42,11 @@ dependencies {
     testImplementation("io.ktor:ktor-client-mock")
 
     // JUnit Platform engine so `useJUnitPlatform()` can actually discover and run tests.
-    testImplementation(platform("org.junit:junit-bom:5.12.2"))
+    // JUnit 6 unifies platform/jupiter/vintage under one 6.x version (baseline Java 17+).
+    testImplementation(platform("org.junit:junit-bom:6.1.2"))
     testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine")
+    // Pin the launcher to the same 6.x line so Gradle's test worker matches the engine.
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 
 }
 
