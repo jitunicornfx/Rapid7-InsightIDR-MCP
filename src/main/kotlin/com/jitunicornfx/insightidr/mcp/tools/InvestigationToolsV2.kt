@@ -31,6 +31,93 @@ private fun JsonObject.assigneeObject(): JsonObject? =
 private fun multiCustomerQuery(args: JsonObject): Map<String, List<String>> =
     query(MULTI_CUSTOMER_QUERY to args.booleanOrNull(MULTI_CUSTOMER_ARG))
 
+// ---------------------------------------------------------------------------
+// Investigations _search: field/operator/value criteria, per the v2 spec's field table.
+// ---------------------------------------------------------------------------
+
+/** The search operators the `_search` endpoint accepts (case-insensitive). */
+private val SEARCH_OPERATORS = listOf("EQUALS", "CONTAINS", "IN")
+
+/**
+ * Searchable fields mapped to the operator the API supports for each, taken verbatim from the v2
+ * `_search` spec's field table. `IN` may additionally be used with an array value to match any of
+ * several values for a given field.
+ */
+private val SEARCHABLE_FIELD_OPERATORS = linkedMapOf(
+    "title" to "CONTAINS",
+    "actor_asset_hostname" to "CONTAINS",
+    "actor_user_name" to "CONTAINS",
+    "status" to "EQUALS",
+    "source" to "EQUALS",
+    "priority" to "EQUALS",
+    "rrn" to "EQUALS",
+    "assignee_id" to "EQUALS",
+    "organization_id" to "EQUALS",
+    "alert_rule_rrn" to "EQUALS",
+    "alert_mitre_t_codes" to "EQUALS",
+)
+
+/** Fields the `_search` endpoint allows sorting on (per the v2 spec's field table). */
+private val SORTABLE_FIELDS = listOf(
+    "created_time", "priority", "rrn",
+    "alerts_most_recent_created_time", "alerts_most_recent_detection_created_time",
+)
+
+private val SEARCH_CRITERIA_DESC =
+    "Array of filter criteria, all AND'ed together. Each item is " +
+        "{ \"field\": string, \"operator\": \"EQUALS\"|\"CONTAINS\"|\"IN\", \"value\": any } " +
+        "(use operator IN with an array value to match any of several values). Searchable fields and " +
+        "the operator each supports: " +
+        SEARCHABLE_FIELD_OPERATORS.entries.joinToString(", ") { "${it.key} (${it.value})" } +
+        ". Example: [{\"field\":\"status\",\"operator\":\"EQUALS\",\"value\":\"OPEN\"}," +
+        "{\"field\":\"title\",\"operator\":\"CONTAINS\",\"value\":\"phishing\"}]."
+
+private val SEARCH_SORT_DESC =
+    "Array of sort objects { \"field\": string, \"order\": \"ASC\"|\"DESC\" }. Sortable fields: " +
+        SORTABLE_FIELDS.joinToString(", ") + "."
+
+/** The string content of a JSON object's primitive property, or null if absent/non-primitive. */
+private fun JsonObject.primitiveText(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull
+
+/**
+ * Structurally validate `_search` criteria before the API call, so malformed field/operator/value
+ * items produce an actionable message instead of a raw API 400. Field names are documented, not
+ * hard-restricted, so newly-added searchable fields keep working.
+ */
+private fun validateSearchCriteria(search: JsonArray?) {
+    search?.forEachIndexed { i, element ->
+        val obj = element as? JsonObject
+            ?: throw IllegalArgumentException("search[$i] must be an object { field, operator, value }.")
+        if (obj.primitiveText("field").isNullOrBlank()) {
+            throw IllegalArgumentException("search[$i].field is required.")
+        }
+        val operator = obj.primitiveText("operator")
+        if (operator == null || operator.uppercase() !in SEARCH_OPERATORS) {
+            throw IllegalArgumentException(
+                "search[$i].operator must be one of ${SEARCH_OPERATORS.joinToString(", ")} (got '${operator ?: "null"}').",
+            )
+        }
+        if (obj["value"].let { it == null || it is JsonNull }) {
+            throw IllegalArgumentException("search[$i].value is required.")
+        }
+    }
+}
+
+/** Structurally validate `_search` sort objects. */
+private fun validateSort(sort: JsonArray?) {
+    sort?.forEachIndexed { i, element ->
+        val obj = element as? JsonObject
+            ?: throw IllegalArgumentException("sort[$i] must be an object { field, order }.")
+        if (obj.primitiveText("field").isNullOrBlank()) {
+            throw IllegalArgumentException("sort[$i].field is required.")
+        }
+        val order = obj.primitiveText("order")
+        if (order == null || order.uppercase() !in listOf("ASC", "DESC")) {
+            throw IllegalArgumentException("sort[$i].order must be ASC or DESC (got '${order ?: "null"}').")
+        }
+    }
+}
+
 /** Registers the InsightIDR API v2 Investigations tools. */
 fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
 
@@ -84,23 +171,25 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
 
     apiTool(
         name = "search_investigations",
-        description = "Search investigations with structured field criteria and sorting over a time range (API v2).",
+        description = "Search and filter investigations with structured field/operator/value criteria and " +
+            "sorting over a created_time window (API v2 _search).",
         readOnly = true,
         inputSchema = toolSchema {
-            objectArrayParam(
-                "search",
-                "Array of criteria objects: { \"field\": string, \"operator\": \"EQUALS\"|\"CONTAINS\"|\"IN\", \"value\": any }.",
-            )
-            objectArrayParam("sort", "Array of sort objects: { \"field\": string, \"order\": \"ASC\"|\"DESC\" }.")
-            stringParam("start_time", "ISO-8601 start of the time window to search.")
-            stringParam("end_time", "ISO-8601 end of the time window to search.")
+            objectArrayParam("search", SEARCH_CRITERIA_DESC)
+            objectArrayParam("sort", SEARCH_SORT_DESC)
+            stringParam("start_time", "ISO-8601 start of the created_time window. Defaults to 28 days ago.")
+            stringParam("end_time", "ISO-8601 end of the created_time window. Defaults to the current time.")
             pagingParams("Page size (max 100). Defaults to 20.")
             booleanParam(MULTI_CUSTOMER_ARG, MULTI_CUSTOMER_DESC)
         },
     ) { args ->
+        val search = args.arrayOrNull("search")
+        val sort = args.arrayOrNull("sort")
+        validateSearchCriteria(search)
+        validateSort(sort)
         val body = buildJsonObject {
-            putOpt("search", args.arrayOrNull("search"))
-            putOpt("sort", args.arrayOrNull("sort"))
+            putOpt("search", search)
+            putOpt("sort", sort)
             putOpt("start_time", args.stringOrNull("start_time"))
             putOpt("end_time", args.stringOrNull("end_time"))
         }

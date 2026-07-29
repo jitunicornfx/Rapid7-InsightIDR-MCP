@@ -2,8 +2,11 @@ package com.jitunicornfx.insightidr.mcp
 
 import com.jitunicornfx.insightidr.mcp.tools.registerInvestigationV2Tools
 import io.ktor.http.HttpMethod
+import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
+import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
@@ -16,6 +19,8 @@ class InvestigationToolsV2Test {
 
     private suspend fun harness(status: io.ktor.http.HttpStatusCode = io.ktor.http.HttpStatusCode.OK, body: String = "{}") =
         mcpHarness(status = status, responseBody = body) { registerInvestigationV2Tools(it) }
+
+    private fun textOf(result: CallToolResult): String = (result.content.first() as TextContent).text
 
     @Test
     fun `list_investigations builds query with dotted and hyphenated keys`() = runBlocking {
@@ -52,12 +57,17 @@ class InvestigationToolsV2Test {
     }
 
     @Test
-    fun `search_investigations posts search and sort in the body`() = runBlocking {
+    fun `search_investigations posts field-operator-value criteria and sort in the body`() = runBlocking {
         val h = harness(body = "[]")
         h.call(
             "search_investigations",
             mapOf(
-                "search" to listOf(mapOf("field" to "priority", "operator" to "EQUALS", "value" to "HIGH")),
+                "search" to listOf(
+                    mapOf("field" to "status", "operator" to "EQUALS", "value" to "OPEN"),
+                    mapOf("field" to "title", "operator" to "CONTAINS", "value" to "phishing"),
+                    // IN with an array value matches any of several values.
+                    mapOf("field" to "priority", "operator" to "IN", "value" to listOf("HIGH", "CRITICAL")),
+                ),
                 "sort" to listOf(mapOf("field" to "created_time", "order" to "DESC")),
                 "start_time" to "2026-01-01T00:00:00Z",
             ),
@@ -65,9 +75,70 @@ class InvestigationToolsV2Test {
         assertEquals(HttpMethod.Post, h.lastRequest.method)
         assertEquals("/idr/v2/investigations/_search", h.lastRequest.url.encodedPath)
         val body = h.lastBodyJson()
-        assertTrue("search" in body)
-        assertTrue("sort" in body)
+        val criteria = body["search"]!!.jsonArray
+        assertEquals(3, criteria.size)
+        assertEquals("status", criteria[0].jsonObject["field"]!!.jsonPrimitive.content)
+        assertEquals("EQUALS", criteria[0].jsonObject["operator"]!!.jsonPrimitive.content)
+        assertEquals("OPEN", criteria[0].jsonObject["value"]!!.jsonPrimitive.content)
+        assertEquals(2, criteria[2].jsonObject["value"]!!.jsonArray.size)
+        assertEquals("DESC", body["sort"]!!.jsonArray[0].jsonObject["order"]!!.jsonPrimitive.content)
         assertEquals("2026-01-01T00:00:00Z", body["start_time"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `search_investigations rejects malformed criteria before calling the API`() = runBlocking {
+        val h = harness(body = "[]")
+
+        // Unknown operator.
+        val badOp = h.call(
+            "search_investigations",
+            mapOf("search" to listOf(mapOf("field" to "status", "operator" to "LIKE", "value" to "OPEN"))),
+        )
+        assertTrue(badOp.isError == true)
+        assertTrue("operator" in textOf(badOp) && "LIKE" in textOf(badOp))
+
+        // Missing value.
+        val noValue = h.call(
+            "search_investigations",
+            mapOf("search" to listOf(mapOf("field" to "status", "operator" to "EQUALS"))),
+        )
+        assertTrue(noValue.isError == true)
+        assertTrue("value" in textOf(noValue))
+
+        // Missing field.
+        val noField = h.call(
+            "search_investigations",
+            mapOf("search" to listOf(mapOf("operator" to "EQUALS", "value" to "OPEN"))),
+        )
+        assertTrue(noField.isError == true)
+        assertTrue("field" in textOf(noField))
+
+        // Bad sort order.
+        val badSort = h.call(
+            "search_investigations",
+            mapOf("sort" to listOf(mapOf("field" to "created_time", "order" to "UP"))),
+        )
+        assertTrue(badSort.isError == true)
+        assertTrue("order" in textOf(badSort))
+
+        // No request should have been sent for any of the rejected calls.
+        assertEquals(0, h.requests.size, "malformed searches must not reach the API")
+    }
+
+    @Test
+    fun `search_investigations accepts lowercase operators and omitted search`() = runBlocking {
+        val h = harness(body = "[]")
+        // Operators are case-insensitive per the spec; an all-criteria-omitted search is a valid time-range query.
+        val ok = h.call(
+            "search_investigations",
+            mapOf("search" to listOf(mapOf("field" to "title", "operator" to "contains", "value" to "vpn"))),
+        )
+        assertFalse(ok.isError == true)
+        assertEquals("/idr/v2/investigations/_search", h.lastRequest.url.encodedPath)
+
+        val empty = h.call("search_investigations", mapOf("size" to 5))
+        assertFalse(empty.isError == true)
+        assertEquals("5", h.lastRequest.url.parameters["size"])
     }
 
     @Test
