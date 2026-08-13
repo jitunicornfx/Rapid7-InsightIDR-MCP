@@ -14,7 +14,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 
 const val SERVER_NAME = "rapid7-insightidr-mcp"
-const val SERVER_VERSION = "0.1.6"
+const val SERVER_VERSION = "0.1.7"
 
 /**
  * Build a fully-configured MCP [Server] with every InsightIDR tool registered.
