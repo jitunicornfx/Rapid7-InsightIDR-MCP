@@ -10,6 +10,7 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -84,6 +85,76 @@ class UpdateCheckerTest {
                 "a malformed tag must never be treated as an update: $tag",
             )
         }
+    }
+
+    @Test
+    fun `parseAsset accepts a well-formed release asset`() {
+        val body = """
+            {"tag_name":"v9.9.9","assets":[
+              {"name":"rapid7-insightidr-mcp-9.9.9-all.jar",
+               "browser_download_url":"https://github.com/jitunicornfx/Rapid7-InsightIDR-MCP/releases/download/v9.9.9/rapid7-insightidr-mcp-9.9.9-all.jar",
+               "digest":"sha256:${"a".repeat(64)}","size":18941746}]}
+        """.trimIndent()
+        val asset = UpdateChecker.parseAsset(body)
+        assertNotNull(asset)
+        assertEquals("rapid7-insightidr-mcp-9.9.9-all.jar", asset.name)
+        assertEquals("a".repeat(64), asset.sha256, "the sha256: prefix is stripped")
+        assertEquals(18941746L, asset.sizeBytes)
+    }
+
+    @Test
+    fun `parseAsset refuses assets that are not safe to install`() {
+        fun body(name: String, url: String, digest: String, size: String) = """
+            {"tag_name":"v9.9.9","assets":[{"name":"$name","browser_download_url":"$url",
+             "digest":"$digest","size":$size}]}
+        """.trimIndent()
+
+        val goodUrl = "https://github.com/jitunicornfx/Rapid7-InsightIDR-MCP/releases/download/v9.9.9/app-all.jar"
+        val goodDigest = "sha256:${"a".repeat(64)}"
+
+        // No digest at all — the integrity anchor is mandatory.
+        assertNull(UpdateChecker.parseAsset("""{"assets":[{"name":"app-all.jar","browser_download_url":"$goodUrl","size":10}]}"""))
+        // Malformed / non-sha256 digests.
+        assertNull(UpdateChecker.parseAsset(body("app-all.jar", goodUrl, "md5:${"a".repeat(32)}", "10")))
+        assertNull(UpdateChecker.parseAsset(body("app-all.jar", goodUrl, "sha256:nothex", "10")))
+        // Download host must be GitHub, over HTTPS, with no suffix or userinfo trickery.
+        assertNull(UpdateChecker.parseAsset(body("app-all.jar", "https://attacker.example/app-all.jar", goodDigest, "10")))
+        assertNull(UpdateChecker.parseAsset(body("app-all.jar", "https://github.com.attacker.example/app-all.jar", goodDigest, "10")))
+        assertNull(UpdateChecker.parseAsset(body("app-all.jar", "https://github.com@attacker.example/app-all.jar", goodDigest, "10")))
+        assertNull(UpdateChecker.parseAsset(body("app-all.jar", "http://github.com/app-all.jar", goodDigest, "10")))
+        // Asset names must be plain filenames, never paths.
+        assertNull(UpdateChecker.parseAsset(body("../../etc/passwd-all.jar", goodUrl, goodDigest, "10")))
+        assertNull(UpdateChecker.parseAsset(body("evil-all.exe", goodUrl, goodDigest, "10")))
+        // Implausible sizes.
+        assertNull(UpdateChecker.parseAsset(body("app-all.jar", goodUrl, goodDigest, "0")))
+        assertNull(UpdateChecker.parseAsset(body("app-all.jar", goodUrl, goodDigest, "999999999999")))
+        // A release with no assets at all.
+        assertNull(UpdateChecker.parseAsset("""{"tag_name":"v9.9.9","assets":[]}"""))
+    }
+
+    @Test
+    fun `isAllowedDownloadUrl accepts only GitHub hosts over https`() {
+        assertTrue(UpdateChecker.isAllowedDownloadUrl("https://github.com/x"))
+        assertTrue(UpdateChecker.isAllowedDownloadUrl("https://objects.githubusercontent.com/x"))
+        assertTrue(UpdateChecker.isAllowedDownloadUrl("https://release-assets.githubusercontent.com/x"))
+        assertFalse(UpdateChecker.isAllowedDownloadUrl("http://github.com/x"), "plaintext is refused")
+        assertFalse(UpdateChecker.isAllowedDownloadUrl("https://evil.example/x"))
+        assertFalse(UpdateChecker.isAllowedDownloadUrl("https://githubusercontent.com.evil.example/x"))
+        assertFalse(UpdateChecker.isAllowedDownloadUrl("https://github.com@evil.example/x"))
+        assertFalse(UpdateChecker.isAllowedDownloadUrl("file:///etc/passwd"))
+        assertFalse(UpdateChecker.isAllowedDownloadUrl("not a url"))
+    }
+
+    @Test
+    fun `evaluate exposes the asset only when an update is actually newer`() {
+        val body = """
+            {"tag_name":"v9.9.9","assets":[
+              {"name":"app-all.jar",
+               "browser_download_url":"https://github.com/jitunicornfx/Rapid7-InsightIDR-MCP/releases/download/v9.9.9/app-all.jar",
+               "digest":"sha256:${"b".repeat(64)}","size":100}]}
+        """.trimIndent()
+        assertNotNull(UpdateChecker.evaluate(body, "0.1.6").asset, "newer release exposes its asset")
+        assertNull(UpdateChecker.evaluate(body, "99.0.0").asset, "no asset when already up to date")
     }
 
     @Test

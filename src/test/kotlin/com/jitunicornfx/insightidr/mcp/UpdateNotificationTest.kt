@@ -8,6 +8,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import io.modelcontextprotocol.kotlin.sdk.client.Client
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
+import io.modelcontextprotocol.kotlin.sdk.types.LoggingLevel
 import io.modelcontextprotocol.kotlin.sdk.types.LoggingMessageNotification
 import io.modelcontextprotocol.kotlin.sdk.types.Method
 import kotlinx.coroutines.CompletableDeferred
@@ -131,6 +132,63 @@ class UpdateNotificationTest {
             server.notifyUpdateAvailable(session, result)
             assertNull(withTimeoutOrNull(500) { received.await() }, "no notification may be sent")
         }
+    }
+
+    @Test
+    fun `an install outcome is delivered to the client with a restart flag`() = runBlocking {
+        val server = buildInsightIdrServer(mockClient())
+        val received = CompletableDeferred<LoggingMessageNotification>()
+        val (session, _) = connect(server, received)
+
+        server.notifyUpdateInstalled(session, UpdateInstaller.Outcome.Installed("9.9.9", "/opt/app.jar"))
+
+        val notification = assertNotNull(withTimeoutOrNull(2_000) { received.await() })
+        val data = notification.params.data.jsonObject
+        assertEquals(LoggingLevel.Info, notification.params.level)
+        assertTrue("9.9.9" in data["message"]!!.jsonPrimitive.content)
+        assertTrue("Restart" in data["message"]!!.jsonPrimitive.content)
+        assertTrue(data["restart_required"]!!.jsonPrimitive.content.toBoolean())
+        // The absolute install path is deliberately NOT forwarded to the model.
+        assertFalse("/opt/app.jar" in data["message"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `a staged install tells the client a restart is still required`() = runBlocking {
+        val server = buildInsightIdrServer(mockClient())
+        val received = CompletableDeferred<LoggingMessageNotification>()
+        val (session, _) = connect(server, received)
+
+        server.notifyUpdateInstalled(session, UpdateInstaller.Outcome.Staged("9.9.9", "/opt/app.jar.new", "a".repeat(64)))
+
+        val data = assertNotNull(withTimeoutOrNull(2_000) { received.await() }).params.data.jsonObject
+        assertTrue("9.9.9" in data["message"]!!.jsonPrimitive.content)
+        assertTrue(data["restart_required"]!!.jsonPrimitive.content.toBoolean())
+    }
+
+    @Test
+    fun `a failed install is reported as a warning and needs no restart`() = runBlocking {
+        val server = buildInsightIdrServer(mockClient())
+        val received = CompletableDeferred<LoggingMessageNotification>()
+        val (session, _) = connect(server, received)
+
+        server.notifyUpdateInstalled(session, UpdateInstaller.Outcome.Failed("SHA-256 mismatch for 9.9.9"))
+
+        val notification = assertNotNull(withTimeoutOrNull(2_000) { received.await() })
+        assertEquals(LoggingLevel.Warning, notification.params.level)
+        val data = notification.params.data.jsonObject
+        assertTrue("SHA-256 mismatch" in data["message"]!!.jsonPrimitive.content)
+        assertFalse(data["restart_required"]!!.jsonPrimitive.content.toBoolean())
+    }
+
+    @Test
+    fun `a skipped install sends nothing at all`() = runBlocking {
+        val server = buildInsightIdrServer(mockClient())
+        val received = CompletableDeferred<LoggingMessageNotification>()
+        val (session, _) = connect(server, received)
+
+        server.notifyUpdateInstalled(session, UpdateInstaller.Outcome.Skipped)
+
+        assertNull(withTimeoutOrNull(500) { received.await() }, "nothing to report means no notification")
     }
 
     @Test

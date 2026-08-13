@@ -35,7 +35,8 @@ Configuration is read from environment variables:
 | `INSIGHTIDR_LOG_SEARCH_BASE_URL` |  | `https://<region>.rest.logs.insight.rapid7.com` | Log Search API base override (default follows the Log Search spec servers; set to `https://<region>.api.insight.rapid7.com/log_search` for the unified platform route). |
 | `INSIGHTIDR_TIMEOUT_MS`  |          | `60000`                                   | Per-request timeout in milliseconds.                           |
 | `INSIGHTIDR_HTTP_ALLOWED_ORIGINS` |  | *(empty — deny cross-origin)*    | `--http` mode only: comma-separated browser origins allowed via CORS (e.g. `https://app.example.com`). Empty denies all cross-origin browser access; non-browser MCP clients are unaffected. Never use `*`. |
-| `INSIGHTIDR_DISABLE_UPDATE_CHECK` |  | *(unset — check enabled)*        | Set to `1`/`true`/`yes` to skip the startup check for a newer GitHub release (see [Update notifications](#update-notifications)). |
+| `INSIGHTIDR_DISABLE_UPDATE_CHECK` |  | *(unset — check enabled)*        | Set to `1`/`true`/`yes` to skip the startup check for a newer GitHub release (see [Update notifications](#update-notifications)). Implies no automatic installation. |
+| `INSIGHTIDR_DISABLE_AUTO_UPDATE` |  | *(unset — installing enabled)*   | Set to `1`/`true`/`yes` to report new releases but never download or install them (see [Automatic installation](#automatic-installation)). |
 
 See [`.env.example`](.env.example).
 
@@ -228,8 +229,50 @@ The check is deliberately unobtrusive:
   degrade silently to "no update".
 - **Sends no credentials** — it calls the public releases endpoint with its own unauthenticated HTTP
   client; your `INSIGHTIDR_API_KEY` is only ever sent to Rapid7 hosts.
-- **Opt-out** — set `INSIGHTIDR_DISABLE_UPDATE_CHECK=1` to skip the network call entirely (useful in
-  air-gapped or egress-restricted deployments).
+- **Opt-out** — set `INSIGHTIDR_DISABLE_UPDATE_CHECK=1` (or pass `--no-update-check`) to skip the
+  network call entirely (useful in air-gapped or egress-restricted deployments).
+
+### Automatic installation
+
+When a newer release is found, the server also downloads it and replaces the JAR it is running from.
+**The new code takes effect the next time you start the server** — the running process keeps serving
+with the version it started on.
+
+| Control | Effect |
+|---------|--------|
+| *(default)* | Download, verify and install new releases automatically. |
+| `INSIGHTIDR_DISABLE_AUTO_UPDATE=1` or `--no-auto-update` | Still tell you an update exists, but never download or install it. |
+| `INSIGHTIDR_DISABLE_UPDATE_CHECK=1` or `--no-update-check` | Don't even check; implies no installation. |
+
+How a download is trusted before it replaces anything:
+
+- **SHA-256 is mandatory.** The release asset's digest, as published by the GitHub API, is verified
+  against the bytes actually written to disk. A mismatch — or a download whose length disagrees with
+  the advertised size — is deleted, never installed.
+- **GitHub hosts only.** The asset URL and every redirect hop must be HTTPS on a GitHub-owned host,
+  so a redirect cannot divert the download elsewhere.
+- **It must be this program.** The downloaded JAR is opened and checked for the server's entry point
+  before any swap, so a valid-but-wrong artifact can't leave you with an unstartable server.
+- **The old JAR is recoverable.** The swap prefers an atomic replace. Where the operating system
+  won't allow replacing a JAR that is currently running (Windows), the verified download is staged
+  alongside it and applied as the server exits, with a backup taken first so a failed write rolls back.
+- **No credentials leave Rapid7.** The download uses its own unauthenticated client.
+
+> **Running more than one instance from the same JAR.** Installation is serialised across processes
+> with a lock file beside the JAR, and a contended install is skipped rather than raced. But where the
+> operating system forbids replacing a running JAR (Windows), applying the update means rewriting that
+> file's bytes — and *other* server processes started from the same path have it open and load classes
+> from it lazily. If you run several instances from one JAR (for example one stdio process per MCP
+> client), set `INSIGHTIDR_DISABLE_AUTO_UPDATE=1` and update deliberately while they are stopped.
+
+> **Residual risk, stated plainly.** The digest is published by the same GitHub API response that
+> advertises the download, so verification protects against a tampered or corrupted *download* — not
+> against a compromise of the GitHub repository or account itself, which could publish malicious bytes
+> with a matching digest. Automatic installation is therefore a decision to trust that repository to
+> run code on this host. If that trust is not appropriate for your environment — and in a SOC holding
+> an InsightIDR API key it may well not be — set `INSIGHTIDR_DISABLE_AUTO_UPDATE=1` and update
+> manually. Defending against a publisher compromise requires signature verification against a pinned
+> key, which this project does not yet publish.
 
 ## Design notes
 

@@ -7,6 +7,7 @@ import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -52,12 +53,81 @@ object UpdateChecker {
      */
     private val VERSION_TAG = Regex("""^[vV]?\d{1,6}(\.\d{1,6}){0,3}([-+][0-9A-Za-z.]{1,32})?$""")
 
+    /** Hosts a release asset may be downloaded from. GitHub serves release binaries off its CDN. */
+    private val ALLOWED_DOWNLOAD_HOSTS = setOf(
+        "github.com",
+        "api.github.com",
+        "objects.githubusercontent.com",
+        "release-assets.githubusercontent.com",
+    )
+
+    /** A release asset filename: a bare, safe filename — never a path. */
+    private val ASSET_NAME = Regex("""^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.jar$""")
+
+    /** GitHub's asset integrity digest, e.g. `sha256:abc...` (64 lowercase hex characters). */
+    private val ASSET_DIGEST = Regex("""^sha256:[0-9a-f]{64}$""")
+
+    /** Largest release binary accepted, a sanity bound well above the real ~19MB artifact. */
+    const val MAX_ASSET_BYTES = 200_000_000L
+
+    /**
+     * A downloadable release binary, with everything needed to fetch and *verify* it.
+     *
+     * Every field is validated at parse time ([parseAsset]) because this drives code installation:
+     * [name] is a bare filename (never a path), [downloadUrl] is HTTPS on a GitHub-owned host, and
+     * [sha256] is the mandatory integrity anchor — an asset without a usable digest is not offered.
+     */
+    data class ReleaseAsset(
+        val name: String,
+        val downloadUrl: String,
+        val sha256: String,
+        val sizeBytes: Long,
+    )
+
+    /** Whether [url] is an HTTPS URL on a host we are willing to download a release binary from. */
+    internal fun isAllowedDownloadUrl(url: String): Boolean {
+        val parsed = runCatching { Url(url) }.getOrNull() ?: return false
+        if (parsed.protocol != URLProtocol.HTTPS) return false
+        val host = parsed.host.lowercase()
+        // Exact host match only — no suffix matching, so "objects.githubusercontent.com.evil.tld"
+        // and userinfo tricks ("https://github.com@evil.tld/x") cannot pass.
+        return host in ALLOWED_DOWNLOAD_HOSTS
+    }
+
+    /**
+     * Extract the single runnable fat-JAR asset from a release payload, or null when the release has
+     * no asset that is safe to install. Rejects assets whose name is not a plain `.jar` filename,
+     * whose URL is not HTTPS on a GitHub host, whose size is absent/implausible, or — critically —
+     * that carry no `sha256:` digest, since the digest is what makes the download verifiable.
+     */
+    internal fun parseAsset(body: String): ReleaseAsset? {
+        if (body.length > MAX_BODY_BYTES) return null
+        val json = runCatching { JsonCodec.compact.parseToJsonElement(body) as? JsonObject }.getOrNull() ?: return null
+        val assets = json["assets"] as? JsonArray ?: return null
+        return assets.asSequence()
+            .mapNotNull { it as? JsonObject }
+            .mapNotNull { asset ->
+                val name = (asset["name"] as? JsonPrimitive)?.contentOrNull?.trim() ?: return@mapNotNull null
+                val url = (asset["browser_download_url"] as? JsonPrimitive)?.contentOrNull?.trim() ?: return@mapNotNull null
+                val digest = (asset["digest"] as? JsonPrimitive)?.contentOrNull?.trim()?.lowercase() ?: return@mapNotNull null
+                val size = (asset["size"] as? JsonPrimitive)?.contentOrNull?.toLongOrNull() ?: return@mapNotNull null
+                if (!ASSET_NAME.matches(name)) return@mapNotNull null
+                if (!isAllowedDownloadUrl(url)) return@mapNotNull null
+                if (!ASSET_DIGEST.matches(digest)) return@mapNotNull null
+                if (size <= 0 || size > MAX_ASSET_BYTES) return@mapNotNull null
+                ReleaseAsset(name, url, digest.removePrefix("sha256:"), size)
+            }
+            .firstOrNull { it.name.endsWith("-all.jar") }
+    }
+
     /** The outcome of a check. [latestVersion] is only set when a newer release was found. */
     data class Result(
         val updateAvailable: Boolean,
         val currentVersion: String,
         val latestVersion: String? = null,
         val releaseUrl: String = RELEASES_PAGE_URL,
+        /** The verified-downloadable binary for [latestVersion], when the release publishes one. */
+        val asset: ReleaseAsset? = null,
     ) {
         /** The message surfaced to the MCP client. */
         fun message(): String =
@@ -123,6 +193,7 @@ object UpdateChecker {
             updateAvailable = newer,
             currentVersion = currentVersion,
             latestVersion = if (newer) latest.removePrefix("v").removePrefix("V") else null,
+            asset = if (newer) parseAsset(body) else null,
         )
     }
 

@@ -110,3 +110,43 @@ suspend fun Server.notifyUpdateAvailable(session: ServerSession, result: UpdateC
         )
     }.onFailure { System.err.println("[insightidr-mcp] Update notification not delivered: ${it.message}") }
 }
+
+/**
+ * Tell the client the result of an automatic installation, so an operator knows a restart is due
+ * (or that the install was refused).
+ *
+ * Every string here is server-authored — the version has already passed [UpdateChecker]'s strict
+ * version allow-list and failure reasons are fixed text — so no remote content is forwarded to the
+ * model. A failure is reported at `Warning` because it means the server is still on the old build.
+ */
+suspend fun Server.notifyUpdateInstalled(session: ServerSession, outcome: UpdateInstaller.Outcome) {
+    val (level, message) = when (outcome) {
+        is UpdateInstaller.Outcome.Installed ->
+            LoggingLevel.Info to "Version ${outcome.version} has been installed. Restart the server to run it."
+
+        is UpdateInstaller.Outcome.Staged ->
+            LoggingLevel.Info to
+                "Version ${outcome.version} has been downloaded and verified, and will be applied " +
+                "when this server exits. Restart the server to run it."
+
+        is UpdateInstaller.Outcome.Failed ->
+            LoggingLevel.Warning to "Automatic update did not complete: ${outcome.reason}"
+
+        UpdateInstaller.Outcome.Skipped -> return
+    }
+    runCatching {
+        sendLoggingMessage(
+            session.sessionId,
+            LoggingMessageNotification(
+                LoggingMessageNotificationParams(
+                    level = level,
+                    logger = UPDATE_LOGGER_NAME,
+                    data = buildJsonObject {
+                        put("message", JsonPrimitive(message))
+                        put("restart_required", JsonPrimitive(outcome is UpdateInstaller.Outcome.Installed || outcome is UpdateInstaller.Outcome.Staged))
+                    },
+                ),
+            ),
+        )
+    }.onFailure { System.err.println("[insightidr-mcp] Install notification not delivered: ${it.message}") }
+}

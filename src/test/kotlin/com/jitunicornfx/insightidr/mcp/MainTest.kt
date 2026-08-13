@@ -19,16 +19,18 @@ class MainTest {
         var transport: Transport? = null
         var host: String? = null
         var port: Int? = null
+        var config: Config? = null
     }
 
     /** Build a command whose config is fixed and whose server launch is captured (never blocks). */
     private fun commandCapturing(captured: Captured, config: Config = fakeConfig) =
         Rapid7InsightIdrCommand(
             configProvider = { config },
-            serve = { transport, host, port, _ ->
+            serve = { transport, host, port, effectiveConfig ->
                 captured.transport = transport
                 captured.host = host
                 captured.port = port
+                captured.config = effectiveConfig
             },
         )
 
@@ -98,5 +100,42 @@ class MainTest {
         assertTrue("Configuration error" in result.output)
         assertTrue("missing INSIGHTIDR_API_KEY" in result.output)
         assertNull(captured.transport, "server must not launch when config fails")
+    }
+
+    @Test
+    fun `help documents the update opt-out options`() {
+        val output = commandCapturing(Captured()).test("--help").output
+        assertTrue("--no-auto-update" in output)
+        assertTrue("--no-update-check" in output)
+    }
+
+    @Test
+    fun `automatic installation runs unless it is switched off`() {
+        val on = Captured()
+        commandCapturing(on).test("--stdio")
+        assertEquals(false, on.config?.autoUpdateDisabled, "enabled by default")
+
+        val off = Captured()
+        commandCapturing(off).test("--stdio --no-auto-update")
+        assertEquals(true, off.config?.autoUpdateDisabled)
+        assertEquals(false, off.config?.updateCheckDisabled, "the check itself still runs")
+    }
+
+    @Test
+    fun `--no-update-check also stops anything being installed`() {
+        val captured = Captured()
+        commandCapturing(captured).test("--stdio --no-update-check")
+        assertEquals(true, captured.config?.updateCheckDisabled)
+        assertEquals(true, captured.config?.autoUpdateDisabled, "no check means nothing to install")
+    }
+
+    @Test
+    fun `a command-line flag can only tighten what the environment already disabled`() {
+        // The environment switched installation off; omitting the flag must NOT turn it back on.
+        val envDisabled = fakeConfig.copy(autoUpdateDisabled = true, updateCheckDisabled = true)
+        val captured = Captured()
+        commandCapturing(captured, envDisabled).test("--stdio")
+        assertEquals(true, captured.config?.autoUpdateDisabled)
+        assertEquals(true, captured.config?.updateCheckDisabled)
     }
 }

@@ -3,6 +3,7 @@ package com.jitunicornfx.insightidr.mcp
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class ConfigTest {
@@ -100,5 +101,40 @@ class ConfigTest {
             ),
         )
         assertEquals(listOf("https://app.example.com", "https://b.example.com:8443"), config.httpAllowedOrigins)
+    }
+
+    @Test
+    fun `update check and auto update are enabled by default`() {
+        val config = Config.fromEnv(mapOf(Config.ENV_API_KEY to "key"))
+        assertFalse(config.updateCheckDisabled)
+        assertFalse(config.autoUpdateDisabled)
+    }
+
+    @Test
+    fun `auto update is disabled by any truthy value and unaffected by others`() {
+        fun autoUpdateDisabledWith(value: String) = Config.fromEnv(
+            mapOf(Config.ENV_API_KEY to "key", Config.ENV_DISABLE_AUTO_UPDATE to value),
+        ).autoUpdateDisabled
+
+        for (truthy in listOf("1", "true", "TRUE", "yes", "on", " true ")) {
+            assertTrue(autoUpdateDisabledWith(truthy), "'$truthy' must disable automatic installation")
+        }
+        for (other in listOf("0", "false", "no", "off", "")) {
+            assertFalse(autoUpdateDisabledWith(other), "'$other' must leave automatic installation enabled")
+        }
+    }
+
+    @Test
+    fun `disabling auto update leaves the update check running and vice versa`() {
+        val noInstall = Config.fromEnv(
+            mapOf(Config.ENV_API_KEY to "key", Config.ENV_DISABLE_AUTO_UPDATE to "1"),
+        )
+        assertTrue(noInstall.autoUpdateDisabled)
+        assertFalse(noInstall.updateCheckDisabled, "the notification survives when only installation is off")
+
+        val noCheck = Config.fromEnv(
+            mapOf(Config.ENV_API_KEY to "key", Config.ENV_DISABLE_UPDATE_CHECK to "1"),
+        )
+        assertTrue(noCheck.updateCheckDisabled)
     }
 }

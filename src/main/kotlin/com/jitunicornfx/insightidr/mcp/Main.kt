@@ -5,6 +5,7 @@ import com.github.ajalt.clikt.core.Context
 import com.github.ajalt.clikt.core.ProgramResult
 import com.github.ajalt.clikt.core.main
 import com.github.ajalt.clikt.parameters.options.default
+import com.github.ajalt.clikt.parameters.options.flag
 import com.github.ajalt.clikt.parameters.options.help
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.options.switch
@@ -28,10 +29,14 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.io.asSink
 import kotlinx.io.asSource
 import kotlinx.io.buffered
+import java.io.File
 import java.io.PrintStream
 
 private const val DEFAULT_HTTP_HOST = "127.0.0.1"
 private const val DEFAULT_HTTP_PORT = 3001
+
+/** Guards [autoInstall] so a release is downloaded and installed at most once per process. */
+private val installAttempted = java.util.concurrent.atomic.AtomicBoolean(false)
 
 internal enum class Transport { STDIO, HTTP }
 
@@ -86,13 +91,33 @@ class Rapid7InsightIdrCommand internal constructor(
         .default(DEFAULT_HTTP_PORT)
         .help("Port to listen on in HTTP mode. Defaults to $DEFAULT_HTTP_PORT.")
 
+    private val noAutoUpdate: Boolean by option("--no-auto-update")
+        .flag(default = false)
+        .help(
+            "Never download or install a new release; only report that one is available. " +
+                "Equivalent to ${Config.ENV_DISABLE_AUTO_UPDATE}=1.",
+        )
+
+    private val noUpdateCheck: Boolean by option("--no-update-check")
+        .flag(default = false)
+        .help(
+            "Skip the startup check for a newer release entirely (implies --no-auto-update). " +
+                "Equivalent to ${Config.ENV_DISABLE_UPDATE_CHECK}=1.",
+        )
+
     override fun run() {
-        val config = try {
+        val fromEnv = try {
             configProvider()
         } catch (e: Exception) {
             echo("Configuration error: ${e.message}", err = true)
             throw ProgramResult(1)
         }
+        // A command-line flag can only ever tighten the environment's setting, never re-enable
+        // something the environment switched off.
+        val config = fromEnv.copy(
+            updateCheckDisabled = fromEnv.updateCheckDisabled || noUpdateCheck,
+            autoUpdateDisabled = fromEnv.autoUpdateDisabled || noAutoUpdate || noUpdateCheck,
+        )
         serve(transport, host, port, config)
     }
 }
@@ -136,6 +161,7 @@ private fun CoroutineScope.notifyWhenInitialized(
     server: io.modelcontextprotocol.kotlin.sdk.server.Server,
     session: io.modelcontextprotocol.kotlin.sdk.server.ServerSession,
     updateCheck: Deferred<UpdateChecker.Result>?,
+    config: Config,
 ) {
     if (updateCheck == null) return
     session.onInitialized {
@@ -143,8 +169,67 @@ private fun CoroutineScope.notifyWhenInitialized(
             val result = runCatching { updateCheck.await() }.getOrNull() ?: return@launch
             if (result.updateAvailable) System.err.println("[insightidr-mcp] ${result.message()}")
             server.notifyUpdateAvailable(session, result)
+            if (result.updateAvailable) {
+                val outcome = autoInstall(config, result)
+                if (outcome != null) server.notifyUpdateInstalled(session, outcome)
+            }
         }
     }
+}
+
+/**
+ * Download and install [result]'s release, unless automatic installation is switched off.
+ *
+ * Returns null when nothing was attempted. A [UpdateInstaller.Outcome.Staged] result registers a
+ * shutdown hook that finishes the swap as the JVM exits — on Windows the running JAR cannot be
+ * renamed or moved over, and rewriting its bytes is only safe once class loading has settled.
+ */
+private suspend fun autoInstall(config: Config, result: UpdateChecker.Result): UpdateInstaller.Outcome? {
+    // At most one installation per process: in HTTP mode every connecting session runs this path,
+    // and concurrent downloads would race over the same staging file and target JAR.
+    if (!installAttempted.compareAndSet(false, true)) return null
+    if (config.autoUpdateDisabled) {
+        System.err.println(
+            "[insightidr-mcp] Automatic installation is disabled " +
+                "(${Config.ENV_DISABLE_AUTO_UPDATE} / --no-auto-update); update it manually.",
+        )
+        return null
+    }
+    val outcome = UpdateInstaller.install(result)
+    when (outcome) {
+        is UpdateInstaller.Outcome.Installed ->
+            System.err.println("[insightidr-mcp] Installed ${outcome.version}; restart to run it.")
+
+        is UpdateInstaller.Outcome.Staged -> {
+            System.err.println("[insightidr-mcp] Staged ${outcome.version}; it will be applied as this server exits.")
+            val staged = File(outcome.stagedPath)
+            val target = UpdateInstaller.runningJar()
+            if (target != null) {
+                // Registering a hook throws once shutdown has already begun — which is reachable
+                // here, since a stdio client can close stdin while the download is still running.
+                runCatching {
+                    Runtime.getRuntime().addShutdownHook(
+                        Thread {
+                            runCatching {
+                                UpdateInstaller.installStagedAtShutdown(staged, target, outcome.sha256)
+                            }
+                        },
+                    )
+                }.onFailure {
+                    System.err.println(
+                        "[insightidr-mcp] Shutting down already; ${outcome.version} remains staged at " +
+                            "${outcome.stagedPath} and will not be applied automatically.",
+                    )
+                }
+            }
+        }
+
+        is UpdateInstaller.Outcome.Failed ->
+            System.err.println("[insightidr-mcp] Automatic update did not complete: ${outcome.reason}")
+
+        UpdateInstaller.Outcome.Skipped -> Unit
+    }
+    return outcome
 }
 
 private fun runStdio(client: Rapid7Client, config: Config, protocolOut: PrintStream) = runBlocking {
@@ -166,7 +251,7 @@ private fun runStdio(client: Rapid7Client, config: Config, protocolOut: PrintStr
     transport.onClose { done.complete() }
     try {
         val session = server.createSession(transport)
-        checkScope.notifyWhenInitialized(server, session, updateCheck)
+        checkScope.notifyWhenInitialized(server, session, updateCheck, config)
         done.join()
     } finally {
         updateCheck?.cancel()
@@ -203,7 +288,13 @@ private fun runHttp(client: Rapid7Client, config: Config, host: String, port: In
                 if (updateCheck != null) {
                     server.attachUpdateNotifier(checkScope) { session ->
                         val result = runCatching { updateCheck.await() }.getOrNull()
-                        if (result != null) server.notifyUpdateAvailable(session, result)
+                        if (result != null) {
+                            server.notifyUpdateAvailable(session, result)
+                            if (result.updateAvailable) {
+                                val outcome = autoInstall(config, result)
+                                if (outcome != null) server.notifyUpdateInstalled(session, outcome)
+                            }
+                        }
                     }
                 }
             }

@@ -65,6 +65,17 @@ data class Config(
      * (`1`, `true`, `yes`) in air-gapped or egress-restricted deployments to skip it entirely.
      */
     val updateCheckDisabled: Boolean = false,
+    /**
+     * Whether automatically downloading and installing a newer release is disabled.
+     *
+     * Automatic installation replaces the JAR this server runs from, so it is code execution from a
+     * remote source: the download is verified against the SHA-256 digest GitHub publishes for the
+     * asset, but that digest comes from the same API response, so a compromise of the GitHub release
+     * itself would not be caught (see [UpdateInstaller]). Set [ENV_DISABLE_AUTO_UPDATE] to a truthy
+     * value — or pass `--no-auto-update` — to keep the notification but never install anything.
+     * Disabling the check entirely ([updateCheckDisabled]) also disables installation.
+     */
+    val autoUpdateDisabled: Boolean = false,
 ) {
     /** The API key is a secret; never include it in [toString] output or logs. */
     override fun toString(): String =
@@ -80,6 +91,12 @@ data class Config(
         const val ENV_TIMEOUT_MS = "INSIGHTIDR_TIMEOUT_MS"
         const val ENV_HTTP_ALLOWED_ORIGINS = "INSIGHTIDR_HTTP_ALLOWED_ORIGINS"
         const val ENV_DISABLE_UPDATE_CHECK = "INSIGHTIDR_DISABLE_UPDATE_CHECK"
+        const val ENV_DISABLE_AUTO_UPDATE = "INSIGHTIDR_DISABLE_AUTO_UPDATE"
+
+        /** Values accepted as "on" for the boolean opt-out variables. */
+        private val TRUTHY = setOf("1", "true", "yes", "on")
+
+        internal fun isTruthy(value: String?): Boolean = value?.trim()?.lowercase() in TRUTHY
 
         const val DEFAULT_REGION = "us"
         const val DEFAULT_TIMEOUT_MS = 60_000L
@@ -113,8 +130,8 @@ data class Config(
                 ?.filter { it.isNotEmpty() && it != "*" }
                 ?: emptyList()
 
-            val updateCheckDisabled = env[ENV_DISABLE_UPDATE_CHECK]
-                ?.trim()?.lowercase() in setOf("1", "true", "yes")
+            val updateCheckDisabled = isTruthy(env[ENV_DISABLE_UPDATE_CHECK])
+            val autoUpdateDisabled = isTruthy(env[ENV_DISABLE_AUTO_UPDATE])
 
             return Config(
                 apiKey = apiKey,
@@ -125,6 +142,7 @@ data class Config(
                 v1BaseUrl = v1BaseUrl,
                 httpAllowedOrigins = httpAllowedOrigins,
                 updateCheckDisabled = updateCheckDisabled,
+                autoUpdateDisabled = autoUpdateDisabled,
             )
         }
     }

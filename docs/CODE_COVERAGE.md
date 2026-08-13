@@ -75,7 +75,7 @@ line-by-line highlighting.
 
 ## Current baseline
 
-Current overall coverage is roughly **96% line / 95% method / 72% branch** across ~172 tests.
+Current overall coverage is roughly **95% line / 94% method / 70% branch** across ~211 tests.
 Every tool-domain source file — all v1/v2 IDR domains, the SIEM Alerts API tools (`AlertTools`, at
 100%), all Log Search domains, `Rapid7Client` (100%), `Config`, `ToolSupport`, and `LogSearchSupport`
 — sits at **96–100% line coverage** (the full 144-tool inventory is verified by listing tools through
@@ -88,8 +88,14 @@ blocking servers and are not unit-tested. The update-check wiring added to those
 that same untested region, which is why the file's percentage fell — the *logic* it delegates to is
 covered elsewhere (see below).
 
-`McpServerFactory.kt` sits around **83%**: `notifyUpdateAvailable` and the tool registry are covered,
-but the `attachUpdateNotifier` callback bodies only run when a live HTTP client connects.
+`McpServerFactory.kt` sits around **89%**: `notifyUpdateAvailable`, `notifyUpdateInstalled` and the
+tool registry are covered, but the `attachUpdateNotifier` callback bodies only run when a live HTTP
+client connects.
+
+`UpdateInstaller.kt` sits around **84%**. The uncovered remainder is environment-bound rather than
+untested logic: the production `HttpClient(CIO)` branch (tests always inject a `MockEngine`), and the
+paths that only execute when the JVM is genuinely running from a JAR — `runningJar()` resolving a real
+code source, and the Windows shutdown swap. Every decision that gates *installing* code is covered.
 
 Branch coverage trails line coverage because each tool has many independent optional parameters;
 exercising every combination isn't necessary.
@@ -99,16 +105,64 @@ exercising every combination isn't necessary.
 The GitHub update check is deliberately structured so its logic is testable away from the network and
 the server lifecycle:
 
-- **`UpdateChecker.kt` (94% line)** — `UpdateCheckerTest` covers version comparison (numeric ordering
+- **`UpdateChecker.kt` (98% line)** — `UpdateCheckerTest` covers version comparison (numeric ordering
   so `0.1.10` > `0.1.9`, `v` prefixes, short forms, pre-release suffixes, non-numeric garbage),
-  release-payload parsing (`tag_name` with a `name` fallback, malformed/HTML bodies), and the network
-  path via Ktor's `MockEngine` — including that failures (5xx, rate limiting, an offline transport)
-  degrade to "no update" instead of throwing, and that **no `X-Api-Key` or `Authorization` header is
-  ever sent to GitHub**.
+  release-payload parsing, and the network path via Ktor's `MockEngine` — including that failures
+  (5xx, rate limiting, an offline transport) degrade to "no update" instead of throwing, and that
+  **no `X-Api-Key` or `Authorization` header is ever sent to GitHub**. Security-specific cases pin the
+  strict tag allow-list (a tag carrying newlines, prose, ANSI escapes or injected instructions is
+  rejected outright, so it can never reach the LLM client) and asset validation (a missing or
+  malformed `sha256:` digest, a non-GitHub or plaintext download host, a host using suffix or
+  userinfo trickery, a path-like asset name, and implausible sizes are all refused).
 - **Notification delivery** — `UpdateNotificationTest` connects a real in-process MCP client and
   asserts the client actually receives `notifications/message` with the expected logger name and
   payload, that an up-to-date server stays silent, and that the `logging` capability is negotiated.
 - **Opt-out** — `INSIGHTIDR_DISABLE_UPDATE_CHECK` parsing is covered in `UpdateCheckerTest`.
+
+### Automatic-installation coverage
+
+`UpdateInstaller` installs executable code, so its tests are written as a **refusal suite**: most
+assert that a bad download changes nothing. `UpdateInstallerTest` builds real (tiny) JAR files on a
+temp directory and drives the installer with a `MockEngine`, asserting for each hostile case that the
+outcome is `Failed` *and* that the target JAR's SHA-256 is byte-for-byte unchanged:
+
+| Case | Expected |
+|------|----------|
+| Digest doesn't match the bytes served | refused, target untouched |
+| Correct digest but not a server JAR (no entry point) | refused, target untouched |
+| Response longer than the advertised size | aborted mid-stream |
+| Response shorter than advertised (truncated) | refused |
+| Asset URL on a non-GitHub host | refused, **zero requests sent** |
+| Redirect to a non-GitHub host | refused after one request |
+| Redirect loop | abandoned at the hop limit |
+| Redirect missing `Location`, or an HTTP error | refused |
+| Release with no verifiable asset | refused |
+| Staged file altered after verification | refused, running JAR untouched |
+| Another process holds the install lock | skipped, running JAR untouched |
+
+The success paths are covered too — a good download installs and cleans up its staging file, a GitHub
+CDN redirect is followed and installed, `tryAtomicSwap` replaces the target, `overwriteInPlace`
+swaps contents and removes its backup, and `installStagedAtShutdown` refuses a staged file that isn't
+a valid server JAR.
+
+Three of these are regressions for defects an adversarial review found in the first cut of this code,
+and each was confirmed to fail against the buggy version before the fix landed:
+
+- **The backup captured the wrong file.** `staged.copyTo(backup)` put the *new* bytes in `.bak`
+  (in Kotlin the receiver is the source), so the original was never preserved and the "rollback"
+  re-applied the write that had just failed — while the cleanup deleted every remaining copy. The
+  test now asserts the target is restored byte-for-byte *and* that `.bak` holds the original.
+- **Verification was bound to the stream, not the file.** The digest was computed over the bytes in
+  flight, but the *path* was installed — with the whole session as the gap on the staged path. Both
+  swap paths now re-hash the file from disk against the digest that authorised it.
+- **Nothing serialised installs across processes.** A JVM-scoped flag guarded a fixed `<jar>.new`
+  path, while the normal stdio deployment runs one JVM per client. Staging is now a unique file and
+  the sequence is held under a lock file beside the JAR.
+
+The opt-out controls are covered in `ConfigTest` (truthy/falsey parsing of
+`INSIGHTIDR_DISABLE_AUTO_UPDATE`, and that disabling installation leaves the notification running) and
+in `MainTest` (`--no-auto-update`, `--no-update-check` implying it, and the rule that a command-line
+flag can only ever *tighten* what the environment already disabled).
 
 > **Gotcha worth knowing:** JUnit silently ignores test methods that don't return `void`. In Kotlin,
 > `@Test fun foo() = runBlocking { ... }` whose last expression returns a value (e.g. `assertNotNull`,
