@@ -59,6 +59,12 @@ data class Config(
      * if a trusted browser client must reach it. Never use `*`.
      */
     val httpAllowedOrigins: List<String> = emptyList(),
+    /**
+     * Whether the startup check for a newer GitHub release is disabled. The check is best-effort,
+     * unauthenticated, and never blocks startup; set [ENV_DISABLE_UPDATE_CHECK] to a truthy value
+     * (`1`, `true`, `yes`) in air-gapped or egress-restricted deployments to skip it entirely.
+     */
+    val updateCheckDisabled: Boolean = false,
 ) {
     /** The API key is a secret; never include it in [toString] output or logs. */
     override fun toString(): String =
@@ -73,6 +79,7 @@ data class Config(
         const val ENV_LOG_SEARCH_BASE_URL = "INSIGHTIDR_LOG_SEARCH_BASE_URL"
         const val ENV_TIMEOUT_MS = "INSIGHTIDR_TIMEOUT_MS"
         const val ENV_HTTP_ALLOWED_ORIGINS = "INSIGHTIDR_HTTP_ALLOWED_ORIGINS"
+        const val ENV_DISABLE_UPDATE_CHECK = "INSIGHTIDR_DISABLE_UPDATE_CHECK"
 
         const val DEFAULT_REGION = "us"
         const val DEFAULT_TIMEOUT_MS = 60_000L
@@ -106,6 +113,9 @@ data class Config(
                 ?.filter { it.isNotEmpty() && it != "*" }
                 ?: emptyList()
 
+            val updateCheckDisabled = env[ENV_DISABLE_UPDATE_CHECK]
+                ?.trim()?.lowercase() in setOf("1", "true", "yes")
+
             return Config(
                 apiKey = apiKey,
                 region = region,
@@ -114,6 +124,7 @@ data class Config(
                 logSearchBaseUrl = logSearchBaseUrl,
                 v1BaseUrl = v1BaseUrl,
                 httpAllowedOrigins = httpAllowedOrigins,
+                updateCheckDisabled = updateCheckDisabled,
             )
         }
     }

@@ -75,16 +75,47 @@ line-by-line highlighting.
 
 ## Current baseline
 
-Current overall coverage is roughly **98% line / 97% method / 63% branch** across ~156 tests.
-Every source file — all v1/v2 IDR tool domains, the SIEM Alerts API tools (`AlertTools`, at 100%),
-all Log Search tool domains, `Rapid7Client`, `Config`, `ToolSupport`, `LogSearchSupport`, and
-`McpServerFactory` (verified by listing the full 144-tool inventory through an in-process MCP client)
-— sits at **98–100% line coverage**, with one deliberate exception:
+Current overall coverage is roughly **96% line / 95% method / 72% branch** across ~172 tests.
+Every tool-domain source file — all v1/v2 IDR domains, the SIEM Alerts API tools (`AlertTools`, at
+100%), all Log Search domains, `Rapid7Client` (100%), `Config`, `ToolSupport`, and `LogSearchSupport`
+— sits at **96–100% line coverage** (the full 144-tool inventory is verified by listing tools through
+an in-process MCP client), with two deliberate exceptions:
 
-`Main.kt` sits around **38%** by design: the Clikt command (option parsing, the `run()` dispatch, and
+`Main.kt` sits around **25%** by design: the Clikt command (option parsing, the `run()` dispatch, and
 the config-error path) is tested via injected seams, but `runStdio`/`runHttp`/`runServer` start real,
-blocking servers and are not unit-tested. Branch coverage trails line coverage because each tool has
-many independent optional parameters; exercising every combination isn't necessary.
+blocking servers and are not unit-tested. The update-check wiring added to those functions
+(`startUpdateCheck`/`notifyWhenInitialized` and the HTTP `attachUpdateNotifier` hook) lives inside
+that same untested region, which is why the file's percentage fell — the *logic* it delegates to is
+covered elsewhere (see below).
+
+`McpServerFactory.kt` sits around **83%**: `notifyUpdateAvailable` and the tool registry are covered,
+but the `attachUpdateNotifier` callback bodies only run when a live HTTP client connects.
+
+Branch coverage trails line coverage because each tool has many independent optional parameters;
+exercising every combination isn't necessary.
+
+### Update-check coverage
+
+The GitHub update check is deliberately structured so its logic is testable away from the network and
+the server lifecycle:
+
+- **`UpdateChecker.kt` (94% line)** — `UpdateCheckerTest` covers version comparison (numeric ordering
+  so `0.1.10` > `0.1.9`, `v` prefixes, short forms, pre-release suffixes, non-numeric garbage),
+  release-payload parsing (`tag_name` with a `name` fallback, malformed/HTML bodies), and the network
+  path via Ktor's `MockEngine` — including that failures (5xx, rate limiting, an offline transport)
+  degrade to "no update" instead of throwing, and that **no `X-Api-Key` or `Authorization` header is
+  ever sent to GitHub**.
+- **Notification delivery** — `UpdateNotificationTest` connects a real in-process MCP client and
+  asserts the client actually receives `notifications/message` with the expected logger name and
+  payload, that an up-to-date server stays silent, and that the `logging` capability is negotiated.
+- **Opt-out** — `INSIGHTIDR_DISABLE_UPDATE_CHECK` parsing is covered in `UpdateCheckerTest`.
+
+> **Gotcha worth knowing:** JUnit silently ignores test methods that don't return `void`. In Kotlin,
+> `@Test fun foo() = runBlocking { ... }` whose last expression returns a value (e.g. `assertNotNull`,
+> which returns its argument) compiles to a non-void method and **never runs**. Use a block body
+> (`fun foo() { runBlocking { ... } }`) or end with a `Unit`-returning statement. To catch this class
+> of silent gap, compare declared `@Test` counts against the executed counts in
+> `build/test-results/test/TEST-*.xml`.
 
 ## Adding more tests
 

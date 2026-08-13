@@ -16,7 +16,14 @@ import io.ktor.server.engine.*
 import io.ktor.server.plugins.cors.routing.*
 import io.modelcontextprotocol.kotlin.sdk.server.StdioServerTransport
 import io.modelcontextprotocol.kotlin.sdk.server.mcp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.io.asSink
 import kotlinx.io.asSource
@@ -110,9 +117,43 @@ private fun runServer(transport: Transport, host: String, port: Int, config: Con
     }
 }
 
+/**
+ * Start the GitHub update check concurrently with startup, or return null when it is disabled.
+ *
+ * Kicked off as a [Deferred] so the server begins serving immediately: the result is only awaited
+ * inside a session's `onInitialized` callback, by which point the check has almost always finished.
+ */
+private fun CoroutineScope.startUpdateCheck(config: Config): Deferred<UpdateChecker.Result>? =
+    if (config.updateCheckDisabled) {
+        System.err.println("[insightidr-mcp] Update check disabled via ${Config.ENV_DISABLE_UPDATE_CHECK}.")
+        null
+    } else {
+        async(Dispatchers.IO) { UpdateChecker.check() }
+    }
+
+/** Attach the deferred update result to a session, notifying the client once it is initialized. */
+private fun CoroutineScope.notifyWhenInitialized(
+    server: io.modelcontextprotocol.kotlin.sdk.server.Server,
+    session: io.modelcontextprotocol.kotlin.sdk.server.ServerSession,
+    updateCheck: Deferred<UpdateChecker.Result>?,
+) {
+    if (updateCheck == null) return
+    session.onInitialized {
+        launch {
+            val result = runCatching { updateCheck.await() }.getOrNull() ?: return@launch
+            if (result.updateAvailable) System.err.println("[insightidr-mcp] ${result.message()}")
+            server.notifyUpdateAvailable(session, result)
+        }
+    }
+}
+
 private fun runStdio(client: Rapid7Client, config: Config, protocolOut: PrintStream) = runBlocking {
     System.err.println("[insightidr-mcp] Starting over stdio — region=${config.region.code}, baseUrl=${config.baseUrl}")
     val server = buildInsightIdrServer(client)
+    // Run the check in its own supervised scope, never as a child of this runBlocking scope: a
+    // failure there must not cancel the scope that is serving the MCP session.
+    val checkScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    val updateCheck = checkScope.startUpdateCheck(config)
     val transport = StdioServerTransport(
         input = System.`in`.asSource().buffered(),
         output = protocolOut.asSink().buffered(),
@@ -124,15 +165,22 @@ private fun runStdio(client: Rapid7Client, config: Config, protocolOut: PrintStr
     val done = Job()
     transport.onClose { done.complete() }
     try {
-        server.createSession(transport)
+        val session = server.createSession(transport)
+        checkScope.notifyWhenInitialized(server, session, updateCheck)
         done.join()
     } finally {
+        updateCheck?.cancel()
+        checkScope.cancel()
         client.close()
     }
 }
 
 private fun runHttp(client: Rapid7Client, config: Config, host: String, port: Int) {
     System.err.println("[insightidr-mcp] Starting over HTTP on $host:$port — region=${config.region.code}, baseUrl=${config.baseUrl}")
+    // One check for the process, shared by every connecting session (mcp { } builds a server per
+    // connection); a supervisor scope keeps a failed check from cancelling anything else.
+    val checkScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    val updateCheck = checkScope.startUpdateCheck(config)
     val engine = embeddedServer(CIO, host = host, port = port) {
         install(CORS) {
             // The server holds a secret API key and has no auth of its own, so arbitrary cross-origin
@@ -150,11 +198,22 @@ private fun runHttp(client: Rapid7Client, config: Config, host: String, port: In
             allowMethod(HttpMethod.Options)
             allowNonSimpleContentTypes = true
         }
-        mcp { buildInsightIdrServer(client) }
+        mcp {
+            buildInsightIdrServer(client).also { server ->
+                if (updateCheck != null) {
+                    server.attachUpdateNotifier(checkScope) { session ->
+                        val result = runCatching { updateCheck.await() }.getOrNull()
+                        if (result != null) server.notifyUpdateAvailable(session, result)
+                    }
+                }
+            }
+        }
     }
     try {
         engine.start(wait = true)
     } finally {
+        updateCheck?.cancel()
+        checkScope.cancel()
         client.close()
     }
 }

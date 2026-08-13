@@ -35,6 +35,7 @@ Configuration is read from environment variables:
 | `INSIGHTIDR_LOG_SEARCH_BASE_URL` |  | `https://<region>.rest.logs.insight.rapid7.com` | Log Search API base override (default follows the Log Search spec servers; set to `https://<region>.api.insight.rapid7.com/log_search` for the unified platform route). |
 | `INSIGHTIDR_TIMEOUT_MS`  |          | `60000`                                   | Per-request timeout in milliseconds.                           |
 | `INSIGHTIDR_HTTP_ALLOWED_ORIGINS` |  | *(empty — deny cross-origin)*    | `--http` mode only: comma-separated browser origins allowed via CORS (e.g. `https://app.example.com`). Empty denies all cross-origin browser access; non-browser MCP clients are unaffected. Never use `*`. |
+| `INSIGHTIDR_DISABLE_UPDATE_CHECK` |  | *(unset — check enabled)*        | Set to `1`/`true`/`yes` to skip the startup check for a newer GitHub release (see [Update notifications](#update-notifications)). |
 
 See [`.env.example`](.env.example).
 
@@ -211,6 +212,24 @@ see `INSIGHTIDR_LOG_SEARCH_BASE_URL` to target the unified route
 - **Audit logs:** `logsearch_list_audit_logs`, `logsearch_get_audit_log`, `logsearch_audit_query_log`,
   `logsearch_audit_query_logs`, `logsearch_audit_poll_query`, `logsearch_audit_list_export_jobs`,
   `logsearch_audit_get_export_job`, `logsearch_audit_list_query_endpoints`
+
+## Update notifications
+
+On startup the server checks GitHub for a newer release. If one exists, it sends the connected MCP
+client an `notifications/message` (MCP logging notification) naming the new version and linking to the
+releases page, so you find out about updates without polling the repository. The same line is also
+written to stderr.
+
+The check is deliberately unobtrusive:
+
+- **Never blocks startup** — it runs concurrently with the server coming up, with a 5s timeout, and
+  the notification is only sent once the client has finished initializing (as the protocol requires).
+- **Never fails the server** — being offline, rate limited, or receiving a malformed response all
+  degrade silently to "no update".
+- **Sends no credentials** — it calls the public releases endpoint with its own unauthenticated HTTP
+  client; your `INSIGHTIDR_API_KEY` is only ever sent to Rapid7 hosts.
+- **Opt-out** — set `INSIGHTIDR_DISABLE_UPDATE_CHECK=1` to skip the network call entirely (useful in
+  air-gapped or egress-restricted deployments).
 
 ## Design notes
 
