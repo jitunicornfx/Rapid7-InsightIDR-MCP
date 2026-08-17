@@ -3,10 +3,9 @@ package com.jitunicornfx.insightidr.mcp
 /**
  * Insight platform regional data centers.
  *
- * Per the OpenAPI specifications, the v2 API is served from
- * `https://{region}.api.insight.rapid7.com` and the v1 API from
- * `https://{region}.rest.logs.insight.rapid7.com`. The region code is the prefix of your
- * Insight platform URL (e.g. `us` in `us.idr.insight.rapid7.com`).
+ * The IDR APIs (v1 and v2 alike) are served from `https://{region}.api.insight.rapid7.com`; the
+ * Log Search API is served from `https://{region}.rest.logs.insight.rapid7.com`. The region code is
+ * the prefix of your Insight platform URL (e.g. `us` in `us.idr.insight.rapid7.com`).
  */
 enum class Region(val code: String) {
     US("us"),
@@ -46,11 +45,16 @@ data class Config(
      */
     val logSearchBaseUrl: String = "https://${region.code}.rest.logs.insight.rapid7.com",
     /**
-     * Base URL for the v1 API. The v1 spec's servers are the
-     * `https://<region>.rest.logs.insight.rapid7.com` hosts; override via [ENV_V1_BASE_URL]
-     * (e.g. back to `https://<region>.api.insight.rapid7.com` if your tenant routes v1 there).
+     * Base URL for the v1 API: `https://<region>.api.insight.rapid7.com`, the same host as v2.
+     *
+     * Note that the v1 OpenAPI spec's `servers` block advertises
+     * `https://<region>.rest.logs.insight.rapid7.com`, but that is wrong for the `/idr/v1/` paths —
+     * measured against the live API, every v1 IDR route returns 404 on that host and 401
+     * (i.e. exists, authentication required) on `api.insight`, while the Log Search routes behave
+     * the other way round. The spec appears to carry the Log Search host by mistake. Override via
+     * [ENV_V1_BASE_URL] if a tenant ever needs something else.
      */
-    val v1BaseUrl: String = "https://${region.code}.rest.logs.insight.rapid7.com",
+    val v1BaseUrl: String = "https://${region.code}.api.insight.rapid7.com",
     /**
      * Browser origins permitted to call the server in `--http` mode (CORS). Empty by default, so
      * cross-origin browser requests are denied — the server holds a secret API key and is intended
@@ -119,7 +123,7 @@ data class Config(
                 .trimEnd('/')
 
             val v1BaseUrl = (env[ENV_V1_BASE_URL]?.takeIf { it.isNotBlank() }
-                ?: "https://${region.code}.rest.logs.insight.rapid7.com")
+                ?: "https://${region.code}.api.insight.rapid7.com")
                 .trimEnd('/')
 
             val timeout = env[ENV_TIMEOUT_MS]?.toLongOrNull()?.takeIf { it > 0 } ?: DEFAULT_TIMEOUT_MS

@@ -137,7 +137,7 @@ class Rapid7Client(
         return response.toApiResponse()
     }
 
-    /** [request] against the v1 API base (`https://<region>.rest.logs.insight.rapid7.com` per the v1 spec). */
+    /** [request] against the v1 API base (`https://<region>.api.insight.rapid7.com`, same host as v2). */
     suspend fun requestV1(
         method: HttpMethod,
         path: String,

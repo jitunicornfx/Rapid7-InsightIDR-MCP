@@ -31,7 +31,7 @@ Configuration is read from environment variables:
 | `INSIGHTIDR_API_KEY`     | ✅       | —                                         | Insight platform API key.                                      |
 | `INSIGHTIDR_REGION`      |          | `us`                                      | Region code: `us`, `us2`, `us3`, `eu`, `ca`, `au`, `ap`.       |
 | `INSIGHTIDR_BASE_URL`    |          | `https://<region>.api.insight.rapid7.com` | v2 API base URL override (per the v2 spec servers).            |
-| `INSIGHTIDR_V1_BASE_URL` |          | `https://<region>.rest.logs.insight.rapid7.com` | v1 API base URL override (default follows the v1 spec servers; set to `https://<region>.api.insight.rapid7.com` if your tenant routes v1 there). |
+| `INSIGHTIDR_V1_BASE_URL` |          | `https://<region>.api.insight.rapid7.com` | v1 API base URL override. The v1 spec's `servers` block advertises the `rest.logs` host, but the `/idr/v1/` routes are only served from `api.insight` — see [v1 base URL](#a-note-on-the-v1-base-url). |
 | `INSIGHTIDR_LOG_SEARCH_BASE_URL` |  | `https://<region>.rest.logs.insight.rapid7.com` | Log Search API base override (default follows the Log Search spec servers; set to `https://<region>.api.insight.rapid7.com/log_search` for the unified platform route). |
 | `INSIGHTIDR_TIMEOUT_MS`  |          | `60000`                                   | Per-request timeout in milliseconds.                           |
 | `INSIGHTIDR_HTTP_ALLOWED_ORIGINS` |  | *(empty — deny cross-origin)*    | `--http` mode only: comma-separated browser origins allowed via CORS (e.g. `https://app.example.com`). Empty denies all cross-origin browser access; non-browser MCP clients are unaffected. Never use `*`. |
@@ -39,6 +39,23 @@ Configuration is read from environment variables:
 | `INSIGHTIDR_DISABLE_AUTO_UPDATE` |  | *(unset — installing enabled)*   | Set to `1`/`true`/`yes` to report new releases but never download or install them (see [Automatic installation](#automatic-installation)). |
 
 See [`.env.example`](.env.example).
+
+### A note on the v1 base URL
+
+The v1 OpenAPI spec's `servers` block advertises `https://<region>.rest.logs.insight.rapid7.com`, but
+that host does not serve the v1 InsightIDR routes. Probing both hosts unauthenticated (where `401`
+means "route exists, authenticate" and `404` means "no such route here") gives:
+
+| Path | `rest.logs.insight` | `api.insight` |
+|------|--------------------|---------------|
+| `/idr/v1/comments`, `/idr/v1/attachments`, `/idr/v1/accounts`, `/idr/v1/assets`, `/idr/v1/users`, `/idr/v1/cloud-webhooks`, `/idr/v1/collectors`, `/idr/v1/health-metrics` | `404` | `401` |
+| `/management/logs`, `/management/logsets`, `/query/logs` (Log Search) | `401` | `404` |
+
+So the two APIs live on different hosts, and the v1 spec appears to carry the Log Search host by
+mistake. This server therefore sends **v1 and v2 to `api.insight`** and **Log Search to `rest.logs`**.
+Sending v1 to the spec's host makes every v1 tool fail with a bare
+`{"code":404,"message":"HTTP 404 Not Found"}`, which is easy to misread as "that investigation
+doesn't exist".
 
 ## Build
 

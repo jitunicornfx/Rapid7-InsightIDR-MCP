@@ -20,7 +20,7 @@ class CommunityThreatToolsTest {
         h.call("create_community_threat", mapOf("request_body" to threat))
         val req = h.lastRequest
         assertEquals(HttpMethod.Post, req.method)
-        assertEquals("us.rest.logs.insight.rapid7.com", req.url.host)
+        assertEquals("us.api.insight.rapid7.com", req.url.host)
         assertEquals("/idr/v1/customthreats", req.url.encodedPath)
         assertEquals(threat, h.lastBody)
         assertTrue(req.body.contentType.toString().contains("application/json"))

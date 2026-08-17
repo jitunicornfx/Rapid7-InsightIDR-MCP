@@ -59,9 +59,11 @@ class ConfigTest {
     }
 
     @Test
-    fun `v1 base url defaults to the rest logs host per the v1 spec servers`() {
+    fun `v1 base url defaults to the api insight host, where the v1 IDR routes actually live`() {
+        // Regression: the v1 spec's servers block advertises the rest.logs host, but every
+        // /idr/v1/* route 404s there and exists on api.insight — see Config.v1BaseUrl.
         val config = Config.fromEnv(mapOf(Config.ENV_API_KEY to "key", Config.ENV_REGION to "eu"))
-        assertEquals("https://eu.rest.logs.insight.rapid7.com", config.v1BaseUrl)
+        assertEquals("https://eu.api.insight.rapid7.com", config.v1BaseUrl)
     }
 
     @Test

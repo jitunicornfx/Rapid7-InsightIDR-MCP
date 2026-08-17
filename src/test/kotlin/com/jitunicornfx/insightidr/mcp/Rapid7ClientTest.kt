@@ -113,12 +113,12 @@ class Rapid7ClientTest {
     }
 
     @Test
-    fun `v1 base routes requests to the rest logs host`() = runBlocking {
+    fun `v1 base routes requests to the api insight host, not the log search host`() = runBlocking {
         val engine = jsonEngine(HttpStatusCode.OK, "{}")
         val client = Rapid7Client(config, engine)
         client.requestV1(HttpMethod.Get, "/idr/v1/investigations")
         val req = engine.requestHistory.last()
-        assertEquals("us.rest.logs.insight.rapid7.com", req.url.host)
+        assertEquals("us.api.insight.rapid7.com", req.url.host)
         assertEquals("/idr/v1/investigations", req.url.encodedPath)
         assertEquals("secret-key", req.headers["X-Api-Key"])
         client.close()
