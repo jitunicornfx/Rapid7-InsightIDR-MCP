@@ -40,23 +40,6 @@ Configuration is read from environment variables:
 
 See [`.env.example`](.env.example).
 
-### A note on the v1 base URL
-
-The v1 OpenAPI spec's `servers` block advertises `https://<region>.rest.logs.insight.rapid7.com`, but
-that host does not serve the v1 InsightIDR routes. Probing both hosts unauthenticated (where `401`
-means "route exists, authenticate" and `404` means "no such route here") gives:
-
-| Path | `rest.logs.insight` | `api.insight` |
-|------|--------------------|---------------|
-| `/idr/v1/comments`, `/idr/v1/attachments`, `/idr/v1/accounts`, `/idr/v1/assets`, `/idr/v1/users`, `/idr/v1/cloud-webhooks`, `/idr/v1/collectors`, `/idr/v1/health-metrics` | `404` | `401` |
-| `/management/logs`, `/management/logsets`, `/query/logs` (Log Search) | `401` | `404` |
-
-So the two APIs live on different hosts, and the v1 spec appears to carry the Log Search host by
-mistake. This server therefore sends **v1 and v2 to `api.insight`** and **Log Search to `rest.logs`**.
-Sending v1 to the spec's host makes every v1 tool fail with a bare
-`{"code":404,"message":"HTTP 404 Not Found"}`, which is easy to misread as "that investigation
-doesn't exist".
-
 ## Build
 
 ```PowerShell
@@ -101,10 +84,10 @@ port with `--port`:
 
 ```PowerShell
 # PowerShell 5.1
-powershell.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.1.8-all.jar --stdio }
+powershell.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.1.8-all.jar --http --host 0.0.0.0 --port 3001 }
 
 # PowerShell 7
-pwsh.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.1.8-all.jar --stdio }
+pwsh.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.1.8-all.jar --http --host 0.0.0.0 --port 3001 }
 ```
 
 ```bash
