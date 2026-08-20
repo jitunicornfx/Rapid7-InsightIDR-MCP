@@ -2,7 +2,7 @@ package com.jitunicornfx.insightidr.mcp
 
 import io.ktor.client.*
 import io.ktor.client.engine.HttpClientEngine
-import io.ktor.client.engine.cio.*
+import io.ktor.client.engine.okhttp.*
 import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.request.forms.*
@@ -28,7 +28,7 @@ class Rapid7Client(
     private val http: HttpClient = if (engine != null) {
         HttpClient(engine) { configureClient() }
     } else {
-        HttpClient(CIO) { configureClient() }
+        HttpClient(OkHttp) { configureClient() }
     }
 
     private fun HttpClientConfig<*>.configureClient() {

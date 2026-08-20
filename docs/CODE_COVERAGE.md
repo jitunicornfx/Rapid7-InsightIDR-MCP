@@ -75,7 +75,7 @@ line-by-line highlighting.
 
 ## Current baseline
 
-Current overall coverage is roughly **95% line / 94% method / 70% branch** across ~211 tests.
+Current overall coverage is roughly **95% line / 93% method / 69% branch** across ~216 tests.
 Every tool-domain source file — all v1/v2 IDR domains, the SIEM Alerts API tools (`AlertTools`, at
 100%), all Log Search domains, `Rapid7Client` (100%), `Config`, `ToolSupport`, and `LogSearchSupport`
 — sits at **96–100% line coverage** (the full 144-tool inventory is verified by listing tools through
@@ -93,7 +93,7 @@ tool registry are covered, but the `attachUpdateNotifier` callback bodies only r
 client connects.
 
 `UpdateInstaller.kt` sits around **84%**. The uncovered remainder is environment-bound rather than
-untested logic: the production `HttpClient(CIO)` branch (tests always inject a `MockEngine`), and the
+untested logic: the production `HttpClient(OkHttp)` branch (tests always inject a `MockEngine`), and the
 paths that only execute when the JVM is genuinely running from a JAR — `runningJar()` resolving a real
 code source, and the Windows shutdown swap. Every decision that gates *installing* code is covered.
 

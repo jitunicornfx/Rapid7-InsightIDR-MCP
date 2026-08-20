@@ -4,13 +4,13 @@ plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.shadow)
-    id ("org.sonarqube") version "7.3.1.8318"
+    id ("org.sonarqube") version "7.4.0.8496"
     application
     jacoco
 }
 
 group = "com.jitunicornfx.insightidr"
-version = "0.1.8"
+version = "0.1.9"
 
 dependencies {
     implementation(platform(libs.ktor.bom))
@@ -20,9 +20,11 @@ dependencies {
     // Command-line interface.
     implementation(libs.clikt)
 
-    // HTTP client used to talk to the InsightIDR REST API.
+    // HTTP client used to talk to the InsightIDR REST API. OkHttp (blocking sockets, its own thread
+    // pool) rather than CIO: CIO's NIO selector opens a loopback self-pipe (an AF_UNIX socket on
+    // recent JDKs) that some locked-down Windows/EDR hosts refuse, crashing the HTTP layer at startup.
     implementation(libs.ktor.client.core)
-    implementation(libs.ktor.client.cio)
+    implementation(libs.ktor.client.okhttp)
 
     // Only required for the optional --http (Streamable HTTP / SSE) transport.
     implementation(libs.ktor.server.cio)
@@ -43,7 +45,7 @@ dependencies {
 
     // JUnit Platform engine so `useJUnitPlatform()` can actually discover and run tests.
     // JUnit 6 unifies platform/jupiter/vintage under one 6.x version (baseline Java 17+).
-    testImplementation(platform("org.junit:junit-bom:6.1.2"))
+    testImplementation(platform("org.junit:junit-bom:6.1.3"))
     testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine")
     // Pin the launcher to the same 6.x line so Gradle's test worker matches the engine.
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")

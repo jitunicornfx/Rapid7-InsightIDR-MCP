@@ -2,7 +2,7 @@ package com.jitunicornfx.insightidr.mcp
 
 import io.ktor.client.*
 import io.ktor.client.engine.HttpClientEngine
-import io.ktor.client.engine.cio.*
+import io.ktor.client.engine.okhttp.*
 import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
@@ -212,7 +212,7 @@ object UpdateChecker {
         // otherwise propagate out of the coroutine that starts the check and tear down the server.
         runCatching {
             val body = run {
-                val http = if (engine != null) HttpClient(engine) { configure() } else HttpClient(CIO) { configure() }
+                val http = if (engine != null) HttpClient(engine) { configure() } else HttpClient(OkHttp) { configure() }
                 http.use { client ->
                     val response = client.get(LATEST_RELEASE_URL) {
                         header(HttpHeaders.Accept, "application/vnd.github+json")
