@@ -67,6 +67,12 @@ object UpdateInstaller {
     /** Sidecar used to serialise installation across processes launched from the same JAR. */
     const val LOCK_SUFFIX = ".update.lock"
 
+    /**
+     * Age past which an orphaned update sidecar is treated as abandoned debris rather than a file an
+     * in-flight install might still be using. Comfortably longer than any real download.
+     */
+    const val STALE_SIDECAR_MILLIS = 60L * 60L * 1000L
+
     /** What happened, for logging and for the notification sent to the MCP client. */
     sealed interface Outcome {
         /** The new JAR is installed at the original path; the new code activates on restart. */
@@ -132,6 +138,37 @@ object UpdateInstaller {
         }.getOrNull() ?: return null
         val file = runCatching { File(source) }.getOrNull() ?: return null
         return file.takeIf { it.isFile && it.name.endsWith(".jar", ignoreCase = true) }
+    }
+
+    /**
+     * Delete this JAR's abandoned update sidecars left behind by processes that were killed before
+     * they could finish or apply an update: staged downloads (`<jar>.<n>.new`, ~20 MB each) and the
+     * cross-process lock (`<jar>.update.lock`, which [withInstallLock] creates but never removes).
+     *
+     * Best-effort and never throws. Only files older than [olderThanMillis] are removed, so a
+     * download or lock that a concurrent install is actively using — always freshly created — is
+     * left alone; on Windows a file another process still holds open cannot be deleted and is simply
+     * skipped anyway. The pre-swap backup (`<jar>.bak`) is deliberately NOT swept: it is an
+     * operator's recovery copy after a failed write. The running JAR has no sidecar suffix and is
+     * never a candidate.
+     */
+    fun sweepStaleSidecars(
+        target: File,
+        olderThanMillis: Long = STALE_SIDECAR_MILLIS,
+        now: Long = System.currentTimeMillis(),
+    ) {
+        val dir = target.parentFile ?: return
+        val prefix = target.name + "."
+        val entries = runCatching { dir.listFiles() }.getOrNull() ?: return
+        for (file in entries) {
+            if (!file.isFile) continue
+            val name = file.name
+            val sweepable = name.startsWith(prefix) &&
+                (name.endsWith(STAGED_SUFFIX) || name.endsWith(LOCK_SUFFIX))
+            if (!sweepable) continue
+            val lastModified = runCatching { file.lastModified() }.getOrDefault(now)
+            if (now - lastModified >= olderThanMillis) runCatching { file.delete() }
+        }
     }
 
     /** Hex-encode a digest for comparison against GitHub's `sha256:` value. */

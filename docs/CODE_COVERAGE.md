@@ -75,7 +75,7 @@ line-by-line highlighting.
 
 ## Current baseline
 
-Current overall coverage is roughly **95% line / 93% method / 69% branch** across ~216 tests.
+Current overall coverage is roughly **95% line / 93% method / 69% branch** across ~218 tests.
 Every tool-domain source file — all v1/v2 IDR domains, the SIEM Alerts API tools (`AlertTools`, at
 100%), all Log Search domains, `Rapid7Client` (100%), `Config`, `ToolSupport`, and `LogSearchSupport`
 — sits at **96–100% line coverage** (the full 144-tool inventory is verified by listing tools through
@@ -92,7 +92,7 @@ covered elsewhere (see below).
 tool registry are covered, but the `attachUpdateNotifier` callback bodies only run when a live HTTP
 client connects.
 
-`UpdateInstaller.kt` sits around **84%**. The uncovered remainder is environment-bound rather than
+`UpdateInstaller.kt` sits around **89%**. The uncovered remainder is environment-bound rather than
 untested logic: the production `HttpClient(OkHttp)` branch (tests always inject a `MockEngine`), and the
 paths that only execute when the JVM is genuinely running from a JAR — `runningJar()` resolving a real
 code source, and the Windows shutdown swap. Every decision that gates *installing* code is covered.
@@ -143,7 +143,8 @@ outcome is `Failed` *and* that the target JAR's SHA-256 is byte-for-byte unchang
 The success paths are covered too — a good download installs and cleans up its staging file, a GitHub
 CDN redirect is followed and installed, `tryAtomicSwap` replaces the target, `overwriteInPlace`
 swaps contents and removes its backup, and `installStagedAtShutdown` refuses a staged file that isn't
-a valid server JAR.
+a valid server JAR, and `sweepStaleSidecars` reaps old orphaned `.new`/`.update.lock` files while
+leaving the JAR, fresh in-flight files, the `.bak` backup, and other JARs' sidecars untouched.
 
 Three of these are regressions for defects an adversarial review found in the first cut of this code,
 and each was confirmed to fail against the buggy version before the fix landed:

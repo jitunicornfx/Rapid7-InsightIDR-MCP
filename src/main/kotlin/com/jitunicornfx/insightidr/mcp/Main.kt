@@ -129,6 +129,10 @@ private fun runServer(transport: Transport, host: String, port: Int, config: Con
     val client = Rapid7Client(config)
     Runtime.getRuntime().addShutdownHook(Thread { runCatching { client.close() } })
 
+    // Reap abandoned update sidecars (orphaned .new downloads and the .update.lock) from earlier
+    // runs killed mid-update, so they don't pile up beside the JAR.
+    UpdateInstaller.runningJar()?.let { UpdateInstaller.sweepStaleSidecars(it) }
+
     when (transport) {
         Transport.STDIO -> {
             // In stdio mode stdout carries the JSON-RPC stream. Capture the real stdout for the

@@ -418,4 +418,48 @@ class UpdateInstallerTest {
         // Tests run from a classes directory, not a JAR — there is no single file to replace.
         assertNull(UpdateInstaller.runningJar())
     }
+
+    // ---------------------------------------------------------------------
+    // Stale-sidecar cleanup
+    // ---------------------------------------------------------------------
+
+    @Test
+    fun `sweepStaleSidecars removes old new and lock files but keeps the jar, fresh files, and the backup`() {
+        val target = serverJar(File(tempDir, "app.jar"))
+        val old = System.currentTimeMillis() - 2 * 60 * 60 * 1000  // 2h ago, past the 1h threshold
+
+        val oldStaged = File(tempDir, "app.jar.111.new").apply { writeText("x"); setLastModified(old) }
+        val oldStaged2 = File(tempDir, "app.jar.222.new").apply { writeText("x"); setLastModified(old) }
+        val oldLock = File(tempDir, "app.jar${UpdateInstaller.LOCK_SUFFIX}").apply { writeText(""); setLastModified(old) }
+
+        val freshStaged = File(tempDir, "app.jar.333.new").apply { writeText("x") }  // just created -> in-flight
+        val backup = File(tempDir, "app.jar${UpdateInstaller.BACKUP_SUFFIX}").apply { writeText("orig"); setLastModified(old) }
+        val otherJarSidecar = File(tempDir, "other.jar.444.new").apply { writeText("x"); setLastModified(old) }
+        val unrelated = File(tempDir, "notes.txt").apply { writeText("x"); setLastModified(old) }
+
+        UpdateInstaller.sweepStaleSidecars(target)
+
+        assertFalse(oldStaged.exists(), "an old staged .new must be removed")
+        assertFalse(oldStaged2.exists(), "an old staged .new must be removed")
+        assertFalse(oldLock.exists(), "an old .update.lock must be removed")
+        assertTrue(target.exists(), "the JAR itself is never a sweep candidate")
+        assertTrue(freshStaged.exists(), "a fresh (in-flight) staged file must be preserved")
+        assertTrue(backup.exists(), "the .bak recovery copy must be preserved")
+        assertTrue(otherJarSidecar.exists(), "another JAR's sidecars must not be touched")
+        assertTrue(unrelated.exists(), "unrelated files must not be touched")
+    }
+
+    @Test
+    fun `sweepStaleSidecars respects the age threshold and never throws on an empty directory`() {
+        val target = serverJar(File(tempDir, "app.jar"))
+        val recentLock = File(tempDir, "app.jar${UpdateInstaller.LOCK_SUFFIX}").apply { writeText("") }
+
+        // Effectively-infinite threshold: nothing is old enough, so nothing is swept.
+        UpdateInstaller.sweepStaleSidecars(target, olderThanMillis = Long.MAX_VALUE)
+        assertTrue(recentLock.exists())
+
+        // An empty directory must be a silent no-op, not an exception.
+        val emptyDir = File(tempDir, "empty").apply { mkdirs() }
+        UpdateInstaller.sweepStaleSidecars(File(emptyDir, "nothere.jar"))
+    }
 }
