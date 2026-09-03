@@ -1,8 +1,11 @@
 package com.jitunicornfx.insightidr.mcp.tools
 
 import com.jitunicornfx.insightidr.mcp.*
+import com.jitunicornfx.insightidr.mcp.Rapid7Client.ApiBase
 import com.jitunicornfx.insightidr.mcp.Rapid7Client.ApiResponse
+import io.ktor.http.HttpMethod
 import kotlinx.coroutines.delay
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.buildJsonObject
@@ -78,6 +81,49 @@ internal suspend fun Rapid7Client.awaitQueryCompletion(
     return current
 }
 
+/**
+ * Whether [this] response is the Log Search API's rejection of pagination on a statistic
+ * (`calculate`/`groupby`) query — error code `101009`, "Pagination is not supported with statistic
+ * queries". Statistic results are not paginated, so the API refuses `per_page`/`sequence_number`.
+ *
+ * Matched on the raw [ApiResponse.body] (this runs before [toToolResult] pretty-prints and wraps it),
+ * on either the numeric code or the message text, and never on a 2xx — a successful result body that
+ * happens to contain the string `101009` (e.g. a log line) must not trigger a retry.
+ */
+internal fun ApiResponse.isStatisticPaginationRejection(): Boolean =
+    status !in 200..299 &&
+        (body.contains("101009") || body.contains("pagination is not supported", ignoreCase = true))
+
+/** Drop only the pagination query keys, leaving the LEQL body, time window, labels, etc. untouched. */
+internal fun Map<String, List<String>>.withoutPagination(): Map<String, List<String>> =
+    filterKeys { it != "per_page" && it != "sequence_number" }
+
+/**
+ * Submit a Log Search query and poll it to completion, transparently handling statistic queries.
+ *
+ * A statistic query (`calculate`/`groupby`) cannot be paginated, but the server sends `per_page` on
+ * every query, so the first submit is rejected with [isStatisticPaginationRejection]. That rejection
+ * is a request-validation error — no query was created — so the request is safely resubmitted once
+ * with the pagination parameters stripped ([withoutPagination]). Event (non-statistic) queries never
+ * hit the retry: their 2xx submit flows straight to [awaitQueryCompletion] exactly as before, so
+ * pagination for them is unchanged. All Log Search submit tools route through here (base is always
+ * [ApiBase.LOG_SEARCH]).
+ */
+internal suspend fun Rapid7Client.submitLogSearchQuery(
+    method: HttpMethod,
+    path: String,
+    query: Map<String, List<String>> = emptyMap(),
+    jsonBody: JsonElement? = null,
+    wait: Boolean,
+    timeout: Long,
+): ApiResponse {
+    var response = request(method, path, query = query, jsonBody = jsonBody, base = ApiBase.LOG_SEARCH)
+    if (response.isStatisticPaginationRejection()) {
+        response = request(method, path, query = query.withoutPagination(), jsonBody = jsonBody, base = ApiBase.LOG_SEARCH)
+    }
+    return awaitQueryCompletion(response, wait, timeout)
+}
+
 /** Read the polling controls shared by all query tools. */
 internal fun JsonObject.pollArgs(): Pair<Boolean, Long> {
     val wait = booleanOrNull("wait_for_completion") ?: true
@@ -114,7 +160,7 @@ internal fun requireTimeWindow(args: JsonObject) {
 
 /** Pagination / result-shaping parameters shared by the query endpoints. */
 internal fun JsonObjectBuilder.queryResultParams() {
-    integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to the maximum ($LS_MAX_PER_PAGE).")
+    integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to the maximum ($LS_MAX_PER_PAGE). Ignored for statistic (calculate/groupby) queries, which cannot be paginated.")
     booleanParam("most_recent_first", "When true, return the most recent events first. Defaults to false.")
     booleanParam("kvp_info", "When true, include parsed key-value-pair info for each returned log entry.")
     integerParam("sequence_number", "Include entries in the 'from' millisecond with sequence numbers at/after this value.")

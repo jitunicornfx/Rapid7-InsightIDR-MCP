@@ -1,12 +1,15 @@
 package com.jitunicornfx.insightidr.mcp
 
+import com.jitunicornfx.insightidr.mcp.Rapid7Client.ApiResponse
 import com.jitunicornfx.insightidr.mcp.tools.LS_DEFAULT_POLL_TIMEOUT_MS
 import com.jitunicornfx.insightidr.mcp.tools.LS_MAX_POLL_TIMEOUT_MS
 import com.jitunicornfx.insightidr.mcp.tools.continuationLink
+import com.jitunicornfx.insightidr.mcp.tools.isStatisticPaginationRejection
 import com.jitunicornfx.insightidr.mcp.tools.leqlObjectForPatch
 import com.jitunicornfx.insightidr.mcp.tools.nextPageLink
 import com.jitunicornfx.insightidr.mcp.tools.pollArgs
 import com.jitunicornfx.insightidr.mcp.tools.requireTimeWindow
+import com.jitunicornfx.insightidr.mcp.tools.withoutPagination
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -14,7 +17,9 @@ import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class LogSearchSupportTest {
 
@@ -69,6 +74,51 @@ class LogSearchSupportTest {
         requireTimeWindow(buildJsonObject { put("from", 1L); put("to", 2L) })
         assertFailsWith<IllegalArgumentException> { requireTimeWindow(buildJsonObject {}) }
         assertFailsWith<IllegalArgumentException> { requireTimeWindow(buildJsonObject { put("from", 1L) }) }
+    }
+
+    @Test
+    fun `isStatisticPaginationRejection detects 101009 on non-2xx, by code or message, never on 2xx`() {
+        // By numeric error code.
+        assertTrue(
+            ApiResponse(
+                400, false,
+                """{"id":"IDR","code":101009,"message":"Pagination is not supported with statistic queries"}""",
+                "application/json",
+            ).isStatisticPaginationRejection(),
+        )
+        // By message text, mixed case, and a different 4xx status.
+        assertTrue(
+            ApiResponse(422, false, "Pagination Is Not Supported with statistic queries", null)
+                .isStatisticPaginationRejection(),
+        )
+        // A 2xx result body that merely contains the string 101009 (e.g. a log line) must NOT trigger.
+        assertFalse(
+            ApiResponse(200, true, """{"events":[{"message":"saw code 101009 here"}]}""", "application/json")
+                .isStatisticPaginationRejection(),
+        )
+        // An unrelated error must NOT trigger.
+        assertFalse(
+            ApiResponse(404, false, """{"code":404,"message":"not found"}""", null).isStatisticPaginationRejection(),
+        )
+    }
+
+    @Test
+    fun `withoutPagination drops only per_page and sequence_number`() {
+        val full = mapOf(
+            "per_page" to listOf("500"),
+            "sequence_number" to listOf("42"),
+            "query" to listOf("where(x) calculate(count)"),
+            "time_range" to listOf("today"),
+            "most_recent_first" to listOf("true"),
+            "kvp_info" to listOf("true"),
+        )
+        val stripped = full.withoutPagination()
+        assertFalse("per_page" in stripped)
+        assertFalse("sequence_number" in stripped)
+        assertEquals(listOf("where(x) calculate(count)"), stripped["query"])
+        assertEquals(listOf("today"), stripped["time_range"])
+        assertEquals(listOf("true"), stripped["most_recent_first"])
+        assertEquals(listOf("true"), stripped["kvp_info"])
     }
 
     @Test

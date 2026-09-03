@@ -33,7 +33,7 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
     ) { args ->
         val (wait, timeout) = args.pollArgs()
         requireTimeWindow(args)
-        val initial = client.request(
+        client.submitLogSearchQuery(
             HttpMethod.Get,
             "/query/logs/${seg(args.requireString("log_key"))}",
             query = query(
@@ -42,9 +42,9 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
                 "labels" to args.stringOrNull("labels"),
                 "export_format" to args.stringOrNull("export_format"),
             ) + timeWindowQuery(args) + queryResultQuery(args),
-            base = ApiBase.LOG_SEARCH,
-        )
-        client.awaitQueryCompletion(initial, wait, timeout).toToolResult()
+            wait = wait,
+            timeout = timeout,
+        ).toToolResult()
     }
 
     apiTool(
@@ -69,7 +69,7 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
             putOpt("logs", args.arrayOrNull("log_keys"))
             put("leql", leqlObject(args.stringOrNull("query") ?: "", args))
         }
-        val initial = client.request(
+        client.submitLogSearchQuery(
             HttpMethod.Post,
             "/query/logs",
             query = query(
@@ -77,9 +77,9 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
                 "export_format" to args.stringOrNull("export_format"),
             ) + queryResultQuery(args),
             jsonBody = body,
-            base = ApiBase.LOG_SEARCH,
-        )
-        client.awaitQueryCompletion(initial, wait, timeout).toToolResult()
+            wait = wait,
+            timeout = timeout,
+        ).toToolResult()
     }
 
     apiTool(
@@ -101,7 +101,7 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
         val names = args.arrayOrNull("logset_name")?.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
             ?: args.stringOrNull("logset_name")?.let { listOf(it) }
             ?: throw IllegalArgumentException("Missing required parameter 'logset_name'")
-        val initial = client.request(
+        client.submitLogSearchQuery(
             HttpMethod.Get,
             "/query/logsets",
             query = query(
@@ -110,9 +110,9 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
                 "label" to args.stringOrNull("label"),
                 "labels" to args.stringOrNull("labels"),
             ) + timeWindowQuery(args) + queryResultQuery(args),
-            base = ApiBase.LOG_SEARCH,
-        )
-        client.awaitQueryCompletion(initial, wait, timeout).toToolResult()
+            wait = wait,
+            timeout = timeout,
+        ).toToolResult()
     }
 
     apiTool(
@@ -131,7 +131,7 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
     ) { args ->
         val (wait, timeout) = args.pollArgs()
         requireTimeWindow(args)
-        val initial = client.request(
+        client.submitLogSearchQuery(
             HttpMethod.Get,
             "/query/logsets/${seg(args.requireString("logset_id"))}",
             query = query(
@@ -139,9 +139,9 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
                 "label" to args.stringOrNull("label"),
                 "labels" to args.stringOrNull("labels"),
             ) + timeWindowQuery(args) + queryResultQuery(args),
-            base = ApiBase.LOG_SEARCH,
-        )
-        client.awaitQueryCompletion(initial, wait, timeout).toToolResult()
+            wait = wait,
+            timeout = timeout,
+        ).toToolResult()
     }
 
     apiTool(
@@ -198,7 +198,7 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
         },
     ) { args ->
         val (wait, timeout) = args.pollArgs()
-        val initial = client.request(
+        client.submitLogSearchQuery(
             HttpMethod.Get,
             "/query/context/${seg(args.requireString("sequence_number"))}",
             query = query(
@@ -209,9 +209,9 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
                 "kvp_info" to args.booleanOrNull("kvp_info"),
                 "most_recent_first" to args.booleanOrNull("most_recent_first"),
             ),
-            base = ApiBase.LOG_SEARCH,
-        )
-        client.awaitQueryCompletion(initial, wait, timeout).toToolResult()
+            wait = wait,
+            timeout = timeout,
+        ).toToolResult()
     }
 
     apiTool(
@@ -356,7 +356,7 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
         },
     ) { args ->
         val (wait, timeout) = args.pollArgs()
-        val initial = client.request(
+        client.submitLogSearchQuery(
             HttpMethod.Get,
             "/query/saved_query/${seg(args.requireString("saved_query_id"))}",
             query = timeWindowQuery(args) + query(
@@ -364,9 +364,9 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
                 "kvp_info" to args.booleanOrNull("kvp_info"),
                 "most_recent_first" to args.booleanOrNull("most_recent_first"),
             ),
-            base = ApiBase.LOG_SEARCH,
-        )
-        client.awaitQueryCompletion(initial, wait, timeout).toToolResult()
+            wait = wait,
+            timeout = timeout,
+        ).toToolResult()
     }
 
     apiTool(
@@ -385,7 +385,7 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
         },
     ) { args ->
         val (wait, timeout) = args.pollArgs()
-        val initial = client.request(
+        client.submitLogSearchQuery(
             HttpMethod.Get,
             "/query/logs/${seg(args.requireString("log_keys"))}/${seg(args.requireString("saved_query_id"))}",
             query = timeWindowQuery(args) + query(
@@ -393,8 +393,8 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
                 "kvp_info" to args.booleanOrNull("kvp_info"),
                 "most_recent_first" to args.booleanOrNull("most_recent_first"),
             ),
-            base = ApiBase.LOG_SEARCH,
-        )
-        client.awaitQueryCompletion(initial, wait, timeout).toToolResult()
+            wait = wait,
+            timeout = timeout,
+        ).toToolResult()
     }
 }

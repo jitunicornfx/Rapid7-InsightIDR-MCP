@@ -4,13 +4,13 @@ plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.shadow)
-    id ("org.sonarqube") version "7.4.0.8496"
+    id ("org.sonarqube") version "7.5.0.8588"
     application
     jacoco
 }
 
 group = "com.jitunicornfx.insightidr"
-version = "0.1.10"
+version = "0.1.11"
 
 dependencies {
     implementation(platform(libs.ktor.bom))

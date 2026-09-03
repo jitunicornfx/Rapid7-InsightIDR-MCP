@@ -55,7 +55,7 @@ See [`.env.example`](.env.example).
 This produces a runnable fat JAR at:
 
 ```
-build/libs/rapid7-insightidr-mcp-0.1.10-all.jar
+build/libs/rapid7-insightidr-mcp-0.1.11-all.jar
 ```
 
 ## Run
@@ -64,17 +64,17 @@ build/libs/rapid7-insightidr-mcp-0.1.10-all.jar
 
 ```PowerShell
 # PowerShell 5.1
-powershell.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.1.10-all.jar --stdio }
+powershell.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.1.11-all.jar --stdio }
 
 # PowerShell 7
-pwsh.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.1.10-all.jar --stdio }
+pwsh.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.1.11-all.jar --stdio }
 
 ```
 
 ```bash
 # macOS / Linux
 INSIGHTIDR_API_KEY=xxxx INSIGHTIDR_REGION=us \
-  java -jar build/libs/rapid7-insightidr-mcp-0.1.10-all.jar --stdio
+  java -jar build/libs/rapid7-insightidr-mcp-0.1.11-all.jar --stdio
 ```
 
 ### HTTP (Streamable HTTP / SSE)
@@ -84,16 +84,16 @@ port with `--port`:
 
 ```PowerShell
 # PowerShell 5.1
-powershell.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.1.10-all.jar --http --host 0.0.0.0 --port 3001 }
+powershell.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.1.11-all.jar --http --host 0.0.0.0 --port 3001 }
 
 # PowerShell 7
-pwsh.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.1.10-all.jar --http --host 0.0.0.0 --port 3001 }
+pwsh.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.1.11-all.jar --http --host 0.0.0.0 --port 3001 }
 ```
 
 ```bash
 # macOS / Linux
 INSIGHTIDR_API_KEY=xxxx INSIGHTIDR_REGION=us \
-  java -jar build/libs/rapid7-insightidr-mcp-0.1.10-all.jar --http --host 0.0.0.0 --port 3001
+  java -jar build/libs/rapid7-insightidr-mcp-0.1.11-all.jar --http --host 0.0.0.0 --port 3001
 ```
 
 Run `--help` to see all options. You can also run during development with
@@ -110,7 +110,7 @@ Add to your client's MCP server configuration (adjust the JAR path):
       "command": "java",
       "args": [
         "-jar",
-        "C:\\MCP Dev\\Rapid7-InsightIDR-MCP\\build\\libs\\rapid7-insightidr-mcp-0.1.10-all.jar",
+        "C:\\MCP Dev\\Rapid7-InsightIDR-MCP\\build\\libs\\rapid7-insightidr-mcp-0.1.11-all.jar",
         "--stdio"
       ],
       "env": {
@@ -188,7 +188,9 @@ see `INSIGHTIDR_LOG_SEARCH_BASE_URL` to target the unified route
 
 - **Query log data** (async queries auto-poll to completion; disable with `wait_for_completion=false`;
   `per_page` defaults to the maximum of 500, and paginated results expose a `rel: "Next"` link —
-  pass its href to `logsearch_get_next_page` for the next page):
+  pass its href to `logsearch_get_next_page` for the next page. Statistic queries — those using
+  `calculate()` or `groupby()` — can't be paginated; the server detects the API's "pagination not
+  supported" rejection and transparently re-runs them without pagination, so they just work):
   `logsearch_query_log`, `logsearch_query_logs`, `logsearch_query_logset`,
   `logsearch_query_logsets_by_name`, `logsearch_poll_query`, `logsearch_get_next_page`,
   `logsearch_get_context_events`, `logsearch_get_search_stats`, `logsearch_list_query_endpoints`

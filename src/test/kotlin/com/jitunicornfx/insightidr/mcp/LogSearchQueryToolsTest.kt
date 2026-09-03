@@ -95,6 +95,69 @@ class LogSearchQueryToolsTest {
     }
 
     @Test
+    fun `a statistic query rejected for pagination is retried without pagination params`() = runBlocking {
+        val h = harness(
+            responses = listOf(
+                HttpStatusCode.BadRequest to
+                    """{"id":"IDR","code":101009,"message":"Pagination is not supported with statistic queries"}""",
+                HttpStatusCode.OK to """{"statistics":{"count":5}}""",
+            ),
+        )
+        val result = h.call(
+            "logsearch_query_log",
+            mapOf(
+                "log_key" to "lk1",
+                "query" to "where(x) calculate(count)",
+                "time_range" to "today",
+                "sequence_number" to 42,
+            ),
+        )
+        assertEquals(2, h.requests.size, "the rejected statistic query must be retried exactly once")
+        // First attempt carries pagination.
+        assertEquals("500", h.requests[0].url.parameters["per_page"])
+        assertEquals("42", h.requests[0].url.parameters["sequence_number"])
+        // The retry — same path and method — drops the pagination params but keeps the LEQL/time window.
+        assertEquals(HttpMethod.Get, h.requests[1].method)
+        assertEquals("/query/logs/lk1", h.requests[1].url.encodedPath)
+        assertEquals(null, h.requests[1].url.parameters["per_page"])
+        assertEquals(null, h.requests[1].url.parameters["sequence_number"])
+        assertEquals("where(x) calculate(count)", h.requests[1].url.parameters["query"])
+        assertEquals("today", h.requests[1].url.parameters["time_range"])
+        assertFalse(result.isError == true)
+        assertTrue("statistics" in (result.content.first() as TextContent).text)
+    }
+
+    @Test
+    fun `a successful event query is never retried and keeps pagination`() = runBlocking {
+        val h = harness(body = """{"events":[{"message":"ok"}]}""")
+        val result = h.call(
+            "logsearch_query_log",
+            mapOf("log_key" to "lk1", "query" to "where(status=404)", "time_range" to "today"),
+        )
+        assertEquals(1, h.requests.size, "a 2xx event query must not trigger the pagination retry")
+        assertEquals("500", h.lastRequest.url.parameters["per_page"])
+        assertFalse(result.isError == true)
+    }
+
+    @Test
+    fun `a saved-query run rejected for pagination is retried without per_page`() = runBlocking {
+        // The saved query's LEQL is stored server-side and cannot be inspected client-side, so the
+        // retry is the only mechanism that can rescue a statistic saved query.
+        val h = harness(
+            responses = listOf(
+                HttpStatusCode.BadRequest to """{"code":101009,"message":"Pagination is not supported with statistic queries"}""",
+                HttpStatusCode.OK to """{"statistics":{"groups":[]}}""",
+            ),
+        )
+        val result = h.call("logsearch_run_saved_query", mapOf("saved_query_id" to "sq1", "per_page" to 250))
+        assertEquals(2, h.requests.size)
+        assertEquals("250", h.requests[0].url.parameters["per_page"])
+        assertEquals("/query/saved_query/sq1", h.requests[1].url.encodedPath)
+        assertEquals(null, h.requests[1].url.parameters["per_page"], "the retry must drop per_page")
+        assertFalse(result.isError == true)
+    }
+
+    @Test
     fun `get_next_page follows a Next href and polls to completion`() = runBlocking {
         val next = "https://us.rest.logs.insight.rapid7.com/query/logs/lk1?per_page=500&sequence_number=42"
         val poll = "https://us.rest.logs.insight.rapid7.com/query/cont-7"
