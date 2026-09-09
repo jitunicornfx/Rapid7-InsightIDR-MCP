@@ -14,6 +14,7 @@ import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import io.modelcontextprotocol.kotlin.sdk.types.ServerCapabilities
+import io.modelcontextprotocol.kotlin.sdk.types.Tool
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
@@ -37,6 +38,9 @@ class McpTestHarness(
 
     suspend fun call(name: String, args: Map<String, Any?> = emptyMap()): CallToolResult =
         client.callTool(name, args)
+
+    /** The registered tools as the client sees them — name, description and input schema. */
+    suspend fun tools(): List<Tool> = client.listTools().tools
 }
 
 /**

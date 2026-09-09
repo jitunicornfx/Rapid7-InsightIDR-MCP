@@ -28,8 +28,30 @@ internal const val LS_POLL_INTERVAL_MS = 500L
 internal const val LS_DEFAULT_POLL_TIMEOUT_MS = 25_000L
 internal const val LS_MAX_POLL_TIMEOUT_MS = 120_000L
 
-/** The maximum (and our default) number of log entries per page, per the spec's `per_page` parameter. */
+/** The maximum number of log entries per page, per the spec's `per_page` parameter. */
 internal const val LS_MAX_PER_PAGE = 500
+
+/**
+ * The default page size for tools that return events to the caller.
+ *
+ * Deliberately well below [LS_MAX_PER_PAGE]: a full 500-event page runs to hundreds of kilobytes,
+ * so it would breach the response budget and be structurally trimmed on nearly every query — the
+ * API would return events that were fetched, paid for in latency, and then dropped. ~100 events fit
+ * inside the default budget with headroom. Callers who want a bigger page can still ask for one, and
+ * `logsearch_spool_query_to_file` uses the maximum because its events never enter the conversation.
+ */
+internal const val LS_DEFAULT_PER_PAGE = 100
+
+/**
+ * The one-page / aggregate / spool decision rule, worded identically on every tool that returns log
+ * events, so the model sees a single policy rather than seven variations of it.
+ */
+internal const val LS_RESULT_SIZE_GUIDANCE =
+    "Returns ONE page — use it to look at a sample. To COUNT or AGGREGATE, put calculate(count) or " +
+        "groupby(field) in the LEQL: the API aggregates server-side and answers in a few hundred bytes " +
+        "instead of megabytes. To read EVERY matching event, use logsearch_spool_query_to_file, which " +
+        "follows all pages on the server and returns only a summary. Large results are truncated to this " +
+        "server's response budget, with a notice saying what was dropped."
 
 /**
  * Extract the in-progress continuation URL (the `rel="Self"` link) from a Log Search response
@@ -160,7 +182,7 @@ internal fun requireTimeWindow(args: JsonObject) {
 
 /** Pagination / result-shaping parameters shared by the query endpoints. */
 internal fun JsonObjectBuilder.queryResultParams() {
-    integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to the maximum ($LS_MAX_PER_PAGE). Ignored for statistic (calculate/groupby) queries, which cannot be paginated.")
+    integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to $LS_DEFAULT_PER_PAGE, which fits the response budget; larger pages are likely to be truncated. Ignored for statistic (calculate/groupby) queries, which cannot be paginated.")
     booleanParam("most_recent_first", "When true, return the most recent events first. Defaults to false.")
     booleanParam("kvp_info", "When true, include parsed key-value-pair info for each returned log entry.")
     integerParam("sequence_number", "Include entries in the 'from' millisecond with sequence numbers at/after this value.")
@@ -185,9 +207,9 @@ internal fun timeWindowQuery(args: JsonObject): Map<String, List<String>> = quer
     "time_range" to args.stringOrNull("time_range"),
 )
 
-/** Standard result-shaping query-parameter map from tool args; `per_page` defaults to the maximum. */
+/** Standard result-shaping query-parameter map from tool args; see [LS_DEFAULT_PER_PAGE]. */
 internal fun queryResultQuery(args: JsonObject): Map<String, List<String>> = query(
-    "per_page" to (args.intOrNull("per_page") ?: LS_MAX_PER_PAGE),
+    "per_page" to (args.intOrNull("per_page") ?: LS_DEFAULT_PER_PAGE),
     "most_recent_first" to args.booleanOrNull("most_recent_first"),
     "kvp_info" to args.booleanOrNull("kvp_info"),
     "sequence_number" to args.longOrNull("sequence_number"),

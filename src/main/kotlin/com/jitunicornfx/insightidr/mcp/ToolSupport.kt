@@ -196,21 +196,8 @@ fun seg(value: String): String {
 // Result formatting
 // ---------------------------------------------------------------------------
 
-/** Pretty-print [raw] if it is valid JSON, otherwise return it unchanged. */
-private fun prettyOrRaw(raw: String): String {
-    if (raw.isBlank()) return raw
-    return try {
-        val element = JsonCodec.pretty.parseToJsonElement(raw)
-        JsonCodec.pretty.encodeToString(JsonElement.serializer(), element)
-    } catch (_: StackOverflowError) {
-        // Deeply-nested attacker-controlled JSON (e.g. an uploaded attachment's content) can overflow
-        // the recursive parser. That is an Error, not an Exception, so it would escape apiTool's catch
-        // and tear down the session — fall back to the raw body instead.
-        raw
-    } catch (_: Exception) {
-        raw
-    }
-}
+// Rendering (pretty-printing, and the size ladder above the response budget) lives in
+// ResultBudget.kt; see `renderWithinBudget`.
 
 // Prompt-injection shield: InsightIDR API responses can contain third-party / attacker-authored
 // text (log entries, comments, alert messages, investigation titles). It is surfaced to the model
@@ -243,23 +230,41 @@ private fun statusHint(status: Int): String? = when (status) {
     else -> null
 }
 
-/** Convert an API response into a tool result, marking non-2xx responses as errors. */
-fun ApiResponse.toToolResult(): CallToolResult {
-    val rendered = prettyOrRaw(body)
-    val text = buildString {
+/**
+ * Build the text a tool result carries for this response: the status line (errors only), the
+ * untrusted envelope around the rendered body, and any server-authored budget notice after it.
+ *
+ * Split out from [toToolResult] so a tool that must prepend its own explanation — the spool tool,
+ * when it declines to spool a statistic query — reuses exactly the same rendering.
+ */
+internal fun ApiResponse.toToolText(budget: ResultBudget = ResultBudget.active): String {
+    val rendered = renderWithinBudget(body, budget, ok)
+    return buildString {
         if (!ok) {
             append("InsightIDR API returned HTTP $status.")
             statusHint(status)?.let { append(" $it") }
             append("\n")
         }
-        if (rendered.isBlank()) {
+        if (rendered.text.isBlank()) {
             append(if (ok) "Success (HTTP $status, empty response body)." else "(empty response body)")
         } else {
-            append(wrapUntrusted(rendered))
+            // wrapUntrusted runs LAST, on the final rendered string, so an envelope marker the API
+            // data smuggled in is neutralized no matter which rung of the ladder produced the text.
+            append(wrapUntrusted(rendered.text))
         }
+        // Outside the envelope: this is server-authored and must not be confusable with API data.
+        rendered.notice?.let { append("\n\n").append(it) }
     }
-    return CallToolResult(content = listOf(TextContent(text)), isError = !ok)
 }
+
+/**
+ * Convert an API response into a tool result, marking non-2xx responses as errors.
+ *
+ * [budget] defaults to the process-wide value installed at startup, so all existing call sites are
+ * bounded without change; tests pass an explicit budget to exercise the ladder hermetically.
+ */
+fun ApiResponse.toToolResult(budget: ResultBudget = ResultBudget.active): CallToolResult =
+    CallToolResult(content = listOf(TextContent(toToolText(budget))), isError = !ok)
 
 fun errorResult(message: String): CallToolResult =
     CallToolResult(content = listOf(TextContent(message)), isError = true)

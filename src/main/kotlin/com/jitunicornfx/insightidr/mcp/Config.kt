@@ -38,6 +38,26 @@ data class Config(
     val baseUrl: String,
     val requestTimeoutMillis: Long,
     /**
+     * Ceiling on the characters of API data any one tool result may carry (~4 chars per token, so
+     * the 200_000 default is roughly 50k tokens). A Log Search page routinely exceeds a megabyte;
+     * results over the budget are rendered compactly, then structurally trimmed, then cut — always
+     * with a server-authored notice naming what was dropped. See [ResultBudget].
+     *
+     * There is deliberately no "unlimited" value: one environment variable must not be able to
+     * silently reinstate an unbounded result. Raise the number instead.
+     */
+    val maxResultChars: Int = DEFAULT_MAX_RESULT_CHARS,
+    /**
+     * Directory for results spooled by `logsearch_spool_query_to_file`. Null uses the per-user
+     * default (`~/.rapid7-insightidr-mcp/spool`). See [SpoolStore].
+     */
+    val spoolDirectory: String? = null,
+    /**
+     * Hours a spooled result survives before startup sweeps it. `0` disables sweeping entirely,
+     * for analysts who must preserve the files as evidence.
+     */
+    val spoolRetentionHours: Int = DEFAULT_SPOOL_RETENTION_HOURS,
+    /**
      * Base URL for the Log Search REST API. The Log Search spec's servers are the
      * `https://<region>.rest.logs.insight.rapid7.com` hosts; override via
      * [ENV_LOG_SEARCH_BASE_URL] (e.g. to the unified platform route
@@ -96,6 +116,9 @@ data class Config(
         const val ENV_HTTP_ALLOWED_ORIGINS = "INSIGHTIDR_HTTP_ALLOWED_ORIGINS"
         const val ENV_DISABLE_UPDATE_CHECK = "INSIGHTIDR_DISABLE_UPDATE_CHECK"
         const val ENV_DISABLE_AUTO_UPDATE = "INSIGHTIDR_DISABLE_AUTO_UPDATE"
+        const val ENV_MAX_RESULT_CHARS = "INSIGHTIDR_MAX_RESULT_CHARS"
+        const val ENV_SPOOL_DIR = "INSIGHTIDR_SPOOL_DIR"
+        const val ENV_SPOOL_RETENTION_HOURS = "INSIGHTIDR_SPOOL_RETENTION_HOURS"
 
         /** Values accepted as "on" for the boolean opt-out variables. */
         private val TRUTHY = setOf("1", "true", "yes", "on")
@@ -104,6 +127,11 @@ data class Config(
 
         const val DEFAULT_REGION = "us"
         const val DEFAULT_TIMEOUT_MS = 60_000L
+        const val DEFAULT_MAX_RESULT_CHARS = ResultBudget.DEFAULT_MAX_CHARS
+
+        /** Below this a result is too small to be diagnostically useful; a misconfiguration is clamped up. */
+        const val MIN_MAX_RESULT_CHARS = 2_000
+        const val DEFAULT_SPOOL_RETENTION_HOURS = 24
 
         fun fromEnv(env: Map<String, String> = System.getenv()): Config {
             val apiKey = env[ENV_API_KEY]?.takeIf { it.isNotBlank() }
@@ -137,11 +165,23 @@ data class Config(
             val updateCheckDisabled = isTruthy(env[ENV_DISABLE_UPDATE_CHECK])
             val autoUpdateDisabled = isTruthy(env[ENV_DISABLE_AUTO_UPDATE])
 
+            val maxResultChars = (
+                env[ENV_MAX_RESULT_CHARS]?.toIntOrNull()?.takeIf { it > 0 } ?: DEFAULT_MAX_RESULT_CHARS
+                ).coerceAtLeast(MIN_MAX_RESULT_CHARS)
+
+            val spoolDirectory = env[ENV_SPOOL_DIR]?.trim()?.takeIf { it.isNotBlank() }
+
+            val spoolRetentionHours = env[ENV_SPOOL_RETENTION_HOURS]?.toIntOrNull()?.takeIf { it >= 0 }
+                ?: DEFAULT_SPOOL_RETENTION_HOURS
+
             return Config(
                 apiKey = apiKey,
                 region = region,
                 baseUrl = baseUrl,
                 requestTimeoutMillis = timeout,
+                maxResultChars = maxResultChars,
+                spoolDirectory = spoolDirectory,
+                spoolRetentionHours = spoolRetentionHours,
                 logSearchBaseUrl = logSearchBaseUrl,
                 v1BaseUrl = v1BaseUrl,
                 httpAllowedOrigins = httpAllowedOrigins,

@@ -18,7 +18,7 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
         name = "logsearch_query_log",
         description = "Run a LEQL query against one log (Log Search API). Returns matching log entries, or " +
             "statistics for calculate/groupby queries. Polls asynchronous results to completion by default. " +
-            "If the result contains a links entry with rel \"Next\", fetch further pages with logsearch_get_next_page.",
+            LS_RESULT_SIZE_GUIDANCE,
         readOnly = true,
         inputSchema = toolSchema("log_key") {
             stringParam("log_key", "The key (UUID) of the log to query. Multiple ':'-separated keys are accepted but deprecated — prefer logsearch_query_logs.")
@@ -51,7 +51,7 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
         name = "logsearch_query_logs",
         description = "Run a LEQL query across multiple logs at once (Log Search API, POST /query/logs). " +
             "A time window (time_range, or from+to) is required. Polls asynchronous results to completion by default. " +
-            "If the result contains a links entry with rel \"Next\", fetch further pages with logsearch_get_next_page.",
+            LS_RESULT_SIZE_GUIDANCE,
         readOnly = true,
         inputSchema = toolSchema("log_keys") {
             stringArrayParam("log_keys", "The keys (UUIDs) of the logs to query.")
@@ -84,7 +84,8 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
 
     apiTool(
         name = "logsearch_query_logsets_by_name",
-        description = "Run a LEQL query against one or more log sets identified by name (Log Search API).",
+        description = "Run a LEQL query against one or more log sets identified by name (Log Search API). " +
+            LS_RESULT_SIZE_GUIDANCE,
         readOnly = true,
         inputSchema = toolSchema("logset_name") {
             stringArrayParam("logset_name", "Name(s) of the log set(s) to query.")
@@ -117,7 +118,8 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
 
     apiTool(
         name = "logsearch_query_logset",
-        description = "Run a LEQL query against a single log set by id (Log Search API).",
+        description = "Run a LEQL query against a single log set by id (Log Search API). " +
+            LS_RESULT_SIZE_GUIDANCE,
         readOnly = true,
         inputSchema = toolSchema("logset_id") {
             stringParam("logset_id", "The id of the log set to query.")
@@ -148,7 +150,9 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
         name = "logsearch_get_next_page",
         description = "Fetch the next page of a paginated Log Search result. Completed query results that have " +
             "more pages include a links entry with rel \"Next\" — pass its href here. Works for all " +
-            "logsearch query tools (including audit queries). Only Rapid7 URLs are accepted.",
+            "logsearch query tools (including audit queries). Only Rapid7 URLs are accepted. For the " +
+            "occasional second or third page only: retrieving a whole multi-page result set this way " +
+            "loads every page into the conversation — use logsearch_spool_query_to_file instead.",
         readOnly = true,
         inputSchema = toolSchema("next_link") {
             stringParam("next_link", "The href of the links entry with rel \"Next\" from a previous result.")
@@ -191,7 +195,7 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
             stringParam("timestamp", "The timestamp of the log entry to fetch contextual events for.")
             stringParam("log_key", "The key of the log containing the log entry.")
             stringParam("context_type", "Which context to return relative to the entry.", enum = listOf("BEFORE", "AFTER", "SURROUND"))
-            integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to the maximum ($LS_MAX_PER_PAGE).")
+            integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to $LS_DEFAULT_PER_PAGE, which fits the response budget; larger pages are likely to be truncated.")
             booleanParam("kvp_info", "When true, include parsed key-value-pair info.")
             booleanParam("most_recent_first", "When true, return most recent events first.")
             pollingParams()
@@ -205,7 +209,7 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
                 "timestamp" to args.requireString("timestamp"),
                 "log_keys" to args.requireString("log_key"),
                 "context_type" to args.requireString("context_type"),
-                "per_page" to (args.intOrNull("per_page") ?: LS_MAX_PER_PAGE),
+                "per_page" to (args.intOrNull("per_page") ?: LS_DEFAULT_PER_PAGE),
                 "kvp_info" to args.booleanOrNull("kvp_info"),
                 "most_recent_first" to args.booleanOrNull("most_recent_first"),
             ),
@@ -344,12 +348,12 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
     apiTool(
         name = "logsearch_run_saved_query",
         description = "Run a saved query that already specifies its target logs (GET /query/saved_query/{id}). " +
-            "Optionally override the time window.",
+            "Optionally override the time window. " + LS_RESULT_SIZE_GUIDANCE,
         readOnly = true,
         inputSchema = toolSchema("saved_query_id") {
             stringParam("saved_query_id", "The id of the saved query to run.")
             timeWindowParams()
-            integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to the maximum ($LS_MAX_PER_PAGE).")
+            integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to $LS_DEFAULT_PER_PAGE, which fits the response budget; larger pages are likely to be truncated.")
             booleanParam("kvp_info", "When true, include parsed key-value-pair info.")
             booleanParam("most_recent_first", "When true, return most recent events first.")
             pollingParams()
@@ -360,7 +364,7 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
             HttpMethod.Get,
             "/query/saved_query/${seg(args.requireString("saved_query_id"))}",
             query = timeWindowQuery(args) + query(
-                "per_page" to (args.intOrNull("per_page") ?: LS_MAX_PER_PAGE),
+                "per_page" to (args.intOrNull("per_page") ?: LS_DEFAULT_PER_PAGE),
                 "kvp_info" to args.booleanOrNull("kvp_info"),
                 "most_recent_first" to args.booleanOrNull("most_recent_first"),
             ),
@@ -372,13 +376,13 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
     apiTool(
         name = "logsearch_run_saved_query_on_logs",
         description = "Run a saved query against explicit logs (GET /query/logs/{log_keys}/{saved_query_id}), " +
-            "for saved queries that don't specify logs themselves.",
+            "for saved queries that don't specify logs themselves. " + LS_RESULT_SIZE_GUIDANCE,
         readOnly = true,
         inputSchema = toolSchema("log_keys", "saved_query_id") {
             stringParam("log_keys", "The keys of the logs to query, separated by ':'.")
             stringParam("saved_query_id", "The id of the saved query to run.")
             timeWindowParams()
-            integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to the maximum ($LS_MAX_PER_PAGE).")
+            integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to $LS_DEFAULT_PER_PAGE, which fits the response budget; larger pages are likely to be truncated.")
             booleanParam("kvp_info", "When true, include parsed key-value-pair info.")
             booleanParam("most_recent_first", "When true, return most recent events first.")
             pollingParams()
@@ -389,7 +393,7 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
             HttpMethod.Get,
             "/query/logs/${seg(args.requireString("log_keys"))}/${seg(args.requireString("saved_query_id"))}",
             query = timeWindowQuery(args) + query(
-                "per_page" to (args.intOrNull("per_page") ?: LS_MAX_PER_PAGE),
+                "per_page" to (args.intOrNull("per_page") ?: LS_DEFAULT_PER_PAGE),
                 "kvp_info" to args.booleanOrNull("kvp_info"),
                 "most_recent_first" to args.booleanOrNull("most_recent_first"),
             ),

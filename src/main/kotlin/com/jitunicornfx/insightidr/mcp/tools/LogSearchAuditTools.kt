@@ -52,7 +52,7 @@ fun Server.registerLogSearchAuditTools(client: Rapid7Client) {
     ) { args ->
         val (wait, timeout) = args.pollArgs()
         requireTimeWindow(args)
-        val initial = client.request(
+        client.submitLogSearchQuery(
             HttpMethod.Get,
             "/audit/query/logs/${seg(args.requireString("log_key"))}",
             query = query(
@@ -61,9 +61,9 @@ fun Server.registerLogSearchAuditTools(client: Rapid7Client) {
                 "labels" to args.stringOrNull("labels"),
                 "export_format" to args.stringOrNull("export_format"),
             ) + timeWindowQuery(args) + queryResultQuery(args),
-            base = ApiBase.LOG_SEARCH,
-        )
-        client.awaitQueryCompletion(initial, wait, timeout).toToolResult()
+            wait = wait,
+            timeout = timeout,
+        ).toToolResult()
     }
 
     apiTool(
@@ -87,7 +87,7 @@ fun Server.registerLogSearchAuditTools(client: Rapid7Client) {
             putOpt("logs", args.arrayOrNull("log_keys"))
             put("leql", leqlObject(args.stringOrNull("query") ?: "", args))
         }
-        val initial = client.request(
+        client.submitLogSearchQuery(
             HttpMethod.Post,
             "/audit/query/logs",
             query = query(
@@ -95,9 +95,9 @@ fun Server.registerLogSearchAuditTools(client: Rapid7Client) {
                 "export_format" to args.stringOrNull("export_format"),
             ) + queryResultQuery(args),
             jsonBody = body,
-            base = ApiBase.LOG_SEARCH,
-        )
-        client.awaitQueryCompletion(initial, wait, timeout).toToolResult()
+            wait = wait,
+            timeout = timeout,
+        ).toToolResult()
     }
 
     apiTool(

@@ -38,7 +38,7 @@ class McpServerFactoryTest {
         val tools = client.listTools().tools
         val names = tools.map { it.name }.toSet()
 
-        assertEquals(144, tools.size, "expected the full tool inventory")
+        assertEquals(145, tools.size, "expected the full tool inventory")
         assertEquals(tools.size, names.size, "tool names must be unique")
 
         // One representative per registry group.
@@ -57,6 +57,7 @@ class McpServerFactoryTest {
             "get_health_metrics",            // health metrics
             "logsearch_query_log",           // log search: query
             "logsearch_get_next_page",       // log search: pagination
+            "logsearch_spool_query_to_file", // log search: spool to file
             "logsearch_list_logs",           // log search: management
             "logsearch_list_variables",      // log search: variables/metrics
             "logsearch_list_detection_rules", // log search: detection rules

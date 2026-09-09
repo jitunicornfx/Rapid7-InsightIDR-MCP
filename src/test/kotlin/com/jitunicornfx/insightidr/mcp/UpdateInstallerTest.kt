@@ -90,7 +90,7 @@ class UpdateInstallerTest {
         val outcome = UpdateInstaller.install(result, engineServing(source.readBytes()), target)
 
         assertTrue(outcome is UpdateInstaller.Outcome.Failed)
-        assertTrue("SHA-256" in (outcome as UpdateInstaller.Outcome.Failed).reason)
+        assertTrue("SHA-256" in outcome.reason)
         assertEquals(originalDigest, sha256(target), "a failed verification must not touch the installed JAR")
         assertEquals(emptyList(), tempDir.listFiles()!!.filter { it.name.endsWith(UpdateInstaller.STAGED_SUFFIX) }
             .map { it.name }, "a rejected download leaves no staging file")
@@ -110,7 +110,7 @@ class UpdateInstallerTest {
         val outcome = UpdateInstaller.install(result, engineServing(impostor.readBytes()), target)
 
         assertTrue(outcome is UpdateInstaller.Outcome.Failed)
-        assertTrue("not a valid server JAR" in (outcome as UpdateInstaller.Outcome.Failed).reason)
+        assertTrue("not a valid server JAR" in outcome.reason)
         assertEquals(originalDigest, sha256(target))
     }
 
@@ -194,7 +194,7 @@ class UpdateInstallerTest {
         val result = UpdateChecker.Result(true, "0.1.6", "9.9.9", asset = null)
         val outcome = UpdateInstaller.install(result, engineServing(ByteArray(0)), target)
         assertTrue(outcome is UpdateInstaller.Outcome.Failed)
-        assertTrue("no verifiable" in (outcome as UpdateInstaller.Outcome.Failed).reason)
+        assertTrue("no verifiable" in outcome.reason)
     }
 
     // ---------------------------------------------------------------------
@@ -250,7 +250,7 @@ class UpdateInstallerTest {
         val result = UpdateChecker.Result(true, "0.1.6", "9.9.9", asset = assetFor(source))
         val outcome = UpdateInstaller.install(result, engineServing(source.readBytes()), targetJar = null)
         assertTrue(outcome is UpdateInstaller.Outcome.Failed)
-        assertTrue("nothing to replace" in (outcome as UpdateInstaller.Outcome.Failed).reason)
+        assertTrue("nothing to replace" in outcome.reason)
     }
 
     @Test
@@ -393,7 +393,7 @@ class UpdateInstallerTest {
         }
 
         assertTrue(outcome is UpdateInstaller.Outcome.Failed, "a contended install must not proceed")
-        assertTrue("another process" in (outcome as UpdateInstaller.Outcome.Failed).reason)
+        assertTrue("another process" in outcome.reason)
         assertEquals(originalDigest, sha256(target), "the JAR is untouched while the lock is held")
     }
 

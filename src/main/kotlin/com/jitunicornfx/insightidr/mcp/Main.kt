@@ -75,6 +75,12 @@ class Rapid7InsightIdrCommand internal constructor(
         |${Config.ENV_BASE_URL} (optional): override the full base URL (advanced/testing).
         |
         |${Config.ENV_TIMEOUT_MS} (optional): per-request timeout in ms, default ${Config.DEFAULT_TIMEOUT_MS}.
+        |
+        |${Config.ENV_MAX_RESULT_CHARS} (optional): max characters of API data per tool result, default ${Config.DEFAULT_MAX_RESULT_CHARS}. Larger results are compacted, then trimmed, with a notice.
+        |
+        |${Config.ENV_SPOOL_DIR} (optional): directory for results spooled by logsearch_spool_query_to_file, default ~/.rapid7-insightidr-mcp/spool.
+        |
+        |${Config.ENV_SPOOL_RETENTION_HOURS} (optional): hours before a spooled result is swept at startup, default ${Config.DEFAULT_SPOOL_RETENTION_HOURS}. 0 never sweeps.
         """.trimMargin()
 
     private val transport: Transport by option()
@@ -126,12 +132,24 @@ fun main(args: Array<String>) = Rapid7InsightIdrCommand().main(args)
 
 /** Creates the shared client and dispatches to the selected transport. */
 private fun runServer(transport: Transport, host: String, port: Int, config: Config) {
+    // Install before anything can serve a tool call. There is exactly one Config per process — the
+    // --http path builds a fresh Server per connection but never a fresh Config — so one budget and
+    // one spool directory per process is the right granularity.
+    ResultBudget.install(ResultBudget(maxChars = config.maxResultChars))
+    SpoolStore.install(SpoolStore.resolve(config.spoolDirectory))
+
     val client = Rapid7Client(config)
     Runtime.getRuntime().addShutdownHook(Thread { runCatching { client.close() } })
 
     // Reap abandoned update sidecars (orphaned .new downloads and the .update.lock) from earlier
     // runs killed mid-update, so they don't pile up beside the JAR.
     UpdateInstaller.runningJar()?.let { UpdateInstaller.sweepStaleSidecars(it) }
+
+    // Likewise for spooled Log Search results, which are far larger. Retention 0 keeps them forever,
+    // for an analyst who needs the files preserved as evidence.
+    if (config.spoolRetentionHours > 0) {
+        SpoolStore.active.sweepStale(config.spoolRetentionHours * 3_600_000L)
+    }
 
     when (transport) {
         Transport.STDIO -> {

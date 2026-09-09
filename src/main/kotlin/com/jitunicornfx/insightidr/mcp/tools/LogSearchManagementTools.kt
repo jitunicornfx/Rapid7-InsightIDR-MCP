@@ -146,7 +146,9 @@ fun Server.registerLogSearchManagementTools(client: Rapid7Client) {
         name = "logsearch_download_log_data",
         description = "Download raw log entries (one per line) from up to 10 logs (Log Search API). " +
             "WARNING: without a limit this can return very large amounts of data; prefer a small 'limit' " +
-            "or a filtered LEQL 'query'.",
+            "or a filtered LEQL 'query'. Output is truncated to this server's response budget (cut at a " +
+            "line boundary), so a large download arrives incomplete. For a full extraction use " +
+            "logsearch_spool_query_to_file instead.",
         readOnly = true,
         inputSchema = toolSchema("log_ids") {
             stringParam("log_ids", "The UUIDs of the logs, separated by ':' or ';' (max 10 logs).")

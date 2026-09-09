@@ -72,6 +72,28 @@ class LogSearchAuditToolsTest {
     }
 
     @Test
+    fun `an audit statistic query rejected for pagination is retried without pagination params`() = runBlocking {
+        // The audit query tools used to call the API directly, bypassing submitLogSearchQuery, so
+        // audit calculate/groupby queries still failed with 101009 after the fix landed elsewhere.
+        val h = harness(
+            responses = listOf(
+                HttpStatusCode.BadRequest to
+                    """{"id":"IDR","code":101009,"message":"Pagination is not supported with statistic queries"}""",
+                HttpStatusCode.OK to """{"statistics":{"count":3}}""",
+            ),
+        )
+        val result = h.call(
+            "logsearch_audit_query_log",
+            mapOf("log_key" to "al1", "query" to "where(x) calculate(count)", "time_range" to "today"),
+        )
+        assertEquals(2, h.requests.size, "the rejected audit statistic query must be retried exactly once")
+        assertEquals("100", h.requests[0].url.parameters["per_page"])
+        assertEquals(null, h.requests[1].url.parameters["per_page"], "the retry must drop pagination")
+        assertEquals("/audit/query/logs/al1", h.requests[1].url.encodedPath)
+        assertTrue(result.isError != true)
+    }
+
+    @Test
     fun `audit export endpoints resolve their paths`() = runBlocking {
         val h = harness(body = "[]")
         h.call("logsearch_audit_list_export_jobs")

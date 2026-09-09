@@ -82,16 +82,22 @@ class LogSearchQueryToolsTest {
     }
 
     @Test
-    fun `per_page defaults to the maximum and explicit values are honored`() = runBlocking {
+    fun `per_page defaults to the sampling default and explicit values are honored`() = runBlocking {
         val h = harness()
+        // Deliberately below the API maximum: a full 500-event page would breach the response
+        // budget and be trimmed on nearly every query. See LS_DEFAULT_PER_PAGE.
         h.call("logsearch_query_log", mapOf("log_key" to "lk1", "time_range" to "today"))
-        assertEquals("500", h.lastRequest.url.parameters["per_page"], "per_page must default to the max (500)")
+        assertEquals("100", h.lastRequest.url.parameters["per_page"], "per_page must default to 100")
 
         h.call("logsearch_query_log", mapOf("log_key" to "lk1", "time_range" to "today", "per_page" to 25))
         assertEquals("25", h.lastRequest.url.parameters["per_page"])
 
-        h.call("logsearch_run_saved_query", mapOf("saved_query_id" to "sq1"))
+        // A caller who explicitly wants the maximum still gets it.
+        h.call("logsearch_query_log", mapOf("log_key" to "lk1", "time_range" to "today", "per_page" to 500))
         assertEquals("500", h.lastRequest.url.parameters["per_page"])
+
+        h.call("logsearch_run_saved_query", mapOf("saved_query_id" to "sq1"))
+        assertEquals("100", h.lastRequest.url.parameters["per_page"])
     }
 
     @Test
@@ -114,7 +120,7 @@ class LogSearchQueryToolsTest {
         )
         assertEquals(2, h.requests.size, "the rejected statistic query must be retried exactly once")
         // First attempt carries pagination.
-        assertEquals("500", h.requests[0].url.parameters["per_page"])
+        assertEquals("100", h.requests[0].url.parameters["per_page"])
         assertEquals("42", h.requests[0].url.parameters["sequence_number"])
         // The retry — same path and method — drops the pagination params but keeps the LEQL/time window.
         assertEquals(HttpMethod.Get, h.requests[1].method)
@@ -135,7 +141,7 @@ class LogSearchQueryToolsTest {
             mapOf("log_key" to "lk1", "query" to "where(status=404)", "time_range" to "today"),
         )
         assertEquals(1, h.requests.size, "a 2xx event query must not trigger the pagination retry")
-        assertEquals("500", h.lastRequest.url.parameters["per_page"])
+        assertEquals("100", h.lastRequest.url.parameters["per_page"])
         assertFalse(result.isError == true)
     }
 

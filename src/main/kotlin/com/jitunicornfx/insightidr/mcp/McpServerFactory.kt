@@ -14,7 +14,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 
 const val SERVER_NAME = "rapid7-insightidr-mcp"
-const val SERVER_VERSION = "0.1.11"
+const val SERVER_VERSION = "0.2.0"
 
 /**
  * Build a fully-configured MCP [Server] with every InsightIDR tool registered.
@@ -48,6 +48,7 @@ fun buildInsightIdrServer(client: Rapid7Client): Server {
     // Log Search API (queries, saved queries, logs/log sets, usage, exports,
     // LEQL variables, pre-computed queries, detection rules, audit logs).
     server.registerLogSearchQueryTools(client)
+    server.registerLogSearchSpoolTools(client)
     server.registerLogSearchManagementTools(client)
     server.registerLogSearchVariableTools(client)
     server.registerLogSearchDetectionRuleTools(client)
