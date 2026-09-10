@@ -289,7 +289,10 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
             HttpMethod.Put,
             "/idr/v2/investigations/${seg(id)}/status/${seg(status)}",
             query = multiCustomerQuery(args),
-            jsonBody = body,
+            // The new status travels in the path; the body only carries optional close metadata, and
+            // its requestBody is the one operation in the v2 spec not marked required. Send no body
+            // at all rather than an empty {} when the caller supplied none of those fields.
+            jsonBody = body.takeIf { it.isNotEmpty() },
         ).toToolResult()
     }
 
@@ -350,7 +353,12 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
 
     apiTool(
         name = "bulk_close_investigations",
-        description = "Close multiple investigations in bulk by source and time window (API v2).",
+        description = "Close multiple investigations in bulk by source and time window (API v2). Closes " +
+            "every investigation matching the window, which is unbounded unless " +
+            "max_investigations_to_close is set.",
+        // Closes an unbounded set in one call, so a client that confirms destructive tools should get
+        // the chance to confirm — more so than remove_alert_from_investigation, which unlinks one alert.
+        destructive = true,
         inputSchema = toolSchema("source", "from", "to") {
             stringParam("source", "Investigation source whose investigations should be closed.", enum = listOf("ALERT", "MANUAL", "HUNT"))
             stringParam("from", "ISO-8601 timestamp; close investigations created at/after this time.")

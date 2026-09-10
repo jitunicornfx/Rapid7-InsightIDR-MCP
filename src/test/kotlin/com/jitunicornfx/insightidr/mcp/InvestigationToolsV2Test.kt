@@ -175,6 +175,20 @@ class InvestigationToolsV2Test {
     }
 
     @Test
+    fun `set_investigation_status sends no body when no close metadata is supplied`() = runBlocking {
+        // The status travels in the path and the body carries only optional close metadata — it is
+        // the one v2 requestBody the spec does not mark required — so an empty {} should not be sent.
+        val h = harness()
+        h.call("set_investigation_status", mapOf("id" to "id1", "status" to "OPEN"))
+        assertEquals("/idr/v2/investigations/id1/status/OPEN", h.lastRequest.url.encodedPath)
+        assertNull(h.lastBody, "no close metadata was supplied, so no request body should be sent")
+
+        // A single optional field is still enough to produce one.
+        h.call("set_investigation_status", mapOf("id" to "id1", "status" to "CLOSED", "threat_command_free_text" to "dup"))
+        assertEquals("dup", h.lastBodyJson()["threat_command_free_text"]!!.jsonPrimitive.content)
+    }
+
+    @Test
     fun `set_investigation_priority and disposition put to their paths`() = runBlocking {
         val h = harness()
         h.call("set_investigation_priority", mapOf("id" to "id1", "priority" to "CRITICAL"))
@@ -204,6 +218,22 @@ class InvestigationToolsV2Test {
         assertEquals("/idr/v2/investigations/bulk_close", h.lastRequest.url.encodedPath)
         assertNull(h.lastRequest.url.parameters["multi-customer"])
         assertEquals("ALERT", h.lastBodyJson()["source"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `the tools that change many investigations at once are annotated destructive`() = runBlocking {
+        val h = harness()
+        val annotations = h.tools().associate { it.name to it.annotations?.destructiveHint }
+
+        // bulk_close closes every investigation in the window — unbounded unless the caller caps it —
+        // so it warrants a confirmation at least as much as unlinking a single alert does.
+        assertEquals(true, annotations["bulk_close_investigations"])
+        assertEquals(true, annotations["remove_alert_from_investigation"])
+        // Single-investigation state changes are reversible and stay non-destructive.
+        assertEquals(false, annotations["set_investigation_status"])
+        assertEquals(false, annotations["update_investigation"])
+        // Read-only tools carry no destructive hint at all.
+        assertNull(annotations["list_investigations"])
     }
 
     @Test
