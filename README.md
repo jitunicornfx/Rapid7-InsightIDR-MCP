@@ -131,6 +131,10 @@ Then ask the assistant to `validate_connection` first to confirm the key and reg
 
 ### Diagnostics
 - `validate_connection` — validate the API key/region via the platform `/validate` endpoint.
+- `insightidr_server_info` — what this server is: the version and the commit it was built from,
+  whether a newer release is available or already downloaded and awaiting a restart, the configured
+  region and endpoints, the result budget and spool settings, and the registered tool count. Answers
+  from local state and makes no API or network call. See [Server identity](#server-identity).
 
 ### Investigations (API v2 — recommended)
 - `list_investigations`, `get_investigation`, `search_investigations`
@@ -279,6 +283,30 @@ need with ordinary shell tools.
 | A look at what's there | `logsearch_query_log` / `logsearch_query_logs` — one page |
 | Every matching event | `logsearch_spool_query_to_file` |
 | The next page or two | `logsearch_get_next_page` (not for walking a whole result set) |
+
+## Server identity
+
+The version is **generated at build time**, not hardcoded in the source. `version` in
+`build.gradle.kts` is the single source of truth: the `generateBuildInfo` Gradle task bakes it —
+along with the git commit the build came from — into a resource the server reads at startup. That
+version is what the MCP `Implementation` block reports, what the update check compares against, and
+what the outbound `User-Agent` and spool manifests carry, so the reported version can never drift
+from the build that produced it. A hardcoded fallback covers running loose class files, and a test
+asserts the two agree.
+
+`insightidr_server_info` reports it, together with the git SHA, whether the working tree was dirty
+at build time, and the update status retained from the startup check — so "what am I running, and is
+it current?" is answerable mid-session without waiting for a notification the client may not show.
+The handler reads only local state: it never calls the InsightIDR API or GitHub.
+
+Two notes on what it deliberately does **not** report: no absolute host paths (a spool directory or
+JAR path contains the OS user name, so only booleans say whether they are configured), and the
+allow-listed HTTP origins are counted rather than listed.
+
+One caveat on the build fields: `generatedAt` records when the build info was last *regenerated* —
+the last time the version, commit or dirty flag changed — not the last time you ran a build. Making
+it exact would mean feeding a wall clock into the Gradle task's inputs, which would leave the task
+and everything downstream of it out of date on every build. `gitCommitTime` is the precise answer.
 
 ## Update notifications
 

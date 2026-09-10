@@ -137,13 +137,20 @@ private fun runServer(transport: Transport, host: String, port: Int, config: Con
     // one spool directory per process is the right granularity.
     ResultBudget.install(ResultBudget(maxChars = config.maxResultChars))
     SpoolStore.install(SpoolStore.resolve(config.spoolDirectory))
+    // Narrowed from the post-flag-merge config, so the update flags reported by
+    // insightidr_server_info reflect --no-update-check / --no-auto-update, not just the environment.
+    ServerFacts.install(ServerFacts.from(config))
 
     val client = Rapid7Client(config)
     Runtime.getRuntime().addShutdownHook(Thread { runCatching { client.close() } })
 
     // Reap abandoned update sidecars (orphaned .new downloads and the .update.lock) from earlier
     // runs killed mid-update, so they don't pile up beside the JAR.
-    UpdateInstaller.runningJar()?.let { UpdateInstaller.sweepStaleSidecars(it) }
+    // Reuse this single resolution for the reported status, so no tool handler ever has to do
+    // classloader/URI work (or handle the host path) itself.
+    UpdateInstaller.runningJar()
+        .also { UpdateStatus.markRunningFromJar(it != null) }
+        ?.let { UpdateInstaller.sweepStaleSidecars(it) }
 
     // Likewise for spooled Log Search results, which are far larger. Retention 0 keeps them forever,
     // for an analyst who needs the files preserved as evidence.
@@ -173,9 +180,14 @@ private fun runServer(transport: Transport, host: String, port: Int, config: Con
 private fun CoroutineScope.startUpdateCheck(config: Config): Deferred<UpdateChecker.Result>? =
     if (config.updateCheckDisabled) {
         System.err.println("[insightidr-mcp] Update check disabled via ${Config.ENV_DISABLE_UPDATE_CHECK}.")
+        UpdateStatus.markCheckDisabled()
         null
     } else {
-        async(Dispatchers.IO) { UpdateChecker.check() }
+        UpdateStatus.markCheckStarted()
+        // Recorded inside the async, not at the await site: the status must be correct even when no
+        // session ever awaits the Deferred (HTTP mode with no connections, or a client that never
+        // finishes initializing).
+        async(Dispatchers.IO) { UpdateChecker.check().also(UpdateStatus::recordCheck) }
     }
 
 /** Attach the deferred update result to a session, notifying the client once it is initialized. */
@@ -188,7 +200,8 @@ private fun CoroutineScope.notifyWhenInitialized(
     if (updateCheck == null) return
     session.onInitialized {
         launch {
-            val result = runCatching { updateCheck.await() }.getOrNull() ?: return@launch
+            val result = runCatching { updateCheck.await() }.getOrNull()
+                ?: run { UpdateStatus.markCheckFailed(); return@launch }
             if (result.updateAvailable) System.err.println("[insightidr-mcp] ${result.message()}")
             server.notifyUpdateAvailable(session, result)
             if (result.updateAvailable) {
@@ -215,9 +228,11 @@ private suspend fun autoInstall(config: Config, result: UpdateChecker.Result): U
             "[insightidr-mcp] Automatic installation is disabled " +
                 "(${Config.ENV_DISABLE_AUTO_UPDATE} / --no-auto-update); update it manually.",
         )
+        UpdateStatus.markAutoInstallDisabled()
         return null
     }
     val outcome = UpdateInstaller.install(result)
+    UpdateStatus.recordInstall(outcome)
     when (outcome) {
         is UpdateInstaller.Outcome.Installed ->
             System.err.println("[insightidr-mcp] Installed ${outcome.version}; restart to run it.")
@@ -237,6 +252,9 @@ private suspend fun autoInstall(config: Config, result: UpdateChecker.Result): U
                             }
                         },
                     )
+                    // Only now is the swap actually wired up; before this the staged file would
+                    // never be applied, and the reported status must not claim otherwise.
+                    UpdateStatus.markStagedAppliesOnExit()
                 }.onFailure {
                     System.err.println(
                         "[insightidr-mcp] Shutting down already; ${outcome.version} remains staged at " +
@@ -310,7 +328,9 @@ private fun runHttp(client: Rapid7Client, config: Config, host: String, port: In
                 if (updateCheck != null) {
                     server.attachUpdateNotifier(checkScope) { session ->
                         val result = runCatching { updateCheck.await() }.getOrNull()
-                        if (result != null) {
+                        if (result == null) {
+                            UpdateStatus.markCheckFailed()
+                        } else {
                             server.notifyUpdateAvailable(session, result)
                             if (result.updateAvailable) {
                                 val outcome = autoInstall(config, result)

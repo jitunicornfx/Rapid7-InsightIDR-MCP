@@ -14,7 +14,17 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 
 const val SERVER_NAME = "rapid7-insightidr-mcp"
-const val SERVER_VERSION = "0.2.0"
+
+/**
+ * The version this build reports everywhere: the MCP `Implementation` block, the update comparison,
+ * the outbound User-Agent and the spool manifest.
+ *
+ * Deliberately not a `const val`. It is resolved at runtime from [BuildInfo], which Gradle generates
+ * from `build.gradle.kts`'s `version` — the single source of truth — so the reported version can
+ * never drift from the build. A compile-time constant would be inlined at every call site and could
+ * not be build-generated with a fallback.
+ */
+val SERVER_VERSION: String = BuildInfo.version
 
 /**
  * Build a fully-configured MCP [Server] with every InsightIDR tool registered.

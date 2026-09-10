@@ -2,10 +2,16 @@ package com.jitunicornfx.insightidr.mcp
 
 import com.jitunicornfx.insightidr.mcp.tools.registerCollectorTools
 import com.jitunicornfx.insightidr.mcp.tools.registerHealthMetricTools
+import com.jitunicornfx.insightidr.mcp.tools.SERVER_INFO_TOOL
 import com.jitunicornfx.insightidr.mcp.tools.registerSystemTools
 import io.ktor.http.HttpMethod
+import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -69,5 +75,64 @@ class MiscToolsTest {
         assertEquals("/validate", req.url.encodedPath)
         assertEquals("test-key", req.headers["X-Api-Key"])
         assertFalse(result.isError == true)
+    }
+
+    @Test
+    fun `insightidr_server_info makes no HTTP call at all and reports the running version`() = runBlocking {
+        UpdateStatus.recordCheck(UpdateChecker.Result(updateAvailable = false, currentVersion = SERVER_VERSION))
+        val facts = ServerFacts.from(
+            Config(
+                apiKey = "test-key",
+                region = Region.US,
+                baseUrl = "https://us.api.insight.rapid7.com",
+                requestTimeoutMillis = 60_000,
+            ),
+        )
+        val h = mcpHarness { registerSystemTools(it, facts) }
+
+        val result = h.call(SERVER_INFO_TOOL)
+        assertFalse(result.isError == true)
+
+        // The whole point of the design: the handler touches neither the InsightIDR API nor GitHub.
+        // UpdateChecker.check() would build its own OkHttp client and escape the MockEngine, so an
+        // empty request history is the assertion that it was never called.
+        assertTrue(h.requests.isEmpty(), "insightidr_server_info must make no HTTP request at all")
+
+        val json = JsonCodec.compact
+            .parseToJsonElement((result.content.first() as TextContent).text)
+            .jsonObject
+        assertEquals(SERVER_NAME, json["server"]!!.jsonPrimitive.content)
+        assertEquals(SERVER_VERSION, json["version"]!!.jsonPrimitive.content)
+        assertEquals("us", json["runtime"]!!.jsonObject["region"]!!.jsonPrimitive.content)
+        assertEquals(false, json["update"]!!.jsonObject["updateAvailable"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test
+    fun `insightidr_server_info is read-only and takes no parameters`() = runBlocking {
+        val h = mcpHarness { registerSystemTools(it) }
+        val tool = h.tools().first { it.name == SERVER_INFO_TOOL }
+        assertEquals(true, tool.annotations?.readOnlyHint)
+        assertTrue(tool.inputSchema.properties?.isEmpty() ?: true, "the tool must take no arguments")
+    }
+
+    @Test
+    fun `insightidr_server_info counts every registered tool, not just its own group`() = runBlocking {
+        // registerSystemTools runs FIRST in buildInsightIdrServer, so a count captured at
+        // registration time would report 2. This proves it is read at call time from the live registry.
+        val h = mcpHarness { registerSystemTools(it); registerCollectorTools(it); registerHealthMetricTools(it) }
+        val expected = h.tools().size
+
+        val json = JsonCodec.compact
+            .parseToJsonElement((h.call(SERVER_INFO_TOOL).content.first() as TextContent).text)
+            .jsonObject
+        assertEquals(expected, json["toolCount"]!!.jsonPrimitive.int)
+        assertTrue(expected > 2, "the fixture should register more than the system group")
+    }
+
+    @AfterTest
+    fun resetProcessState() {
+        // Both holders are process-wide and JUnit runs the module in one JVM.
+        UpdateStatus.reset()
+        ServerFacts.install(ServerFacts.UNCONFIGURED)
     }
 }
