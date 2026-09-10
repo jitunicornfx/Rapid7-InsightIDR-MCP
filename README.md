@@ -58,7 +58,7 @@ See [`.env.example`](.env.example).
 This produces a runnable fat JAR at:
 
 ```
-build/libs/rapid7-insightidr-mcp-0.3.0-all.jar
+build/libs/rapid7-insightidr-mcp-0.3.1-all.jar
 ```
 
 ## Run
@@ -67,17 +67,17 @@ build/libs/rapid7-insightidr-mcp-0.3.0-all.jar
 
 ```PowerShell
 # PowerShell 5.1
-powershell.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.3.0-all.jar --stdio }
+powershell.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.3.1-all.jar --stdio }
 
 # PowerShell 7
-pwsh.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.3.0-all.jar --stdio }
+pwsh.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.3.1-all.jar --stdio }
 
 ```
 
 ```bash
 # macOS / Linux
 INSIGHTIDR_API_KEY=xxxx INSIGHTIDR_REGION=us \
-  java -jar build/libs/rapid7-insightidr-mcp-0.3.0-all.jar --stdio
+  java -jar build/libs/rapid7-insightidr-mcp-0.3.1-all.jar --stdio
 ```
 
 ### HTTP (Streamable HTTP / SSE)
@@ -87,16 +87,16 @@ port with `--port`:
 
 ```PowerShell
 # PowerShell 5.1
-powershell.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.3.0-all.jar --http --host 0.0.0.0 --port 3001 }
+powershell.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.3.1-all.jar --http --host 0.0.0.0 --port 3001 }
 
 # PowerShell 7
-pwsh.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.3.0-all.jar --http --host 0.0.0.0 --port 3001 }
+pwsh.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.3.1-all.jar --http --host 0.0.0.0 --port 3001 }
 ```
 
 ```bash
 # macOS / Linux
 INSIGHTIDR_API_KEY=xxxx INSIGHTIDR_REGION=us \
-  java -jar build/libs/rapid7-insightidr-mcp-0.3.0-all.jar --http --host 0.0.0.0 --port 3001
+  java -jar build/libs/rapid7-insightidr-mcp-0.3.1-all.jar --http --host 0.0.0.0 --port 3001
 ```
 
 Run `--help` to see all options. You can also run during development with
@@ -113,7 +113,7 @@ Add to your client's MCP server configuration (adjust the JAR path):
       "command": "java",
       "args": [
         "-jar",
-        "C:\\MCP Dev\\Rapid7-InsightIDR-MCP\\build\\libs\\rapid7-insightidr-mcp-0.3.0-all.jar",
+        "C:\\MCP Dev\\Rapid7-InsightIDR-MCP\\build\\libs\\rapid7-insightidr-mcp-0.3.1-all.jar",
         "--stdio"
       ],
       "env": {
