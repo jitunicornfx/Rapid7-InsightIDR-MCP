@@ -53,9 +53,9 @@ class Rapid7Client(
     )
 
     /**
-     * Which API family a request targets; each resolves to its own base URL per the
-     * OpenAPI specifications ([IDR_V2] -> `api.insight`, [IDR_V1] -> `rest.logs.insight`,
-     * [LOG_SEARCH] -> the configured Log Search route).
+     * Which API family a request targets; each resolves to its own base URL
+     * ([IDR_V2] and [IDR_V1] -> `api.insight`, which serves both IDR APIs;
+     * [LOG_SEARCH] -> the configured Log Search route, `rest.logs.insight` by default).
      */
     enum class ApiBase { IDR_V2, IDR_V1, LOG_SEARCH }
 

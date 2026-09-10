@@ -56,7 +56,12 @@ fun Server.registerCommunityThreatTools(client: Rapid7Client) {
 
     apiTool(
         name = "replace_community_threat_indicators",
-        description = "Replace all indicators for a Community Threat, in json, csv, or xml format (API v1).",
+        description = "Replace ALL indicators for a Community Threat, in json, csv, or xml format " +
+            "(API v1). Every existing indicator on the threat is discarded — use " +
+            "add_community_threat_indicators to append instead. Payloads over 50 MB are rejected.",
+        // Overwrites the whole indicator set; a client that confirms destructive tools should confirm
+        // this one, exactly as it does for delete_community_threat.
+        destructive = true,
         inputSchema = toolSchema("key", "format", "indicators") {
             stringParam("key", "The key of the Community Threat.")
             stringParam("format", "The format of the indicators payload.", enum = listOf("json", "csv", "stix_xml"))

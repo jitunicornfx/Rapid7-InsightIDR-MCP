@@ -84,4 +84,18 @@ class CommunityThreatToolsTest {
         assertEquals("/idr/v1/customthreats/key/k1/delete", h.lastRequest.url.encodedPath)
         assertEquals("no longer needed", h.lastBodyJson()["reason"]!!.jsonPrimitive.content)
     }
+
+    @Test
+    fun `the tools that discard existing indicators are annotated destructive`() = runBlocking {
+        val h = harness()
+        val annotations = h.tools().associate { it.name to it.annotations?.destructiveHint }
+
+        // replace_* overwrites the threat's entire indicator set, so a client that confirms
+        // destructive tools must get the chance to confirm it — same as an outright delete.
+        assertEquals(true, annotations["replace_community_threat_indicators"])
+        assertEquals(true, annotations["delete_community_threat"])
+        // Appending and creating are not destructive; nothing existing is lost.
+        assertEquals(false, annotations["add_community_threat_indicators"])
+        assertEquals(false, annotations["create_community_threat"])
+    }
 }

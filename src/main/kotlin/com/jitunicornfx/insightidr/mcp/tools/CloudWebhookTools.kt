@@ -4,10 +4,30 @@ import com.jitunicornfx.insightidr.mcp.*
 import io.ktor.http.*
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 private const val CLOUDHOOK_STATUS = "The RRN of the cloud webhook."
+
+/**
+ * The fields of a webhook validation configuration, per the v1 spec's `OAuthConfig*Request` schemas.
+ *
+ * `type` is the schema's discriminator and `OAUTH` is its only value today — the spec wraps these
+ * bodies in a single-member `oneOf`, which reads as a placeholder for further validation types. The
+ * create form requires all four non-`scope` fields; the update form requires only `type`, so each
+ * call site passes its own `required` list.
+ */
+private fun JsonObjectBuilder.oauthValidationProps() {
+    stringParam("type", "The validation type discriminator.", enum = listOf("OAUTH"))
+    stringParam("client_id", "The OAuth client id.")
+    stringParam(
+        "client_secret_grant_rrn",
+        "RRN of the stored client-secret grant, e.g. rrn:credential:local:0123:grant:4567.",
+    )
+    stringParam("auth_service_url", "Token endpoint URL, e.g. https://auth.example.com/token.")
+    stringParam("scope", "Optional OAuth scope, e.g. webhook:write.")
+}
 
 /** Registers the InsightIDR API v1 Cloud Webhooks tools. */
 fun Server.registerCloudWebhookTools(client: Rapid7Client) {
@@ -39,7 +59,12 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
         inputSchema = toolSchema("name", "url") {
             stringParam("name", "The name of the webhook.")
             stringParam("url", "The URL of the webhook endpoint.")
-            objectParam("validation_config", "Optional validation configuration object for the webhook.")
+            objectParam(
+                "validation_config",
+                "Optional validation configuration for the webhook. OAUTH is currently the only " +
+                    "supported type. It can also be added later with add_cloud_webhook_validation.",
+                required = listOf("type", "client_id", "client_secret_grant_rrn", "auth_service_url"),
+            ) { oauthValidationProps() }
         },
     ) { args ->
         val body = buildJsonObject {
@@ -93,12 +118,23 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
 
     apiTool(
         name = "replay_cloud_webhook_events",
-        description = "Replay events for a cloud webhook, by explicit event ids or a time window (API v1).",
+        description = "Replay events for a cloud webhook, by explicit event ids or a time window " +
+            "(API v1). Supply at least one of event_ids, start_time or end_time. Accepted " +
+            "asynchronously — a 202 means the replay was queued, not that it finished.",
         inputSchema = toolSchema("webhook_rrn") {
             stringParam("webhook_rrn", CLOUDHOOK_STATUS)
-            stringArrayParam("event_ids", "List of event ids to replay.")
-            stringParam("start_time", "ISO-8601 UTC timestamp to replay events from (inclusive).")
-            stringParam("end_time", "ISO-8601 UTC timestamp to replay events to (inclusive).")
+            stringArrayParam("event_ids", "List of event ids to replay. At most 100, and must be unique.")
+            stringParam(
+                "start_time",
+                "ISO-8601 UTC timestamp to replay events from (inclusive). Cannot be more than 3 days " +
+                    "in the past. On its own it means a 60-second window starting here; omitted with " +
+                    "an end_time, it defaults to 60 seconds before it.",
+            )
+            stringParam(
+                "end_time",
+                "ISO-8601 UTC timestamp to replay events to (inclusive). Defaults to now. On its own " +
+                    "it means a 60-second window ending here.",
+            )
         },
     ) { args ->
         val rrn = args.requireString("webhook_rrn")
@@ -117,9 +153,9 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
             stringParam("webhook_rrn", CLOUDHOOK_STATUS)
             objectParam(
                 "validation_config",
-                "The validation configuration object. For OAuth, include type=\"OAUTH\", client_id, " +
-                        "client_secret_grant_rrn, and auth_service_url.",
-            )
+                "The validation configuration object. OAUTH is currently the only supported type.",
+                required = listOf("type", "client_id", "client_secret_grant_rrn", "auth_service_url"),
+            ) { oauthValidationProps() }
         },
     ) { args ->
         val rrn = args.requireString("webhook_rrn")
@@ -135,8 +171,10 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
             stringParam("webhook_rrn", CLOUDHOOK_STATUS)
             objectParam(
                 "validation_config",
-                "The updated validation configuration object. Must include the type discriminator (e.g. type=\"OAUTH\").",
-            )
+                "The updated validation configuration. Only the type discriminator is required on an " +
+                    "update; supply just the fields being changed.",
+                required = listOf("type"),
+            ) { oauthValidationProps() }
         },
     ) { args ->
         val rrn = args.requireString("webhook_rrn")

@@ -89,6 +89,28 @@ fun JsonObjectBuilder.objectParam(name: String, description: String) {
 }
 
 /**
+ * A JSON object parameter with a declared shape, for a nested body the API actually specifies.
+ *
+ * Preferred over the free-form [objectParam] wherever the spec pins the fields down: the model then
+ * sees the property names and which are required, instead of having to infer them from prose.
+ */
+fun JsonObjectBuilder.objectParam(
+    name: String,
+    description: String,
+    required: List<String> = emptyList(),
+    props: JsonObjectBuilder.() -> Unit,
+) {
+    putJsonObject(name) {
+        put("type", "object")
+        put("description", description)
+        putJsonObject("properties", props)
+        if (required.isNotEmpty()) {
+            putJsonArray("required") { required.forEach { add(it) } }
+        }
+    }
+}
+
+/**
  * Declare the standard `index` / `size` pagination parameters (paired with [pagingQuery] at
  * request-build time). [sizeDescription] carries the per-API size limit and default.
  */

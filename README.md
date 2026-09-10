@@ -31,7 +31,7 @@ Configuration is read from environment variables:
 | `INSIGHTIDR_API_KEY`     | ✅       | —                                         | Insight platform API key.                                      |
 | `INSIGHTIDR_REGION`      |          | `us`                                      | Region code: `us`, `us2`, `us3`, `eu`, `ca`, `au`, `ap`.       |
 | `INSIGHTIDR_BASE_URL`    |          | `https://<region>.api.insight.rapid7.com` | v2 API base URL override (per the v2 spec servers).            |
-| `INSIGHTIDR_V1_BASE_URL` |          | `https://<region>.api.insight.rapid7.com` | v1 API base URL override. The v1 spec's `servers` block advertises the `rest.logs` host, but the `/idr/v1/` routes are only served from `api.insight` — see [v1 base URL](#a-note-on-the-v1-base-url). |
+| `INSIGHTIDR_V1_BASE_URL` |          | `https://<region>.api.insight.rapid7.com` | v1 API base URL override. The `/idr/v1/` routes are served from `api.insight`, the same host as v2 (see [Design notes](#design-notes)). |
 | `INSIGHTIDR_LOG_SEARCH_BASE_URL` |  | `https://<region>.rest.logs.insight.rapid7.com` | Log Search API base override (default follows the Log Search spec servers; set to `https://<region>.api.insight.rapid7.com/log_search` for the unified platform route). |
 | `INSIGHTIDR_TIMEOUT_MS`  |          | `60000`                                   | Per-request timeout in milliseconds.                           |
 | `INSIGHTIDR_HTTP_ALLOWED_ORIGINS` |  | *(empty — deny cross-origin)*    | `--http` mode only: comma-separated browser origins allowed via CORS (e.g. `https://app.example.com`). Empty denies all cross-origin browser access; non-browser MCP clients are unaffected. Never use `*`. |
@@ -379,6 +379,10 @@ How a download is trusted before it replaces anything:
   response body (never trimmed below a floor) to help the model self-correct.
 - The response budget is enforced at a single choke point (`ApiResponse.toToolResult`), which every
   tool funnels through, so no tool can return an unbounded result by omission.
+- Both IDR APIs are served from `api.insight`; only Log Search lives on `rest.logs.insight`. Every v1
+  spec up to v1.3.0.3 advertised the Log Search host for `/idr/v1/` too, which was wrong — measured on
+  2026-08-17, v1 routes returned 404 there and 401 on `api.insight`, with Log Search the exact mirror.
+  Rapid7 corrected the `servers` block in spec v1.3.1.0, so the spec and this default now agree.
 - Logging goes to **stderr**; **stdout** is reserved for the MCP JSON-RPC stream in stdio mode.
 
 ## License

@@ -47,24 +47,41 @@ fun Server.registerEntityTools(client: Rapid7Client) {
     searchTool(
         client,
         "search_accounts",
-        "Search InsightIDR accounts (directory user accounts) (API v1).",
+        "Search InsightIDR accounts (directory user accounts) (API v1). Searchable fields: " +
+            "authentication_service, disabled (boolean), domain, name, user.rrn, user.name. All of " +
+            "those are sortable except disabled. Any other field is rejected by the API.",
         "/idr/v1/accounts/_search"
     )
     getByRrnTool(client, "get_account", "Get an InsightIDR account by RRN (API v1).", "/idr/v1/accounts")
 
     // Assets
-    searchTool(client, "search_assets", "Search InsightIDR assets (API v1).", "/idr/v1/assets/_search")
+    searchTool(
+        client,
+        "search_assets",
+        "Search InsightIDR assets (API v1). The only searchable and sortable field is name; any " +
+            "other field is rejected by the API. An asset record carries just rrn and name — use " +
+            "the InsightVM tools or Log Search for host detail such as IP, OS or tags.",
+        "/idr/v1/assets/_search",
+    )
     getByRrnTool(client, "get_asset", "Get an InsightIDR asset by RRN (API v1).", "/idr/v1/assets")
 
     // Users
-    searchTool(client, "search_users", "Search InsightIDR users (API v1).", "/idr/v1/users/_search")
+    searchTool(
+        client,
+        "search_users",
+        "Search InsightIDR users (API v1). Searchable fields: first_name, last_name, name, domain. " +
+            "All of those are sortable except domain. There is no email field — search name instead; " +
+            "any other field is rejected by the API.",
+        "/idr/v1/users/_search",
+    )
     getByRrnTool(client, "get_user", "Get an InsightIDR user by RRN (API v1).", "/idr/v1/users")
 
     // InsightIDR local accounts
     searchTool(
         client,
         "search_local_accounts",
-        "Search InsightIDR asset local accounts (API v1).",
+        "Search InsightIDR asset local accounts (API v1). Searchable and sortable fields: name, " +
+            "asset.rrn, asset.name, user.rrn, user.name. Any other field is rejected by the API.",
         "/idr/v1/assets/local-accounts/_search"
     )
     getByRrnTool(

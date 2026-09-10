@@ -67,12 +67,13 @@ data class Config(
     /**
      * Base URL for the v1 API: `https://<region>.api.insight.rapid7.com`, the same host as v2.
      *
-     * Note that the v1 OpenAPI spec's `servers` block advertises
-     * `https://<region>.rest.logs.insight.rapid7.com`, but that is wrong for the `/idr/v1/` paths —
-     * measured against the live API, every v1 IDR route returns 404 on that host and 401
-     * (i.e. exists, authentication required) on `api.insight`, while the Log Search routes behave
-     * the other way round. The spec appears to carry the Log Search host by mistake. Override via
-     * [ENV_V1_BASE_URL] if a tenant ever needs something else.
+     * The spec and this default agree as of v1.3.1.0. They did not always: every v1 spec up to and
+     * including v1.3.0.3 advertised `https://<region>.rest.logs.insight.rapid7.com` in its `servers`
+     * block, which was wrong for the `/idr/v1/` paths. Measured against the live API on 2026-08-17,
+     * every v1 IDR route returned 404 on that host and 401 (i.e. exists, authentication required) on
+     * `api.insight`, while the Log Search routes behaved the other way round — the spec had picked up
+     * the Log Search host by mistake. That measurement is why this override exists; Rapid7 corrected
+     * the spec in v1.3.1.0. Override via [ENV_V1_BASE_URL] if a tenant ever needs something else.
      */
     val v1BaseUrl: String = "https://${region.code}.api.insight.rapid7.com",
     /**
