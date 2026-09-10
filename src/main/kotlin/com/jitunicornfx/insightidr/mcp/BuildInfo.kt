@@ -26,7 +26,7 @@ object BuildInfo {
     internal const val RESOURCE_PATH = "/META-INF/insightidr-mcp-build.properties"
 
     /** Mirrors `version` in build.gradle.kts. Used only when the generated resource is missing. */
-    const val FALLBACK_VERSION: String = "0.2.0"
+    const val FALLBACK_VERSION: String = "0.3.0"
 
     /** Same shape as UpdateChecker's release-tag allow-list: a version string and nothing else. */
     private val VERSION = Regex("""^\d{1,6}(\.\d{1,6}){0,3}([-+][0-9A-Za-z.]{1,32})?$""")
