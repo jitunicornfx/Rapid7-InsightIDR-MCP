@@ -17,6 +17,7 @@ import java.io.RandomAccessFile
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
 import java.util.zip.ZipFile
 
@@ -117,15 +118,67 @@ object UpdateInstaller {
      */
     internal fun <T> withInstallLock(target: File, block: () -> T): T? {
         val lockFile = File(target.parentFile, target.name + LOCK_SUFFIX)
-        return runCatching {
+        // Set only once we actually hold the lock, so a contended caller never deletes someone
+        // else's lock file on its way out.
+        var held = false
+        val result = runCatching {
             RandomAccessFile(lockFile, "rw").use { raf ->
+                val openedKey = fileKeyOf(lockFile)
                 raf.channel.use { channel ->
                     val lock = runCatching { channel.tryLock() }.getOrNull() ?: return null
-                    lock.use { block() }
+                    lock.use {
+                        // We may be holding a lock on an inode that is no longer at this path: the
+                        // previous holder unlinks the file before releasing, and it can do so between
+                        // our open() and our tryLock(). A lock on an unlinked inode is not mutual
+                        // exclusion, because the next process creates a fresh file at the same path
+                        // and locks that one instead. Re-read the path's identity and give up if it
+                        // moved — the caller already treats null as "someone else is installing".
+                        //
+                        // This is a POSIX guard. Windows returns null from fileKey() (measured on
+                        // Windows 11), so both reads are null, the comparison passes and the check is
+                        // inert there — which is correct, because Windows cannot reach this state at
+                        // all: the JDK opens without FILE_SHARE_DELETE, so deleting a lock file any
+                        // process still holds open fails outright.
+                        if (fileKeyOf(lockFile) != openedKey) return null
+                        // Nothing is ever written to this file, so without this its mtime would stay
+                        // at whenever it was first created beside the JAR. sweepStaleSidecars decides
+                        // what is abandoned by age, and must never see a held lock as stale.
+                        runCatching { lockFile.setLastModified(System.currentTimeMillis()) }
+                        held = true
+                        try {
+                            block()
+                        } finally {
+                            // Unlink while STILL holding the lock, so a competitor that already
+                            // opened this inode is excluded at the moment the path disappears and is
+                            // then caught by the identity check above. Deleting after release would
+                            // leave a window in which it could lock the unlinked inode and proceed.
+                            //
+                            // This succeeds on POSIX and fails on Windows, where a file cannot be
+                            // deleted while this process still holds it open — hence the retry below.
+                            runCatching { lockFile.delete() }
+                        }
+                    }
                 }
             }
-        }.getOrNull()
+        }
+        // The Windows path: now that the handle is closed the delete can succeed. It is safe to run
+        // after release precisely because Windows refuses it while ANY process holds the file open,
+        // so it can never remove a lock another server is using. On POSIX the file is already gone
+        // and this is a no-op.
+        if (held) runCatching { lockFile.delete() }
+        return result.getOrNull()
     }
+
+    /**
+     * The key identifying the file currently at [file] — null when the path is gone, or when the
+     * platform does not expose one (Windows always returns null; POSIX returns device+inode).
+     *
+     * Used to detect that a lock file was unlinked or replaced underneath us. Comparing two nulls
+     * therefore reads as "unchanged" on Windows, which is the intended behaviour there.
+     */
+    private fun fileKeyOf(file: File): Any? = runCatching {
+        Files.readAttributes(file.toPath(), BasicFileAttributes::class.java).fileKey()
+    }.getOrNull()
 
     /**
      * Locate the JAR this JVM is running from, or null when not running from a JAR (e.g. tests and
@@ -143,14 +196,19 @@ object UpdateInstaller {
     /**
      * Delete this JAR's abandoned update sidecars left behind by processes that were killed before
      * they could finish or apply an update: staged downloads (`<jar>.<n>.new`, ~20 MB each) and the
-     * cross-process lock (`<jar>.update.lock`, which [withInstallLock] creates but never removes).
+     * cross-process lock (`<jar>.update.lock`).
+     *
+     * [withInstallLock] removes its own lock file on release, so one surviving a run means a process
+     * died holding it — that is the case this sweeps. It also stamps the file's mtime on every
+     * acquisition, which is what makes the age test below meaningful: a held lock is always recent,
+     * so it is never mistaken for debris. (Before that stamping the mtime was fixed at the file's
+     * first creation, and a long-lived deployment's lock could be swept while genuinely held.)
      *
      * Best-effort and never throws. Only files older than [olderThanMillis] are removed, so a
-     * download or lock that a concurrent install is actively using — always freshly created — is
-     * left alone; on Windows a file another process still holds open cannot be deleted and is simply
-     * skipped anyway. The pre-swap backup (`<jar>.bak`) is deliberately NOT swept: it is an
-     * operator's recovery copy after a failed write. The running JAR has no sidecar suffix and is
-     * never a candidate.
+     * download or lock a concurrent install is actively using is left alone; on Windows a file
+     * another process still holds open cannot be deleted and is simply skipped anyway. The pre-swap
+     * backup (`<jar>.bak`) is deliberately NOT swept: it is an operator's recovery copy after a
+     * failed write. The running JAR has no sidecar suffix and is never a candidate.
      */
     fun sweepStaleSidecars(
         target: File,

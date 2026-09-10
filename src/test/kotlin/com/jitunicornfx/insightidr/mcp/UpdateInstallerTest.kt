@@ -462,4 +462,103 @@ class UpdateInstallerTest {
         val emptyDir = File(tempDir, "empty").apply { mkdirs() }
         UpdateInstaller.sweepStaleSidecars(File(emptyDir, "nothere.jar"))
     }
+
+    // ---------------------------------------------------------------------
+    // Lock-file lifecycle. The lock is the only thing serialising two servers started from the same
+    // JAR, so every test here has to prove the cleanup did not weaken exclusion.
+    // ---------------------------------------------------------------------
+
+    private fun lockFileFor(target: File) = File(tempDir, target.name + UpdateInstaller.LOCK_SUFFIX)
+
+    @Test
+    fun `withInstallLock removes its lock file when it releases`() {
+        val target = serverJar(File(tempDir, "app.jar"))
+        var ran = false
+
+        val result = UpdateInstaller.withInstallLock(target) { ran = true; "done" }
+
+        assertEquals("done", result)
+        assertTrue(ran, "the block must have run")
+        assertFalse(lockFileFor(target).exists(), "the lock file must not outlive the holder")
+    }
+
+    @Test
+    fun `the lock file does not survive a completed install`() = runBlocking {
+        val source = serverJar(File(tempDir, "source.jar"))
+        val target = serverJar(File(tempDir, "installed.jar"), marker = "OLD")
+        val result = UpdateChecker.Result(true, "0.1.6", "9.9.9", asset = assetFor(source))
+
+        val outcome = UpdateInstaller.install(result, engineServing(source.readBytes()), target)
+
+        assertTrue(outcome is UpdateInstaller.Outcome.Installed, "expected a successful install")
+        assertFalse(lockFileFor(target).exists(), "a completed install must leave no lock file")
+        // The staged download is cleaned up by the swap, so the directory is back to just the JARs.
+        val leftovers = tempDir.listFiles()!!.map { it.name }.filter { it.endsWith(".new") }
+        assertTrue(leftovers.isEmpty(), "no staged file should remain, found: $leftovers")
+    }
+
+    @Test
+    fun `the lock file is removed even when the block fails`() {
+        val target = serverJar(File(tempDir, "app.jar"))
+
+        // withInstallLock is best-effort by design: a throwing block surfaces as null, the same as
+        // contention. What matters here is that the lock file still goes away.
+        val result = UpdateInstaller.withInstallLock<Unit>(target) { error("install blew up") }
+
+        assertNull(result, "a throwing block surfaces as null")
+        assertFalse(lockFileFor(target).exists(), "the finally must remove the lock on the failure path")
+    }
+
+    @Test
+    fun `a contended acquisition does not delete the holder's lock file`() {
+        val target = serverJar(File(tempDir, "app.jar"))
+        var innerRan = false
+        var lockExistedDuringContention = false
+
+        UpdateInstaller.withInstallLock(target) {
+            // A second acquisition while the first still holds it: tryLock fails, so the block must
+            // not run — and crucially the loser must not delete the winner's lock file.
+            //
+            // Note this assertion cannot fail on Windows however the code is written: deleting a
+            // file another handle holds open is refused there, so the `held` guard in
+            // withInstallLock is only load-bearing on POSIX, where the unlink would succeed. Kept
+            // and asserted anyway so the intent is pinned for the platform that can violate it.
+            val inner = UpdateInstaller.withInstallLock(target) { innerRan = true }
+            assertNull(inner, "a contended acquisition must return null")
+            lockExistedDuringContention = lockFileFor(target).exists()
+        }
+
+        assertFalse(innerRan, "the contended block must never run")
+        assertTrue(lockExistedDuringContention, "the holder's lock file must survive a failed acquisition")
+        assertFalse(lockFileFor(target).exists(), "the holder still removes it on release")
+    }
+
+    @Test
+    fun `a lock file is recreated on the next acquisition`() {
+        val target = serverJar(File(tempDir, "app.jar"))
+
+        assertEquals(1, UpdateInstaller.withInstallLock(target) { 1 })
+        assertFalse(lockFileFor(target).exists())
+        // Deleting on release must not wedge the next acquisition.
+        assertEquals(2, UpdateInstaller.withInstallLock(target) { 2 })
+        assertFalse(lockFileFor(target).exists())
+    }
+
+    @Test
+    fun `an acquisition refreshes the lock file's mtime so a held lock is never swept as stale`() {
+        val target = serverJar(File(tempDir, "app.jar"))
+        val stale = System.currentTimeMillis() - 2 * 60 * 60 * 1000
+        // A lock left by a crashed process, backdated well past the sweep threshold.
+        lockFileFor(target).apply { writeText(""); setLastModified(stale) }
+
+        var ageWhileHeld = Long.MAX_VALUE
+        UpdateInstaller.withInstallLock(target) {
+            ageWhileHeld = System.currentTimeMillis() - lockFileFor(target).lastModified()
+        }
+
+        assertTrue(
+            ageWhileHeld < UpdateInstaller.STALE_SIDECAR_MILLIS,
+            "a held lock must look recent to sweepStaleSidecars, was ${ageWhileHeld}ms old",
+        )
+    }
 }
