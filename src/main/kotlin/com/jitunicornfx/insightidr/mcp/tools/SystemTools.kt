@@ -116,6 +116,7 @@ internal fun serverInfo(
         put("maxResultChars", facts.maxResultChars)
         put("spoolDirectoryConfigured", facts.spoolDirectoryConfigured)
         put("spoolRetentionHours", facts.spoolRetentionHours)
+        put("uploadDirectoryConfigured", facts.uploadDirectoryConfigured)
         put("httpAllowedOriginCount", facts.httpAllowedOriginCount)
         put("updateCheckDisabled", facts.updateCheckDisabled)
         put("autoUpdateDisabled", facts.autoUpdateDisabled)

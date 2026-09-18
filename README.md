@@ -40,6 +40,7 @@ Configuration is read from environment variables:
 | `INSIGHTIDR_MAX_RESULT_CHARS` |  | `200000`                             | Maximum characters of API data in a single tool result (~4 chars per token, so ~50k tokens). Larger results are compacted, then trimmed, with a notice — see [Large results](#large-results). Values below `2000` are clamped up; there is no "unlimited" setting. |
 | `INSIGHTIDR_SPOOL_DIR`   |          | `~/.rapid7-insightidr-mcp/spool`          | Directory for results written by `logsearch_spool_query_to_file`. |
 | `INSIGHTIDR_SPOOL_RETENTION_HOURS` | | `24`                             | Hours a spooled result survives before it is swept at startup. `0` never sweeps (for preserving files as evidence). |
+| `INSIGHTIDR_UPLOAD_DIR`  |          | *(unset — uploads disabled)*              | The one directory `upload_attachment` may read files from. See [Uploading attachments](#uploading-attachments). |
 
 See [`.env.example`](.env.example).
 
@@ -185,6 +186,23 @@ the Actions tools.
 
 ### Attachments (API v1)
 - `list_attachments`, `get_attachment_metadata`, `download_attachment`, `delete_attachment`, `upload_attachment`
+
+#### Uploading attachments
+
+`upload_attachment` reads a file from the machine running the server and sends it to Rapid7, at a
+path the *model* supplies. Left unrestricted, a prompt injection hidden in a log line could ask for
+`~/.ssh/id_rsa` and have it attached to an investigation. So:
+
+- **It is disabled by default.** The tool is still listed, and explains how to enable it.
+- Set `INSIGHTIDR_UPLOAD_DIR` to a directory and **only files inside it can be uploaded**. Put what
+  you want to attach there; `file_path` may be absolute or relative to it.
+- Paths that climb out with `..`, and links or junctions that point outside, are refused — and
+  refused identically whether or not the target exists, so the tool cannot be used to map the disk.
+- UNC and device paths are refused before the filesystem is touched (on Windows, merely opening
+  `\\host\share` would send your credentials to that host). Files over 100 MiB are refused.
+
+This keeps the model inside the directory. It does not protect against another local user who can
+already write to that directory, so give it the permissions you would give any evidence folder.
 
 ### Cloud Webhooks (API v1)
 - `list_cloud_webhooks`, `get_cloud_webhook`, `create_cloud_webhook`, `update_cloud_webhook`, `delete_cloud_webhook`

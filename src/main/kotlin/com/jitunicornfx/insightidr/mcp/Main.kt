@@ -81,6 +81,8 @@ class Rapid7InsightIdrCommand internal constructor(
         |${Config.ENV_SPOOL_DIR} (optional): directory for results spooled by logsearch_spool_query_to_file, default ~/.rapid7-insightidr-mcp/spool.
         |
         |${Config.ENV_SPOOL_RETENTION_HOURS} (optional): hours before a spooled result is swept at startup, default ${Config.DEFAULT_SPOOL_RETENTION_HOURS}. 0 never sweeps.
+        |
+        |${Config.ENV_UPLOAD_DIR} (optional): the one directory upload_attachment may read files from. Unset, that tool is disabled.
         """.trimMargin()
 
     private val transport: Transport by option()
@@ -139,6 +141,7 @@ private fun runServer(transport: Transport, host: String, port: Int, config: Con
     // one spool directory per process is the right granularity.
     ResultBudget.install(ResultBudget(maxChars = config.maxResultChars))
     SpoolStore.install(SpoolStore.resolve(config.spoolDirectory))
+    UploadPolicy.install(UploadPolicy.resolve(config.uploadDirectory))
     // Narrowed from the post-flag-merge config, so the update flags reported by
     // insightidr_server_info reflect --no-update-check / --no-auto-update, not just the environment.
     ServerFacts.install(ServerFacts.from(config))

@@ -3,30 +3,14 @@ package com.jitunicornfx.insightidr.mcp.tools
 import com.jitunicornfx.insightidr.mcp.*
 import io.ktor.http.*
 import io.modelcontextprotocol.kotlin.sdk.server.Server
-import java.io.File
-
-/** Maximum size of a local file that [upload_attachment] will read into memory (100 MiB). */
-internal const val MAX_UPLOAD_BYTES: Long = 100L * 1024 * 1024
 
 /**
- * Reject UNC / remote / device-namespace paths for a local-file upload.
+ * Registers the InsightIDR API v1 Attachments tools.
  *
- * `file_path` is model-supplied and, under prompt injection, attacker-influenceable. On Windows,
- * handing `File` a UNC path such as `\\attacker\share\x` triggers an outbound SMB connection during
- * `isFile`/`readBytes`, leaking the host's NetNTLM credentials to the attacker's SMB server — a
- * forced-authentication primitive that needs no Rapid7 access. Any path beginning with two path
- * separators is UNC (`\\host\share`, `//host/share`) or the Windows device namespace (`\\?\`, `\\.\`),
- * none of which is a legitimate local file to attach, so it is refused.
+ * [uploads] is defaulted so production picks up the process-wide policy installed at startup, while
+ * tests inject a temporary directory.
  */
-internal fun requireLocalFilePath(path: String) {
-    val trimmed = path.trimStart()
-    require(!(trimmed.startsWith("\\\\") || trimmed.startsWith("//"))) {
-        "Refusing to read a UNC/remote path ('$path'). Provide a path to a local file on the server host."
-    }
-}
-
-/** Registers the InsightIDR API v1 Attachments tools. */
-fun Server.registerAttachmentTools(client: Rapid7Client) {
+fun Server.registerAttachmentTools(client: Rapid7Client, uploads: UploadPolicy = UploadPolicy.active) {
 
     apiTool(
         name = "list_attachments",
@@ -77,28 +61,26 @@ fun Server.registerAttachmentTools(client: Rapid7Client) {
 
     apiTool(
         name = "upload_attachment",
-        description = "Upload a local file as an attachment (API v1). Provide the absolute path to a file on the " +
-                "machine running this server; its bytes are read and sent to Rapid7. Only local files are allowed " +
-                "(UNC/remote paths are refused) and the file must be under " +
-                "${MAX_UPLOAD_BYTES / (1024 * 1024)} MiB. The returned attachment RRN can then be attached to a comment.",
+        // Stays registered when disabled, so the model gets an explanation rather than a missing tool
+        // it might try to work around.
+        description = "Upload a file from the machine running this server as an attachment (API v1). DISABLED " +
+            "unless the operator has set ${Config.ENV_UPLOAD_DIR}; when it is set, only files INSIDE that " +
+            "directory can be uploaded, and 'file_path' may be given relative to it. Files must be under " +
+            "${UploadPolicy.DEFAULT_MAX_BYTES / (1024 * 1024)} MiB. The returned attachment RRN can then be " +
+            "attached to a comment.",
         inputSchema = toolSchema("file_path") {
-            stringParam("file_path", "Absolute path to a local file to upload.")
+            stringParam("file_path", "Path of the file to upload, inside the server's upload directory (absolute, or relative to it).")
             stringParam("filename", "Optional name to store the attachment under; defaults to the file's name.")
         },
     ) { args ->
-        val path = args.requireString("file_path")
-        requireLocalFilePath(path)
-        val file = File(path)
-        require(file.isFile) { "File not found or not a regular file: $path" }
-        val size = file.length()
-        require(size <= MAX_UPLOAD_BYTES) {
-            "File exceeds the ${MAX_UPLOAD_BYTES / (1024 * 1024)} MiB upload limit ($size bytes): $path"
-        }
-        val fileName = args.stringOrNull("filename")?.takeIf { it.isNotBlank() } ?: file.name
+        // Checked first, and answered without touching the filesystem.
+        if (!uploads.enabled) return@apiTool errorResult(UploadPolicy.DISABLED_MESSAGE)
+        val file = uploads.resolve(args.requireString("file_path"))
+        val fileName = args.stringOrNull("filename")?.takeIf { it.isNotBlank() } ?: file.fileName.toString()
         client.uploadFile(
             "/idr/v1/attachments",
             fileName = fileName,
-            bytes = file.readBytes(),
+            bytes = uploads.readCapped(file),
             base = Rapid7Client.ApiBase.IDR_V1,
         ).toToolResult()
     }

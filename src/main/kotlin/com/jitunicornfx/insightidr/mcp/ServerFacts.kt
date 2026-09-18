@@ -28,6 +28,8 @@ data class ServerFacts(
      */
     val spoolDirectoryConfigured: Boolean,
     val spoolRetentionHours: Int,
+    /** Whether `upload_attachment` is enabled at all. Not the directory, for the same reason as the spool's. */
+    val uploadDirectoryConfigured: Boolean,
     /**
      * How many browser origins may call this server in `--http` mode — deliberately NOT the list.
      * Whether cross-origin browser access is permitted at all is the operational fact; the entries
@@ -48,6 +50,7 @@ data class ServerFacts(
             maxResultChars = 0,
             spoolDirectoryConfigured = false,
             spoolRetentionHours = 0,
+            uploadDirectoryConfigured = false,
             httpAllowedOriginCount = 0,
             updateCheckDisabled = false,
             autoUpdateDisabled = false,
@@ -63,6 +66,7 @@ data class ServerFacts(
             maxResultChars = config.maxResultChars,
             spoolDirectoryConfigured = config.spoolDirectory != null,
             spoolRetentionHours = config.spoolRetentionHours,
+            uploadDirectoryConfigured = config.uploadDirectory != null,
             httpAllowedOriginCount = config.httpAllowedOrigins.size,
             updateCheckDisabled = config.updateCheckDisabled,
             autoUpdateDisabled = config.autoUpdateDisabled,

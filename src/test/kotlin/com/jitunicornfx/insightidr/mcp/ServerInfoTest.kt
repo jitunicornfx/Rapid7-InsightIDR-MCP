@@ -201,6 +201,17 @@ class ServerInfoTest {
     }
 
     @Test
+    fun `whether uploads are enabled is reported, the directory is not`() {
+        val enabled = ServerFacts.from(
+            Config("k", Region.US, "https://us.api.insight.rapid7.com", 60_000, uploadDirectory = "/home/analyst/uploads"),
+        )
+        val json = serverInfo(enabled, UpdateStatus.Snapshot(), 146)
+        assertTrue(runtime(json.jsonObject)["uploadDirectoryConfigured"]!!.jsonPrimitive.boolean)
+        assertFalse("analyst" in text(json), "a host path names the OS user")
+        assertFalse(runtime(payload(UpdateStatus.Snapshot()))["uploadDirectoryConfigured"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test
     fun `no absolute host path and no secret is ever emitted`() {
         // The facts above deliberately carry a real-looking spool path and an API key, so this is a
         // live assertion rather than a vacuous one.

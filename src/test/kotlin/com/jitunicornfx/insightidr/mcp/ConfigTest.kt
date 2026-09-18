@@ -203,6 +203,13 @@ class ConfigTest {
     }
 
     @Test
+    fun `the upload directory is unset by default, which leaves upload_attachment disabled`() {
+        assertEquals(null, configWith().uploadDirectory)
+        assertEquals(null, configWith(Config.ENV_UPLOAD_DIR to "   ").uploadDirectory, "blank is unset")
+        assertEquals("/srv/uploads", configWith(Config.ENV_UPLOAD_DIR to "  /srv/uploads  ").uploadDirectory)
+    }
+
+    @Test
     fun `a number that is not a number stops the server instead of meaning the default`() {
         // This one is data loss: "never" used to mean 24 hours, and the evidence was swept.
         assertTrue(Config.ENV_SPOOL_RETENTION_HOURS in rejected(Config.ENV_SPOOL_RETENTION_HOURS to "never"))

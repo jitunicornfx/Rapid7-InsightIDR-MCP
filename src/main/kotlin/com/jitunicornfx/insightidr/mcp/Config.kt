@@ -61,6 +61,12 @@ data class Config(
      */
     val spoolRetentionHours: Int = DEFAULT_SPOOL_RETENTION_HOURS,
     /**
+     * The one directory `upload_attachment` may read files from. Null — the default — disables that
+     * tool: it sends a local file to Rapid7 at the model's request, so it stays off until the
+     * operator says where it may look. See [UploadPolicy].
+     */
+    val uploadDirectory: String? = null,
+    /**
      * Base URL for the Log Search REST API. The Log Search spec's servers are the
      * `https://<region>.rest.logs.insight.rapid7.com` hosts; override via
      * [ENV_LOG_SEARCH_BASE_URL] (e.g. to the unified platform route
@@ -142,6 +148,7 @@ data class Config(
         const val ENV_MAX_RESULT_CHARS = "INSIGHTIDR_MAX_RESULT_CHARS"
         const val ENV_SPOOL_DIR = "INSIGHTIDR_SPOOL_DIR"
         const val ENV_SPOOL_RETENTION_HOURS = "INSIGHTIDR_SPOOL_RETENTION_HOURS"
+        const val ENV_UPLOAD_DIR = "INSIGHTIDR_UPLOAD_DIR"
 
         /** Values accepted as "on" for the boolean opt-out variables. */
         private val TRUTHY = setOf("1", "true", "yes", "on")
@@ -255,6 +262,7 @@ data class Config(
                 ).coerceAtLeast(MIN_MAX_RESULT_CHARS)
 
             val spoolDirectory = env[ENV_SPOOL_DIR]?.trim()?.takeIf { it.isNotBlank() }
+            val uploadDirectory = env[ENV_UPLOAD_DIR]?.trim()?.takeIf { it.isNotBlank() }
 
             val spoolRetentionHours =
                 wholeNumber(env, ENV_SPOOL_RETENTION_HOURS, min = 0, max = MAX_SPOOL_RETENTION_HOURS)?.toInt()
@@ -268,6 +276,7 @@ data class Config(
                 maxResultChars = maxResultChars,
                 spoolDirectory = spoolDirectory,
                 spoolRetentionHours = spoolRetentionHours,
+                uploadDirectory = uploadDirectory,
                 logSearchBaseUrl = logSearchBaseUrl,
                 v1BaseUrl = v1BaseUrl,
                 httpAllowedOrigins = httpAllowedOrigins,
