@@ -7,6 +7,9 @@ import io.ktor.client.plugins.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -202,6 +205,10 @@ object UpdateChecker {
      *
      * Returns a "no update" [Result] on any failure — this is a best-effort convenience, never a
      * reason to fail startup. [engine] is injectable so tests can drive it without network access.
+     *
+     * The one thing it does not absorb is the caller's own cancellation. Reporting "no update" for a
+     * check that was cut short by shutdown would record a completed check that never completed, and
+     * a coroutine that swallows its cancellation keeps running after it was told to stop.
      */
     suspend fun check(
         currentVersion: String = SERVER_VERSION,
@@ -229,7 +236,13 @@ object UpdateChecker {
                 }
             }
             evaluate(body, currentVersion)
-        }.getOrElse { Result(updateAvailable = false, currentVersion = currentVersion) }
+        }.getOrElse { failure ->
+            // Rethrows only when THIS coroutine was cancelled. A CancellationException that came from
+            // somewhere inside the HTTP stack while the caller is still active is just another failed
+            // fetch, and still degrades to "no update".
+            if (failure is CancellationException) currentCoroutineContext().ensureActive()
+            Result(updateAvailable = false, currentVersion = currentVersion)
+        }
 
     private fun HttpClientConfig<*>.configure() {
         expectSuccess = false

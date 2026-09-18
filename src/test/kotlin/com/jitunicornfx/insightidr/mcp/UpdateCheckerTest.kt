@@ -6,7 +6,14 @@ import io.ktor.client.engine.mock.respondError
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -237,6 +244,35 @@ class UpdateCheckerTest {
         // started from the coroutine that serves the session, so an escaping exception is fatal.
         val nasty = MockEngine { throw IllegalStateException("boom") }
         assertFalse(UpdateChecker.check("0.1.6", nasty).updateAvailable)
+    }
+
+    @Test
+    fun `check propagates the caller's cancellation instead of reporting no update`() = runBlocking {
+        val reached = CompletableDeferred<Unit>()
+        val hanging = MockEngine {
+            reached.complete(Unit)
+            awaitCancellation()
+        }
+        // What matters is whether the code AFTER check() runs — in production that is
+        // `.also(UpdateStatus::recordCheck)`, which would record a check that never completed.
+        // Asserting on the Job itself proves nothing: a cancelled Job reports cancellation even when
+        // its body swallowed the exception and returned normally.
+        val ranPastTheCheck = AtomicBoolean(false)
+        val job = launch(Dispatchers.Default) {
+            UpdateChecker.check(currentVersion = "0.1.0", engine = hanging)
+            ranPastTheCheck.set(true)
+        }
+        reached.await()
+        job.cancelAndJoin()
+        assertFalse(ranPastTheCheck.get(), "a cancelled check must not return a Result to its caller")
+    }
+
+    @Test
+    fun `a cancellation raised inside the fetch still degrades to no update`() = runBlocking {
+        // Not the caller's cancellation: the coroutine running check() is still active.
+        val internal = MockEngine { throw CancellationException("connection pool shut down") }
+        val result = UpdateChecker.check(currentVersion = "0.1.0", engine = internal)
+        assertFalse(result.updateAvailable)
     }
 
     @Test
