@@ -26,7 +26,7 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
             timeWindowParams()
             stringParam("label", "Only return entries carrying a label with this UUID (non-statistical queries only).")
             stringParam("labels", "':'-separated label UUIDs; only entries with a matching label are returned.")
-            stringParam("export_format", "If set, export results in this format. Only 'csv' is supported; non-statistical queries only.")
+            stringParam("export_format", exportFormatDescription("logsearch_get_export_job"), enum = LS_EXPORT_FORMATS)
             queryResultParams()
             pollingParams()
         },
@@ -58,7 +58,7 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
             stringParam("query", "The LEQL statement to run, e.g. where(status=404) calculate(count). If omitted, all entries in the time window are returned.")
             timeWindowParams()
             stringParam("labels", "':'-separated label UUIDs; only entries with a matching label are returned.")
-            stringParam("export_format", "If set, export results in this format. Only 'csv' is supported; non-statistical queries only.")
+            stringParam("export_format", exportFormatDescription("logsearch_get_export_job"), enum = LS_EXPORT_FORMATS)
             queryResultParams()
             pollingParams()
         },

@@ -9,6 +9,19 @@ import kotlinx.serialization.json.putJsonObject
 import kotlinx.serialization.json.put
 
 /** Log Search API — LEQL variables and pre-computed queries (PCQs). */
+/**
+ * The `metric` body. Spec 3.0.2 contradicts itself on `logs`: the schema block shows a single object,
+ * while its own request example, its code sample and the response schema all use an array. The array
+ * is what is described here, and said to be so, because three sources outweigh one and the fourth
+ * (the API itself) was not asked: creating a pre-computed query is a write to the tenant.
+ */
+private const val METRIC_SHAPE =
+    "{ \"name\", \"description\", \"enabled\": bool, \"logs\": [ { \"id\": \"<log UUID>\" } ], " +
+        "\"leql\": { \"statement\": \"where(...)\", \"function\": \"calculate(count)\" }, " +
+        "\"resolution\": seconds per data point, \"retention\": seconds kept }. " +
+        "'logs' is an ARRAY of {id} objects, as in the API's own request example. To target log sets instead, " +
+        "give 'logsets' with {\"id\"} or {\"name\"} entries in the same array form."
+
 fun Server.registerLogSearchVariableTools(client: Rapid7Client) {
 
     // ------------------------------------------------------------------
@@ -139,9 +152,7 @@ fun Server.registerLogSearchVariableTools(client: Rapid7Client) {
 
     apiTool(
         name = "logsearch_create_metric",
-        description = "Create a pre-computed query (Log Search API). Provide the 'metric' object with name, " +
-            "description, enabled, logs {id:[...]} or logsets ({id:[...]} or {name:[...]}), " +
-            "leql {statement, function}, resolution (seconds) and retention (seconds).",
+        description = "Create a pre-computed query (Log Search API). Provide the 'metric' object: " + METRIC_SHAPE,
         inputSchema = toolSchema("metric") {
             objectParam("metric", "The pre-computed query definition object (see tool description for shape).")
         },
@@ -154,7 +165,7 @@ fun Server.registerLogSearchVariableTools(client: Rapid7Client) {
 
     apiTool(
         name = "logsearch_replace_metric",
-        description = "Replace a pre-computed query definition (PUT, Log Search API).",
+        description = "Replace a pre-computed query definition (PUT, Log Search API). The 'metric' object: " + METRIC_SHAPE,
         inputSchema = toolSchema("metric_id", "metric") {
             stringParam("metric_id", "The UUID of the pre-computed query to replace.")
             objectParam("metric", "The replacement pre-computed query definition object.")

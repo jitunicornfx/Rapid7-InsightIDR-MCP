@@ -60,6 +60,8 @@ class LogSearchManagementToolsTest {
             mapOf("log_ids" to "a:b", "time_range" to "last 1 hour", "limit" to 1000, "query" to "where(x)"),
         )
         val req = h.lastRequest
+        // Ktor encodes the ':' separator as %3A. Verified against the live API on 2026-09-18: it accepts
+        // the encoded form, so this normalisation hides nothing that matters.
         assertEquals("/download/logs/a:b", req.url.encodedPath.replace("%3A", ":"))
         assertEquals("last 1 hour", req.url.parameters["time_range"])
         assertEquals("1000", req.url.parameters["limit"])

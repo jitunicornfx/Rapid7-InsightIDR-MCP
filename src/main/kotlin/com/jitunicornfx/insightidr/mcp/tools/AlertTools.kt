@@ -37,7 +37,8 @@ private const val SEARCH_DESC =
         "{ \"start_time\": ISO-8601, e.g. \"2026-07-01T00:00:00Z\" (required), \"end_time\": ISO-8601, \"leql\": \"LEQL WHERE clause\", " +
         "\"terms\": [ { \"field_ids\": [string], " +
         "\"operator\": \"EQUALS\"|\"NOT_EQUALS\"|\"CONTAINS\"|\"GREATER_THAN\"|\"LESS_THAN\", " +
-        "\"terms\": [value, ...] } ] (required) }."
+        "\"terms\": [value, ...] } ] (required) }. Valid field_ids come from list_alert_fields, and the values a " +
+        "field can take from get_alert_field_values."
 
 private const val PATCH_DESC =
     "The AlertPatch object of changes. Each field wraps its new value under `value`: " +
@@ -291,8 +292,19 @@ fun Server.registerAlertTools(client: Rapid7Client) {
         inputSchema = toolSchema("organization_id", "title", "disposition", "status", "search") {
             stringParam("organization_id", "The organization that the investigation belongs to.")
             stringParam("title", "The title of the investigation.")
-            stringParam("disposition", "The disposition of the investigation.")
-            stringParam("status", "The status of the investigation.")
+            // Deliberately NOT enums. Alert-triage spec 39.10.0 types both as a bare string and lists no
+            // values; the sets below are the v2 investigations API's. They are almost certainly the same,
+            // but a hard enum built on "almost certainly" would refuse a value this API accepts.
+            stringParam(
+                "disposition",
+                "The disposition of the investigation. This API's spec lists no values; the investigations API " +
+                    "uses ${DISPOSITION_BODY_VALUES.joinToString(", ")}.",
+            )
+            stringParam(
+                "status",
+                "The status of the investigation. This API's spec lists no values; the investigations API " +
+                    "uses ${CREATE_STATUS_VALUES.joinToString(", ")} when creating one.",
+            )
             objectParam("search", SEARCH_DESC)
             stringParam("assignee_id", "Identifier of the user to assign the investigation to.")
             stringParam("priority", "The priority of the investigation.", enum = ALERT_PRIORITY_VALUES)
@@ -336,7 +348,10 @@ fun Server.registerAlertActionTools(client: Rapid7Client) {
 
     apiTool(
         name = "list_alert_actions",
-        description = "List the alert actions (alert jobs) created within a time period, with filtering and sorting.",
+        description = "List the alert actions (alert jobs) created within a time period, with filtering and sorting. " +
+            "Check the response for a 'region_failures' array: the API can answer HTTP 200 with an EMPTY " +
+            "'actions' list while one or more regions failed (observed 2026-09-18), which means the lookup " +
+            "did not complete — not that there are no actions.",
         readOnly = true,
         inputSchema = toolSchema {
             stringParam("start_time", "ISO-8601 timestamp (e.g. 2026-07-01T00:00:00Z); only actions created at/after this time.")

@@ -55,6 +55,31 @@ internal const val LS_RESULT_SIZE_GUIDANCE =
         "follows all pages on the server and returns only a summary. Large results are truncated to this " +
         "server's response budget, with a notice saying what was dropped."
 
+/** The download endpoint's `limit`: spec 3.0.2 gives 500,000,000 as both its maximum and its default. */
+internal const val LS_MAX_DOWNLOAD_ENTRIES = 500_000_000L
+
+/** The only export format the API supports (spec 3.0.2: "Currently only `csv` is supported"). */
+internal val LS_EXPORT_FORMATS = listOf("csv")
+
+/** What `export_format` does, per the spec. [pollTool] is the tool that reads the resulting job. */
+internal fun exportFormatDescription(pollTool: String): String =
+    "If set, the results are EXPORTED instead of returned: the API answers 202 with a link to an export " +
+        "job, which you read with $pollTool. Non-statistical queries only (no calculate/groupby). An " +
+        "export holds at most the first 1,000,000 entries, and only one export job may run per account " +
+        "at a time."
+
+/**
+ * [LS_RESULT_SIZE_GUIDANCE] for the AUDIT query tools, which need their own wording: the spool tool
+ * posts to `/query/logs` and cannot reach `/audit/query/logs`, so sending a model there for "every
+ * event" would send it to a tool that cannot do the job.
+ */
+internal const val LS_AUDIT_RESULT_SIZE_GUIDANCE =
+    "Returns ONE page — use it to look at a sample. To COUNT or AGGREGATE, put calculate(count) or " +
+        "groupby(field) in the LEQL: the API aggregates server-side and answers in a few hundred bytes. To " +
+        "read EVERY matching entry, set export_format=csv and read the job with " +
+        "logsearch_audit_get_export_job (logsearch_spool_query_to_file does not cover audit logs). Large " +
+        "results are truncated to this server's response budget, with a notice saying what was dropped."
+
 /**
  * Extract the in-progress continuation URL (the `rel="Self"` link) from a Log Search response
  * body. Per the spec, a query is still running exactly while its body carries a Self link —

@@ -154,7 +154,13 @@ fun Server.registerLogSearchManagementTools(client: Rapid7Client) {
             stringParam("log_ids", "The UUIDs of the logs, separated by ':' or ';' (max 10 logs).")
             timeWindowParams()
             stringParam("query", "Optional LEQL query to filter the downloaded entries.")
-            integerParam("limit", "Maximum number of log entries to download.")
+            integerParam(
+                "limit",
+                "Maximum number of log entries to download. SET THIS: when omitted the API's default is also its " +
+                    "maximum, 500,000,000 entries, of which this server can return only its response budget.",
+                min = 1,
+                max = LS_MAX_DOWNLOAD_ENTRIES,
+            )
         },
     ) { args ->
         requireTimeWindow(args)

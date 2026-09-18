@@ -74,6 +74,38 @@ class LogSearchDetectionRuleToolsTest {
     }
 
     @Test
+    fun `update_notification_targets fills in the two fields the spec requires, and never overrides them`() = runBlocking {
+        val h = harness(body = "{}")
+
+        // Omitted: the create and replace tools already sent {} here. This one forwarded the object as
+        // given, so the same omission was a 400 on this tool alone.
+        h.call(
+            "logsearch_update_notification_targets",
+            mapOf("notification_id" to "n1", "target" to mapOf("name" to "hook", "type" to "webhook")),
+        )
+        val filled = h.lastBodyJson().getValue("target").jsonObject
+        assertEquals("{}", filled.getValue("alert_content_set").toString())
+        assertEquals("{}", filled.getValue("user_data").toString())
+        assertEquals("hook", filled.getValue("name").jsonPrimitive.content, "what the caller sent is kept")
+
+        // Supplied: the caller's values win. A default must never replace real content.
+        h.call(
+            "logsearch_update_notification_targets",
+            mapOf(
+                "notification_id" to "n1",
+                "target" to mapOf(
+                    "name" to "hook",
+                    "alert_content_set" to mapOf("le_context" to "true"),
+                    "user_data" to mapOf("team" to "soc"),
+                ),
+            ),
+        )
+        val kept = h.lastBodyJson().getValue("target").jsonObject
+        assertEquals("true", kept.getValue("alert_content_set").jsonObject.getValue("le_context").jsonPrimitive.content)
+        assertEquals("soc", kept.getValue("user_data").jsonObject.getValue("team").jsonPrimitive.content)
+    }
+
+    @Test
     fun `target crud maps to management-targets endpoints and builds the body`() = runBlocking {
         val h = harness(body = "[]")
         h.call("logsearch_list_targets")

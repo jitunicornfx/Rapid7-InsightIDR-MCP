@@ -425,6 +425,8 @@ class LogSearchQueryToolsTest {
 
         h.call("logsearch_run_saved_query_on_logs", mapOf("log_keys" to "lk1:lk2", "saved_query_id" to "sq1"))
         // ':' may be percent-encoded in the path; both forms are equivalent to the API.
+        // Ktor encodes the ':' separator as %3A. Verified against the live API on 2026-09-18: it accepts
+        // the encoded form, so this normalisation hides nothing that matters.
         assertEquals("/query/logs/lk1:lk2/sq1", h.lastRequest.url.encodedPath.replace("%3A", ":"))
     }
 

@@ -136,6 +136,55 @@ class ToolSchemaBoundsTest {
     }
 
     @Test
+    fun `export_format is an enum of what the API supports, and points at the right poll tool`() {
+        val exporting = tools.filter { it.inputSchema.properties?.containsKey("export_format") == true }
+        assertEquals(4, exporting.size, "found ${exporting.map { it.name }}")
+        for (tool in exporting) {
+            val property = tool.inputSchema.properties!!.getValue("export_format").jsonObject
+            assertEquals(listOf("csv"), property.getValue("enum").jsonArray.map { it.jsonPrimitive.content }, tool.name)
+            val description = property.getValue("description").jsonPrimitive.content
+            // Audit export jobs live on a different endpoint, with a different tool.
+            val expected = if ("audit" in tool.name) "logsearch_audit_get_export_job" else "logsearch_get_export_job"
+            assertTrue(expected in description, "${tool.name} must point at $expected")
+            if ("audit" !in tool.name) assertTrue("logsearch_audit_get_export_job" !in description, tool.name)
+        }
+    }
+
+    @Test
+    fun `the audit query tools never send the model to a tool that cannot reach audit logs`() {
+        val audit = tools.filter { it.name.startsWith("logsearch_audit_query") }
+        assertEquals(2, audit.size)
+        for (tool in audit) {
+            val description = tool.description.orEmpty()
+            assertTrue("ONE page" in description, "${tool.name} must carry result-size guidance")
+            assertTrue("logsearch_audit_get_export_job" in description, tool.name)
+            // The spool tool posts to /query/logs. The ordinary guidance recommends it; copied here
+            // verbatim it would be advice that cannot work.
+            assertTrue("does not cover audit logs" in description, tool.name)
+        }
+    }
+
+    @Test
+    fun `the download limit says what omitting it means`() {
+        val limit = tools.single { it.name == "logsearch_download_log_data" }.inputSchema.properties!!
+            .getValue("limit").jsonObject
+        assertEquals(500_000_000L, limit.bound("maximum"))
+        assertTrue("500,000,000" in limit.getValue("description").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `investigate_alerts hints at values without constraining them`() {
+        val properties = tools.single { it.name == "investigate_alerts" }.inputSchema.properties!!
+        for (name in listOf("status", "disposition")) {
+            val property = properties.getValue(name).jsonObject
+            // Spec 39.10.0 gives no enum. One borrowed from another API could refuse a valid value.
+            assertNull(property["enum"], "$name must not be a hard enum")
+            assertTrue("spec lists no values" in property.getValue("description").jsonPrimitive.content)
+        }
+        assertTrue("OPEN" in properties.getValue("status").jsonObject.getValue("description").jsonPrimitive.content)
+    }
+
+    @Test
     fun `the DSL refuses bounds that contradict themselves`() {
         fun schema(block: kotlinx.serialization.json.JsonObjectBuilder.() -> Unit) = buildJsonObject(block)
 

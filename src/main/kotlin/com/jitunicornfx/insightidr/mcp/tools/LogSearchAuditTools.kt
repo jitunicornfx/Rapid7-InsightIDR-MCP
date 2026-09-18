@@ -37,7 +37,7 @@ fun Server.registerLogSearchAuditTools(client: Rapid7Client) {
     apiTool(
         name = "logsearch_audit_query_log",
         description = "Run a LEQL query against one audit log (Log Search Audit API). Polls asynchronous " +
-            "results to completion by default.",
+            "results to completion by default. " + LS_AUDIT_RESULT_SIZE_GUIDANCE,
         readOnly = true,
         inputSchema = toolSchema("log_key") {
             stringParam("log_key", "The key (UUID) of the audit log to query.")
@@ -45,7 +45,7 @@ fun Server.registerLogSearchAuditTools(client: Rapid7Client) {
             timeWindowParams()
             stringParam("label", "Only return entries carrying a label with this UUID.")
             stringParam("labels", "':'-separated label UUIDs to filter by.")
-            stringParam("export_format", "If set, export results in this format. Only 'csv' is supported.")
+            stringParam("export_format", exportFormatDescription("logsearch_audit_get_export_job"), enum = LS_EXPORT_FORMATS)
             queryResultParams()
             pollingParams()
         },
@@ -69,14 +69,14 @@ fun Server.registerLogSearchAuditTools(client: Rapid7Client) {
     apiTool(
         name = "logsearch_audit_query_logs",
         description = "Run a LEQL query across multiple audit logs (Log Search Audit API, POST /audit/query/logs). " +
-            "A time window (time_range, or from+to) is required.",
+            "A time window (time_range, or from+to) is required. " + LS_AUDIT_RESULT_SIZE_GUIDANCE,
         readOnly = true,
         inputSchema = toolSchema("log_keys") {
             stringArrayParam("log_keys", "The keys (UUIDs) of the audit logs to query.")
             stringParam("query", "The LEQL statement to run. If omitted, all entries in the time window are returned.")
             timeWindowParams()
             stringParam("labels", "':'-separated label UUIDs; only entries with a matching label are returned.")
-            stringParam("export_format", "If set, export results in this format. Only 'csv' is supported.")
+            stringParam("export_format", exportFormatDescription("logsearch_audit_get_export_job"), enum = LS_EXPORT_FORMATS)
             queryResultParams()
             pollingParams()
         },

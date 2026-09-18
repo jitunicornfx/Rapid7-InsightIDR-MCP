@@ -8,10 +8,10 @@ import kotlinx.serialization.json.*
 // List of status and dispositions to set for incidents.
 // Status-change endpoints accept WAITING; the create request body schema does not.
 private val STATUS_VALUES = listOf("OPEN", "INVESTIGATING", "WAITING", "CLOSED")
-private val CREATE_STATUS_VALUES = listOf("OPEN", "INVESTIGATING", "CLOSED")
+internal val CREATE_STATUS_VALUES = listOf("OPEN", "INVESTIGATING", "CLOSED")
 private val PRIORITY_VALUES = listOf("UNSPECIFIED", "LOW", "MEDIUM", "HIGH", "CRITICAL")
 private val DISPOSITION_PATH_VALUES = listOf("BENIGN", "MALICIOUS", "NOT_APPLICABLE")
-private val DISPOSITION_BODY_VALUES = listOf("UNDECIDED", "BENIGN", "MALICIOUS", "NOT_APPLICABLE")
+internal val DISPOSITION_BODY_VALUES = listOf("UNDECIDED", "BENIGN", "MALICIOUS", "NOT_APPLICABLE")
 private val THREAT_COMMAND_REASONS = listOf(
     "ProblemSolved", "InformationalOnly", "ProblemWeAreAlreadyAwareOf", "NotRelatedToMyCompany",
     "FalsePositive", "LegitimateApplication/Profile", "CompanyOwnedDomain", "Other",

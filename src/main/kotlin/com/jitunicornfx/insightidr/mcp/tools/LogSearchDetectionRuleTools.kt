@@ -4,6 +4,7 @@ import com.jitunicornfx.insightidr.mcp.*
 import com.jitunicornfx.insightidr.mcp.Rapid7Client.ApiBase
 import io.ktor.http.*
 import io.modelcontextprotocol.kotlin.sdk.server.Server
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
@@ -215,7 +216,9 @@ fun Server.registerLogSearchDetectionRuleTools(client: Rapid7Client) {
     apiTool(
         name = "logsearch_update_notification_targets",
         description = "Modify the targets attached to a detection-rule notification (PATCH, Log Search API). " +
-            "Provide the 'target' object: { name, description, type (${TARGET_TYPES.joinToString("/")}), params_set }.",
+            "Provide the 'target' object: { name, description, type (${TARGET_TYPES.joinToString("/")}), params_set, " +
+            "alert_content_set, user_data }. The API requires all six; alert_content_set (e.g. " +
+            "{\"le_context\": \"true\"}) and user_data are sent as {} when you omit them.",
         inputSchema = toolSchema("notification_id", "target") {
             stringParam("notification_id", "The id of the notification.")
             objectParam("target", "The target definition to attach (see tool description for shape).")
@@ -223,7 +226,16 @@ fun Server.registerLogSearchDetectionRuleTools(client: Rapid7Client) {
     ) { args ->
         val target = args.objectOrNull("target")
             ?: throw IllegalArgumentException("Missing required parameter 'target'")
-        val body = buildJsonObject { put("target", target) }
+        // Spec 3.0.2 marks alert_content_set and user_data REQUIRED on this body. The create and
+        // replace target tools already send {} for whichever is omitted; this one forwarded the
+        // caller's object untouched, so the same omission failed here and nowhere else.
+        val completed = JsonObject(
+            buildJsonObject {
+                put("alert_content_set", buildJsonObject {})
+                put("user_data", buildJsonObject {})
+            } + target,
+        )
+        val body = buildJsonObject { put("target", completed) }
         client.request(
             HttpMethod.Patch,
             "/management/actions/${seg(args.requireString("notification_id"))}/targets",
