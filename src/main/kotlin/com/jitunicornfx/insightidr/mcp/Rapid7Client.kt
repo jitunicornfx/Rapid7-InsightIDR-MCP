@@ -76,22 +76,43 @@ class Rapid7Client(
         listOfNotNull(originOf(config.baseUrl), originOf(config.v1BaseUrl), originOf(config.logSearchBaseUrl)).toSet()
 
     /**
+     * The two hosts Rapid7 serves this tenant's region from, per the API specs' `servers` blocks:
+     * `<region>.api.insight.rapid7.com` (IDR v1/v2) and `<region>.rest.logs.insight.rapid7.com`
+     * (Log Search). Always HTTPS on 443.
+     */
+    private val canonicalRegionHosts: Set<String> = setOf(
+        "${config.region.code}.api.insight.rapid7.com",
+        "${config.region.code}.rest.logs.insight.rapid7.com",
+    )
+
+    /**
      * Whether an API-provided (or model-provided) URL may be followed with the API key attached.
      *
-     * Validation is on the PARSED origin — never a string prefix of the URL — so tricks like
+     * Validation is on the PARSED URL — never a string prefix — so tricks like
      * `https://us.api.insight.rapid7.com.evil.com/...` (prefix match) or
      * `https://us.api.insight.rapid7.com@evil.com/...` (userinfo) resolve to a foreign host and are
-     * rejected. A URL is allowed only if its scheme+host+port exactly matches a configured base
-     * (whatever scheme the operator chose — supporting local http test overrides), or it is HTTPS on
-     * a `rapid7.com` host. A cleartext `http://` link to a real Rapid7 host is refused, so the
-     * `X-Api-Key` is never sent over an unencrypted or downgraded connection to a discovered host.
+     * rejected. A URL is allowed only if:
+     *
+     *  - its scheme+host+port exactly matches a configured base (whatever scheme the operator chose,
+     *    which is what supports a local `http://` test override), or
+     *  - it is HTTPS, on port 443, on one of [canonicalRegionHosts].
+     *
+     * This used to accept any `*.rapid7.com` host on any port. `next_link` and `resume_from_next_link`
+     * are model-supplied, so that made every name under rapid7.com — marketing sites, support
+     * portals, a forgotten CNAME pointing at a deprovisioned cloud bucket — somewhere a prompt
+     * injection could have the API key delivered to. Rapid7 returns continuation links on the host
+     * that served the request, so nothing legitimate needs more than the hosts above.
+     *
+     * A cleartext `http://` link to a real Rapid7 host is refused, so the `X-Api-Key` is never sent
+     * over an unencrypted or downgraded connection, and a URL carrying userinfo is refused outright.
      */
     internal fun isAllowedFollowUrl(url: String): Boolean {
         val parsed = runCatching { Url(url) }.getOrNull() ?: return false
         val host = parsed.host.lowercase()
         if (host.isEmpty()) return false
+        if (parsed.user != null || parsed.password != null) return false
         if (originOf(url) in allowedFollowOrigins) return true
-        return parsed.protocol == URLProtocol.HTTPS && (host == "rapid7.com" || host.endsWith(".rapid7.com"))
+        return parsed.protocol == URLProtocol.HTTPS && parsed.port == HTTPS_PORT && host in canonicalRegionHosts
     }
 
     /**
@@ -151,7 +172,7 @@ class Rapid7Client(
      * GET an absolute URL returned by the API itself — used to follow the `links[].href`
      * continuation / next-page URLs that Log Search queries return.
      *
-     * The URL's parsed host must be a configured API base host or a `rapid7.com` host
+     * The URL must be on a configured API base or one of this region's two canonical Rapid7 hosts
      * ([isAllowedFollowUrl]); otherwise the request is refused so the `X-Api-Key` credential
      * can never be sent to an attacker-controlled host embedded in a response body or argument.
      */
@@ -230,6 +251,8 @@ class Rapid7Client(
     override fun close() = http.close()
 
     companion object {
+        private const val HTTPS_PORT = 443
+
         /** Fixed text: see [requestAbsolute]. */
         const val REFUSED_FOLLOW_URL =
             "Refusing to follow a URL that is not on a configured Rapid7 API host. Links must come " +

@@ -179,7 +179,23 @@ class Rapid7ClientTest {
             // Legitimate hosts over HTTPS.
             assertTrue(client.isAllowedFollowUrl("https://us.api.insight.rapid7.com/x"))
             assertTrue(client.isAllowedFollowUrl("https://us.rest.logs.insight.rapid7.com/query/1"))
-            assertTrue(client.isAllowedFollowUrl("https://anything.rapid7.com/x"))
+            assertTrue(client.isAllowedFollowUrl("https://US.API.Insight.Rapid7.com:443/x"), "case and an explicit 443")
+
+            // Being under rapid7.com is not enough. next_link is model-supplied, so every name under
+            // that domain would otherwise be somewhere a prompt injection could send the API key.
+            assertFalse(client.isAllowedFollowUrl("https://anything.rapid7.com/x"))
+            assertFalse(client.isAllowedFollowUrl("https://rapid7.com/x"))
+            assertFalse(client.isAllowedFollowUrl("https://forgotten-cname.api.insight.rapid7.com/x"))
+            assertFalse(client.isAllowedFollowUrl("https://us.evil.insight.rapid7.com/x"))
+            // Ends with a canonical host name, but is a different label: a suffix match would pass it.
+            assertFalse(client.isAllowedFollowUrl("https://evilus.api.insight.rapid7.com/x"))
+            assertFalse(client.isAllowedFollowUrl("https://us.api.insight.rapid7.com.rapid7.com/x"))
+            // Another region's hosts are real, but nothing this tenant is served from.
+            assertFalse(client.isAllowedFollowUrl("https://eu.api.insight.rapid7.com/x"))
+            // The right host on the wrong port is a different service.
+            assertFalse(client.isAllowedFollowUrl("https://us.api.insight.rapid7.com:8443/x"))
+            // Userinfo on the right host: refused rather than reasoned about.
+            assertFalse(client.isAllowedFollowUrl("https://user:pw@us.api.insight.rapid7.com/x"))
 
             // Prefix-confusion: a foreign host that merely starts with a base URL string.
             assertFalse(client.isAllowedFollowUrl("https://us.api.insight.rapid7.com.evil.com/steal"))
@@ -196,6 +212,25 @@ class Rapid7ClientTest {
             assertFalse(client.isAllowedFollowUrl("not a url"))
         } finally {
             client.close()
+        }
+    }
+
+    @Test
+    fun `a configured base is followed exactly, whatever it is`() {
+        // The override exists for local testing, so http and an odd port have to keep working —
+        // but only for the origin the operator actually configured.
+        val local = Rapid7Client(config.copy(baseUrl = "http://localhost:8080", logSearchBaseUrl = "https://eu.rest.logs.insight.rapid7.com"))
+        try {
+            assertTrue(local.isAllowedFollowUrl("http://localhost:8080/idr/v2/x"))
+            assertFalse(local.isAllowedFollowUrl("http://localhost:9090/x"), "same host, different port")
+            assertFalse(local.isAllowedFollowUrl("https://localhost:8080/x"), "same host and port, different scheme")
+            assertTrue(local.isAllowedFollowUrl("https://eu.rest.logs.insight.rapid7.com/query/1"), "a configured base in another region")
+            assertFalse(local.isAllowedFollowUrl("https://eu.api.insight.rapid7.com/x"), "but not that region's other host")
+            // Not a configured base here, so only the canonical-host rule can admit it — in any case.
+            assertTrue(local.isAllowedFollowUrl("https://us.rest.logs.insight.rapid7.com/query/1"))
+            assertTrue(local.isAllowedFollowUrl("https://US.Rest.Logs.Insight.Rapid7.COM/query/1"))
+        } finally {
+            local.close()
         }
     }
 
