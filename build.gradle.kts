@@ -149,7 +149,9 @@ dependencies {
     testImplementation(libs.mcp.kotlin.client)
 
     // Ktor MockEngine lets tests drive the tool handlers without real network calls.
-    testImplementation("io.ktor:ktor-client-mock")
+    testImplementation(libs.ktor.client.mock)
+    // testApplication drives the --http transport guard end to end without binding a socket.
+    testImplementation(libs.ktor.server.test.host)
 
     // JUnit Platform engine so `useJUnitPlatform()` can actually discover and run tests.
     // JUnit 6 unifies platform/jupiter/vintage under one 6.x version (baseline Java 17+).

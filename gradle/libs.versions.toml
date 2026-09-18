@@ -1,6 +1,6 @@
 [versions]
 kotlin = "2.4.20"
-ktor = "3.5.2"
+ktor = "3.6.0"
 mcp-kotlin = "0.15.0"
 coroutines = "1.11.0"
 serialization = "1.11.0"
@@ -17,6 +17,8 @@ ktor-client-core = { group = "io.ktor", name = "ktor-client-core" }
 ktor-client-okhttp = { group = "io.ktor", name = "ktor-client-okhttp" }
 ktor-server-cio = { group = "io.ktor", name = "ktor-server-cio" }
 ktor-server-cors = { group = "io.ktor", name = "ktor-server-cors" }
+ktor-client-mock = { group = "io.ktor", name = "ktor-client-mock" }
+ktor-server-test-host = { group = "io.ktor", name = "ktor-server-test-host" }
 
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serialization" }
 kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }
