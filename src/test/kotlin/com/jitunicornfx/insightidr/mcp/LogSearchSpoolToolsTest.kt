@@ -1,12 +1,20 @@
 package com.jitunicornfx.insightidr.mcp
 
 import com.jitunicornfx.insightidr.mcp.testutil.parseEnvelope
+import com.jitunicornfx.insightidr.mcp.tools.SpoolIo
 import com.jitunicornfx.insightidr.mcp.tools.registerLogSearchSpoolTools
 import io.ktor.http.HttpStatusCode
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import java.io.File
+import java.io.IOException
+import java.io.Writer
+import java.nio.file.Files
 import kotlin.io.path.createTempDirectory
 import kotlin.test.AfterTest
 import kotlin.test.Test
@@ -28,10 +36,48 @@ class LogSearchSpoolToolsTest {
         tempDir.deleteRecursively()
     }
 
-    private suspend fun harness(responses: List<Pair<HttpStatusCode, String>>, contentType: String = "application/json") =
-        mcpHarness(responses = responses, contentType = contentType) {
-            registerLogSearchSpoolTools(it, SpoolStore(tempDir.toPath()))
+    private suspend fun harness(
+        responses: List<Pair<HttpStatusCode, String>>,
+        contentType: String = "application/json",
+        io: SpoolIo = SpoolIo(),
+    ) = mcpHarness(responses = responses, contentType = contentType) {
+        registerLogSearchSpoolTools(it, SpoolStore(tempDir.toPath()), io)
+    }
+
+    /**
+     * A disk that fills up: everything reaches the file until the [failOnFlush]-th flush, which
+     * throws and loses what was buffered since the last one — as a real full disk does.
+     */
+    private class FillingDisk(
+        file: java.nio.file.Path,
+        private val failOnFlush: Int = Int.MAX_VALUE,
+        private val failOnClose: Boolean = false,
+    ) : Writer() {
+        private val real = Files.newBufferedWriter(file)
+        private val pending = StringBuilder()
+        private var flushes = 0
+        private var full = false
+
+        override fun write(cbuf: CharArray, off: Int, len: Int) {
+            if (!full) pending.appendRange(cbuf, off, off + len)
         }
+
+        override fun flush() {
+            if (full || ++flushes >= failOnFlush) {
+                full = true
+                pending.clear()
+                throw IOException("There is not enough space on the disk")
+            }
+            real.write(pending.toString())
+            real.flush()
+            pending.clear()
+        }
+
+        override fun close() {
+            real.close()
+            if (failOnClose) throw IOException("delayed write failed")
+        }
+    }
 
     private fun manifest() = tempDir.listFiles { f: File -> f.name.endsWith(".manifest.json") }!!.single()
         .let { JsonCodec.compact.parseToJsonElement(it.readText()).jsonObject }
@@ -198,6 +244,146 @@ class LogSearchSpoolToolsTest {
         assertEquals(null, h.requests[1].url.parameters["per_page"], "the retry must drop pagination")
         assertTrue(spooled().isEmpty())
         assertFalse(result.isError == true)
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The summary must never overstate what was saved.
+    // -----------------------------------------------------------------------------------------
+
+    private fun linesOnDisk() = spooled().single().readLines().filter { it.isNotBlank() }
+
+    @Test
+    fun `a disk that fills mid-run reports only the events that reached the file`() = runBlocking {
+        val h = harness(
+            listOf(
+                HttpStatusCode.OK to page("""{"id":1},{"id":2}""", NEXT_1),
+                HttpStatusCode.OK to page("""{"id":3},{"id":4}""", NEXT_2),
+                HttpStatusCode.OK to page("""{"id":5}"""),
+            ),
+            io = SpoolIo(open = { FillingDisk(it, failOnFlush = 2) }),
+        )
+        val result = h.call("logsearch_spool_query_to_file", spoolArgs())
+        val text = textOf(result)
+
+        assertEquals(2, linesOnDisk().size, "page 2 never reached the disk")
+        assertTrue("INCOMPLETE" in text && "writing to the spool file failed" in text, "was: $text")
+        // The flush used to be wrapped in runCatching: the run carried on and claimed all 5.
+        assertTrue("Spooled 2 events" in text, "the count must be what is in the file, was: $text")
+        assertEquals(2, h.requests.size, "and it must stop fetching pages it cannot store")
+        assertEquals(2L, manifest()["events"]!!.jsonPrimitive.long)
+        assertFalse(manifest()["complete"]!!.jsonPrimitive.boolean)
+        assertFalse("not enough space" in text, "the OS's message goes to stderr, not to the model")
+        assertFalse(result.isError == true, "a file was still produced")
+    }
+
+    @Test
+    fun `a run that looked complete is not, if closing the file fails`() = runBlocking {
+        // Every flush succeeds; the failure only shows up at close, as deferred writes can.
+        val h = harness(
+            listOf(HttpStatusCode.OK to page("""{"id":1},{"id":2}""")),
+            io = SpoolIo(open = { FillingDisk(it, failOnClose = true) }),
+        )
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
+
+        assertTrue("INCOMPLETE" in text, "was: $text")
+        assertTrue("Spooled 2 events" in text)
+        assertFalse(manifest()["complete"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test
+    fun `an event that cannot be encoded is counted as skipped, not written as an empty object`() = runBlocking {
+        val h = harness(
+            listOf(HttpStatusCode.OK to page("""{"id":1},{"id":2,"poison":true},{"id":3}""")),
+            io = SpoolIo(encode = { event ->
+                if ((event as JsonObject).containsKey("poison")) null else event.toString()
+            }),
+        )
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
+
+        assertEquals(listOf("""{"id":1}""", """{"id":3}"""), linesOnDisk(), "no {} placeholder posing as an event")
+        assertTrue("Spooled 2 events" in text)
+        assertTrue("1 event(s) could not be encoded" in text)
+        assertEquals(1L, manifest()["skipped_events"]!!.jsonPrimitive.long)
+    }
+
+    @Test
+    fun `giving up on empty pages is not reported as completion while a next page is offered`() = runBlocking {
+        val next3 = "https://us.rest.logs.insight.rapid7.com/query/next-3"
+        val next4 = "https://us.rest.logs.insight.rapid7.com/query/next-4"
+        val h = harness(
+            listOf(
+                HttpStatusCode.OK to page("""{"id":1}""", NEXT_1),
+                HttpStatusCode.OK to page("", NEXT_2),
+                HttpStatusCode.OK to page("", next3),
+                HttpStatusCode.OK to page("", next4),
+            ),
+        )
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
+
+        assertTrue("STOPPED" in text && "consecutive empty pages" in text, "was: $text")
+        assertFalse("COMPLETE" in text)
+        assertTrue("resume_from_next_link = $next4" in text, "there may be events behind that page")
+        assertFalse(manifest()["complete"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test
+    fun `empty pages that end without a next page are a genuine completion`() = runBlocking {
+        val h = harness(
+            listOf(
+                HttpStatusCode.OK to page("""{"id":1}""", NEXT_1),
+                HttpStatusCode.OK to page("", NEXT_2),
+                HttpStatusCode.OK to page(""),
+            ),
+        )
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
+
+        assertTrue("COMPLETE" in text)
+        assertFalse("resume_from_next_link =" in text)
+        assertTrue(manifest()["complete"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test
+    fun `free space is checked again on every page`() = runBlocking {
+        var samples = 0
+        val h = harness(
+            listOf(
+                HttpStatusCode.OK to page("""{"id":1}""", NEXT_1),
+                HttpStatusCode.OK to page("""{"id":2}""", NEXT_2),
+                HttpStatusCode.OK to page("""{"id":3}"""),
+            ),
+            // Plenty before the run and after page 1; nearly full after page 2.
+            io = SpoolIo(freeSpace = { if (++samples <= 2) Long.MAX_VALUE else 1_000_000L }),
+        )
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
+
+        assertEquals(2, h.requests.size, "page 3 must not be fetched onto a full volume")
+        assertTrue("STOPPED" in text && "spool volume" in text, "was: $text")
+        assertTrue("resume_from_next_link = $NEXT_2" in text)
+        assertEquals(2, linesOnDisk().size)
+    }
+
+    @Test
+    fun `a volume that is already full is refused without naming a host path`() = runBlocking {
+        val h = harness(listOf(HttpStatusCode.OK to page("""{"id":1}""")), io = SpoolIo(freeSpace = { 1_000_000L }))
+        val result = h.call("logsearch_spool_query_to_file", spoolArgs())
+
+        assertTrue(result.isError == true)
+        assertEquals(0, h.requests.size, "refused before spending an API call")
+        assertTrue("the spool volume" in textOf(result))
+        assertFalse(tempDir.name in textOf(result), "an error message has no need of the directory")
+    }
+
+    @Test
+    fun `a manifest that cannot be written is said so, not pointed at`() = runBlocking {
+        val h = harness(
+            listOf(HttpStatusCode.OK to page("""{"id":1}""")),
+            io = SpoolIo(writeManifest = { _, _ -> throw IOException("read-only file system") }),
+        )
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
+
+        assertTrue("manifest:  could not be written" in text, "was: $text")
+        assertFalse(".manifest.json" in text, "a path to a file that does not exist is worse than none")
+        assertEquals(1, linesOnDisk().size, "the data itself is unaffected")
     }
 
     // -----------------------------------------------------------------------------------------
