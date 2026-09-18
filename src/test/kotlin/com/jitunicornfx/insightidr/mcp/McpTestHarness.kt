@@ -54,6 +54,7 @@ suspend fun mcpHarness(
     status: HttpStatusCode = HttpStatusCode.OK,
     responseBody: String = "{}",
     responses: List<Pair<HttpStatusCode, String>>? = null,
+    contentType: String = "application/json",
     register: Server.(Rapid7Client) -> Unit,
 ): McpTestHarness {
     val bodies = mutableListOf<String?>()
@@ -64,7 +65,7 @@ suspend fun mcpHarness(
         respond(
             content = body,
             status = st,
-            headers = headersOf(HttpHeaders.ContentType, "application/json"),
+            headers = headersOf(HttpHeaders.ContentType, contentType),
         )
     }
 

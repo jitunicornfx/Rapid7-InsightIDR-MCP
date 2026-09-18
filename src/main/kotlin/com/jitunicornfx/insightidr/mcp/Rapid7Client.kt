@@ -156,7 +156,9 @@ class Rapid7Client(
      * can never be sent to an attacker-controlled host embedded in a response body or argument.
      */
     suspend fun requestAbsolute(url: String): ApiResponse {
-        require(isAllowedFollowUrl(url)) { "Refusing to follow non-Rapid7 URL: $url" }
+        // The URL is deliberately NOT in the message. It reaches the model as server-authored error
+        // text, outside the untrusted envelope, and the URL is often API-provided.
+        require(isAllowedFollowUrl(url)) { REFUSED_FOLLOW_URL }
 
         val response = http.request(url) {
             method = HttpMethod.Get
@@ -207,14 +209,30 @@ class Rapid7Client(
 
     // 2xx responses are valid
     private suspend fun HttpResponse.toApiResponse(): ApiResponse {
-        val text = bodyAsText()
+        // bodyAsText() parses the Content-Type to find a charset, and throws on one it cannot parse
+        // before reading a byte — so the body is still there to be read as UTF-8.
+        val text = try {
+            bodyAsText()
+        } catch (e: BadContentTypeFormatException) {
+            readRawBytes().decodeToString()
+        }
         return ApiResponse(
             status = status.value,
             ok = status.value in 200..299,
             body = text,
-            contentType = contentType()?.toString(),
+            // Ktor throws on a Content-Type it cannot parse, quoting the header in the message. A
+            // malformed header must not cost the caller the response — nor put API-chosen text into
+            // an error message.
+            contentType = runCatching { contentType()?.toString() }.getOrNull(),
         )
     }
 
     override fun close() = http.close()
+
+    companion object {
+        /** Fixed text: see [requestAbsolute]. */
+        const val REFUSED_FOLLOW_URL =
+            "Refusing to follow a URL that is not on a configured Rapid7 API host. Links must come " +
+                "unmodified from a previous InsightIDR response."
+    }
 }

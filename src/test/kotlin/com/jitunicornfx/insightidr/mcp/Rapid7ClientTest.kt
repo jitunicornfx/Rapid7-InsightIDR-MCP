@@ -147,12 +147,27 @@ class Rapid7ClientTest {
     }
 
     @Test
+    fun `a malformed Content-Type header does not cost the caller the response`() = runBlocking {
+        // Ktor throws BadContentTypeFormatException for this, quoting the header in its message.
+        val client = Rapid7Client(config, jsonEngine(HttpStatusCode.OK, """{"ok":true}""", contentType = "not a media type"))
+
+        val response = client.request(HttpMethod.Get, "/idr/v2/investigations")
+
+        assertTrue(response.ok)
+        assertEquals("""{"ok":true}""", response.body)
+        assertEquals(null, response.contentType, "unparseable, so unknown — never the raw header")
+        client.close()
+    }
+
+    @Test
     fun `requestAbsolute refuses non-rapid7 URLs`() = runBlocking {
         val engine = jsonEngine(HttpStatusCode.OK, "{}")
         val client = Rapid7Client(config, engine)
-        kotlin.test.assertFailsWith<IllegalArgumentException> {
+        val refusal = kotlin.test.assertFailsWith<IllegalArgumentException> {
             client.requestAbsolute("https://evil.example.com/steal")
         }
+        // This message reaches the model as server-authored error text; the URL is often API-provided.
+        assertFalse("evil.example.com" in refusal.message.orEmpty(), "the refused URL must not be repeated")
         assertEquals(0, engine.requestHistory.size, "no request must be sent to a disallowed host")
         client.close()
     }

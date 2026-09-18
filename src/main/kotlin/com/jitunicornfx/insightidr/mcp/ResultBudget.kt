@@ -278,9 +278,21 @@ private fun lineAwareCut(text: String, limit: Int, budget: ResultBudget, wasJson
 }
 
 // ---------------------------------------------------------------------------
-// Notices. Server-authored: no API content is interpolated into any of them, and none contains the
-// envelope markers, so they are safe to emit outside the fence.
+// Notices. Server-authored, and emitted OUTSIDE the fence — so the one piece of API content that
+// reaches them, the name of the array that was trimmed, is allow-listed first ([noticeSafeKey]).
 // ---------------------------------------------------------------------------
+
+/** A JSON key as it appears in real API responses: a short plain identifier, and nothing else. */
+private val NOTICE_SAFE_KEY = Regex("^[A-Za-z0-9_.-]{1,64}$")
+
+/**
+ * [key] if it is safe to print in a notice, else null.
+ *
+ * A JSON object key is chosen by whoever produced the response, and can be any string at all — a
+ * sentence, a fake instruction, a megabyte. Naming `events` helps the model; repeating an arbitrary
+ * key outside the envelope would hand API data the server's own voice.
+ */
+internal fun noticeSafeKey(key: String?): String? = key?.takeIf { NOTICE_SAFE_KEY.matches(it) }
 
 internal const val NOTICE_TAG = "[insightidr-mcp]"
 
@@ -299,10 +311,13 @@ private fun compactedNotice(limit: Int): String =
         "$limit-character response budget. No data was dropped."
 
 private fun droppedNotice(key: String?, kept: Int, total: Int, limit: Int): String {
-    val what = key ?: "top-level"
+    val entries = when {
+        key == null -> "top-level entries"
+        else -> noticeSafeKey(key)?.let { "$it entries" } ?: "entries of the largest array"
+    }
     return "$NOTICE_TAG This result was TRUNCATED to fit the $limit-character response budget " +
         "(INSIGHTIDR_MAX_RESULT_CHARS). The data block above is still valid, parseable JSON.\n" +
-        "Returned $kept of $total $what entries; ${total - kept} were dropped from the end.\n" +
+        "Returned $kept of $total $entries; ${total - kept} were dropped from the end.\n" +
         "This notice is authoritative; the ${ResultBudget.TRUNCATION_KEY} object inside the data " +
         "block is a convenience copy only.\n" +
         CHEAPER_WAYS
