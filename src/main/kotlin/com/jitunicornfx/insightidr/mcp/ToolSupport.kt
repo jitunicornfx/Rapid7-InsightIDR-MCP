@@ -370,6 +370,7 @@ internal fun ApiResponse.toToolText(budget: ResultBudget = ResultBudget.active):
         }
         // Outside the envelope: this is server-authored and must not be confusable with API data.
         rendered.notice?.let { append("\n\n").append(it) }
+        serverNote?.let { append("\n\n").append(NOTICE_TAG).append(' ').append(it) }
     }
 }
 

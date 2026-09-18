@@ -156,7 +156,7 @@ internal fun Server.registerLogSearchSpoolTools(client: Rapid7Client, spool: Spo
         val maxBytes = (args.longOrNull("max_bytes") ?: SPOOL_DEFAULT_MAX_BYTES).coerceIn(1, SPOOL_MAX_BYTES_CEILING)
         val budgetMs = (args.longOrNull("max_duration_ms") ?: SPOOL_DEFAULT_BUDGET_MS).coerceIn(1_000, SPOOL_MAX_BUDGET_MS)
         val sampleCount = (args.intOrNull("sample_events") ?: SPOOL_DEFAULT_SAMPLE_EVENTS).coerceIn(0, SPOOL_MAX_SAMPLE_EVENTS)
-        val perPage = (args.intOrNull("per_page") ?: LS_MAX_PER_PAGE).coerceIn(1, LS_MAX_PER_PAGE)
+        val perPage = perPage(args, default = LS_MAX_PER_PAGE)
 
         // Refuse before spending any API calls if there is nowhere to put the result.
         try {

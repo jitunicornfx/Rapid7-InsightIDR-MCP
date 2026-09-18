@@ -5,6 +5,7 @@ import io.ktor.http.HttpMethod
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class LogSearchManagementToolsTest {
@@ -63,6 +64,73 @@ class LogSearchManagementToolsTest {
         assertEquals("last 1 hour", req.url.parameters["time_range"])
         assertEquals("1000", req.url.parameters["limit"])
         assertEquals("where(x)", req.url.parameters["query"])
+    }
+
+    @Test
+    fun `the per-log usage tool requires a window before it calls the API`() = runBlocking {
+        // Its schema marks nothing required (either form is valid), so nothing enforced it at all:
+        // an empty call went to the API and came back as a 400.
+        val h = harness()
+        fun text(r: io.modelcontextprotocol.kotlin.sdk.types.CallToolResult) =
+            (r.content.first() as io.modelcontextprotocol.kotlin.sdk.types.TextContent).text
+
+        val empty = h.call("logsearch_get_usage_per_log", emptyMap())
+        assertTrue(empty.isError == true)
+        assertTrue("time_range" in text(empty) && "YYYY-MM-DD" in text(empty), "say what is accepted: ${text(empty)}")
+
+        assertTrue(h.call("logsearch_get_usage_per_log", mapOf("from" to "2026-06-01")).isError == true, "half a window")
+
+        // The spec: "If time_range is used, then the from and to query parameters must not be used."
+        val both = h.call("logsearch_get_usage_per_log", mapOf("time_range" to "yesterday", "from" to "2026-06-01", "to" to "2026-06-30"))
+        assertTrue(both.isError == true)
+        assertTrue("cannot be combined" in text(both))
+
+        assertEquals(0, h.requests.size, "none of these may reach the API")
+    }
+
+    @Test
+    fun `time_range is accepted only by the usage endpoint the spec gives it to`() = runBlocking {
+        val h = harness()
+        // The spec defines time_range on /usage/organizations/logs alone. The other two would drop it
+        // and answer 400 for the missing from/to.
+        fun text(r: io.modelcontextprotocol.kotlin.sdk.types.CallToolResult) =
+            (r.content.first() as io.modelcontextprotocol.kotlin.sdk.types.TextContent).text
+        for (refused in listOf(
+            h.call("logsearch_get_usage_total", mapOf("time_range" to "last 7 days")),
+            h.call("logsearch_get_log_usage", mapOf("log_key" to "lk1", "time_range" to "last 7 days")),
+        )) {
+            assertTrue(refused.isError == true)
+            // Naming one missing parameter at a time makes the model fix 'from', retry, and then be
+            // told about 'to'. Say both, and do not offer time_range as a way out here.
+            assertTrue("'from' and 'to'" in text(refused), "was: ${text(refused)}")
+            assertFalse("time_range" in text(refused).substringAfter("':"), "was: ${text(refused)}")
+        }
+        assertEquals(0, h.requests.size)
+
+        assertFalse(h.call("logsearch_get_usage_per_log", mapOf("time_range" to "last 7 days")).isError == true)
+        assertEquals("last 7 days", h.lastRequest.url.parameters["time_range"])
+    }
+
+    @Test
+    fun `usage dates are checked as dates, not as epoch milliseconds`() = runBlocking {
+        val h = harness()
+        // The query tools' window check reads from/to as longs and would reject every one of these.
+        for (tool in listOf("logsearch_get_usage_total", "logsearch_get_usage_per_log")) {
+            assertFalse(h.call(tool, mapOf("from" to "2026-06-01", "to" to "2026-06-30")).isError == true, tool)
+        }
+        val sent = h.requests.size
+
+        val bad = listOf(
+            mapOf("from" to "1767225600000", "to" to "1769817600000"), // epoch millis, as the query tools take
+            mapOf("from" to "06/01/2026", "to" to "06/30/2026"),
+            mapOf("from" to "2026-02-30", "to" to "2026-03-01"),       // not a real date
+            mapOf("from" to "2026-06-30", "to" to "2026-06-01"),       // backwards
+        )
+        for (args in bad) {
+            assertTrue(h.call("logsearch_get_usage_total", args).isError == true, "$args")
+            assertTrue(h.call("logsearch_get_log_usage", args + ("log_key" to "lk1")).isError == true, "$args")
+        }
+        assertEquals(sent, h.requests.size, "a malformed window must be refused before the API is called")
     }
 
     @Test

@@ -1,5 +1,6 @@
 package com.jitunicornfx.insightidr.mcp
 
+import com.jitunicornfx.insightidr.mcp.testutil.parseEnvelope
 import com.jitunicornfx.insightidr.mcp.tools.registerLogSearchQueryTools
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
@@ -98,6 +99,87 @@ class LogSearchQueryToolsTest {
 
         h.call("logsearch_run_saved_query", mapOf("saved_query_id" to "sq1"))
         assertEquals("100", h.lastRequest.url.parameters["per_page"])
+    }
+
+    @Test
+    fun `per_page is held to what the API accepts on every query tool`() = runBlocking {
+        // Only the spool tool used to clamp. The rest sent 5000 or -1 to the API and got a 400 back.
+        val h = harness(body = """{"events":[]}""")
+        val calls = listOf(
+            "logsearch_query_log" to mapOf("log_key" to "lk1", "time_range" to "today"),
+            "logsearch_query_logs" to mapOf("log_keys" to listOf("lk1"), "time_range" to "today"),
+            "logsearch_run_saved_query" to mapOf("saved_query_id" to "sq1"),
+            "logsearch_get_context_events" to mapOf(
+                "sequence_number" to "7", "timestamp" to "1", "log_key" to "lk1", "context_type" to "SURROUND",
+            ),
+        )
+        for ((tool, args) in calls) {
+            for ((asked, sent) in listOf(5_000 to "500", 500 to "500", 0 to "1", -3 to "1", 250 to "250")) {
+                val result = h.call(tool, args + ("per_page" to asked))
+                assertFalse(result.isError == true, "$tool: ${(result.content.first() as TextContent).text}")
+                assertEquals(sent, h.lastRequest.url.parameters["per_page"], "$tool with per_page=$asked")
+            }
+        }
+    }
+
+    @Test
+    fun `a statistic query still rejected with labels on it is explained, and the labels are not dropped`() = runBlocking {
+        val h = harness(
+            responses = listOf(
+                HttpStatusCode.BadRequest to """{"id":"IDR","code":101009,"message":"Pagination is not supported with statistic queries"}""",
+                HttpStatusCode.BadRequest to """{"message":"labels are not supported here"}""",
+            ),
+        )
+        val result = h.call(
+            "logsearch_query_log",
+            mapOf("log_key" to "lk1", "query" to "calculate(count)", "time_range" to "today", "labels" to "aaa:bbb"),
+        )
+
+        assertEquals(2, h.requests.size, "retried once, not in a loop")
+        // Removing the filter would count different events and hand back a confident wrong number.
+        assertEquals("aaa:bbb", h.requests[1].url.parameters["labels"], "the label filter must survive the retry")
+        assertEquals(null, h.requests[1].url.parameters["per_page"])
+        assertTrue(result.isError == true)
+        val envelope = parseEnvelope((result.content.first() as TextContent).text)
+        assertTrue("labels are not supported here" in envelope.body, "the API's own words stay inside the fence")
+        assertTrue("NOT removed automatically" in envelope.after, "the explanation is ours, and sits outside it")
+        assertTrue("non-statistical" in envelope.after, "and it cites the spec rather than guessing at a cause")
+    }
+
+    @Test
+    fun `the labels note is not attached when it would be beside the point`() = runBlocking {
+        // Rejected twice, but no label filter was sent: there is nothing to say about labels.
+        val noLabels = harness(
+            responses = listOf(
+                HttpStatusCode.BadRequest to """{"id":"IDR","code":101009,"message":"Pagination is not supported with statistic queries"}""",
+                HttpStatusCode.BadRequest to """{"message":"bad leql"}""",
+            ),
+        )
+        val plain = noLabels.call("logsearch_query_log", mapOf("log_key" to "lk1", "query" to "calculate(count)", "time_range" to "today"))
+        assertFalse("NOT removed automatically" in (plain.content.first() as TextContent).text)
+
+        // Labels sent, and the retry worked: nothing went wrong, so nothing to explain.
+        val worked = harness(
+            responses = listOf(
+                HttpStatusCode.BadRequest to """{"id":"IDR","code":101009,"message":"Pagination is not supported with statistic queries"}""",
+                HttpStatusCode.OK to """{"statistics":{"count":5}}""",
+            ),
+        )
+        val fine = worked.call(
+            "logsearch_query_log",
+            mapOf("log_key" to "lk1", "query" to "calculate(count)", "time_range" to "today", "labels" to "aaa"),
+        )
+        assertFalse(fine.isError == true)
+        assertFalse("NOT removed automatically" in (fine.content.first() as TextContent).text)
+
+        // An ordinary failure that was never a statistic rejection.
+        val ordinary = harness(responses = listOf(HttpStatusCode.BadRequest to """{"message":"bad leql"}"""))
+        val failed = ordinary.call(
+            "logsearch_query_log",
+            mapOf("log_key" to "lk1", "query" to "where(", "time_range" to "today", "labels" to "aaa"),
+        )
+        assertEquals(1, ordinary.requests.size)
+        assertFalse("NOT removed automatically" in (failed.content.first() as TextContent).text)
     }
 
     @Test

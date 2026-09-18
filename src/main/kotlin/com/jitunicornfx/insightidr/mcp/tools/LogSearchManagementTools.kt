@@ -183,6 +183,7 @@ fun Server.registerLogSearchManagementTools(client: Rapid7Client) {
             stringParam("to", "End date of the range, formatted YYYY-MM-DD.")
         },
     ) { args ->
+        requireUsageWindow(args, allowTimeRange = false)
         client.request(
             HttpMethod.Get,
             "/usage/organizations",
@@ -193,14 +194,20 @@ fun Server.registerLogSearchManagementTools(client: Rapid7Client) {
 
     apiTool(
         name = "logsearch_get_usage_per_log",
-        description = "Log data usage broken down per log for a date range (Log Search API).",
+        description = "Log data usage broken down per log for a date range (Log Search API). Provide " +
+            "either 'time_range', or both 'from' and 'to' — never both forms.",
         readOnly = true,
         inputSchema = toolSchema {
-            stringParam("from", "Start date of the range, formatted YYYY-MM-DD.")
-            stringParam("to", "End date of the range, formatted YYYY-MM-DD.")
-            stringParam("time_range", "Relative alternative to from/to, e.g. 'last 7 days'.")
+            stringParam("from", "Start date of the range, formatted YYYY-MM-DD. Use with 'to'; not with 'time_range'.")
+            stringParam("to", "End date of the range, formatted YYYY-MM-DD. Use with 'from'; not with 'time_range'.")
+            stringParam(
+                "time_range",
+                "Relative alternative to from/to: 'yesterday', or 'last x days/weeks/months/years' " +
+                    "(e.g. 'last 7 days'). Unlike the query tools, minutes and hours are not supported here.",
+            )
         },
     ) { args ->
+        requireUsageWindow(args, allowTimeRange = true)
         client.request(
             HttpMethod.Get,
             "/usage/organizations/logs",
@@ -223,6 +230,7 @@ fun Server.registerLogSearchManagementTools(client: Rapid7Client) {
             stringParam("to", "End date of the range, formatted YYYY-MM-DD.")
         },
     ) { args ->
+        requireUsageWindow(args, allowTimeRange = false)
         client.request(
             HttpMethod.Get,
             "/usage/organizations/logs/${seg(args.requireString("log_key"))}",

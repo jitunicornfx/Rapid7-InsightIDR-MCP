@@ -14,6 +14,8 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import java.time.LocalDate
+import java.time.format.DateTimeParseException
 
 /**
  * Shared helpers for the Log Search API tools.
@@ -106,7 +108,13 @@ internal suspend fun Rapid7Client.awaitQueryCompletion(
 /**
  * Whether [this] response is the Log Search API's rejection of pagination on a statistic
  * (`calculate`/`groupby`) query — error code `101009`, "Pagination is not supported with statistic
- * queries". Statistic results are not paginated, so the API refuses `per_page`/`sequence_number`.
+ * queries".
+ *
+ * **This is observed behaviour, not documented behaviour.** Neither the code `101009` nor that
+ * message appears anywhere in Log Search spec 3.0.2; both were seen from the live API. The nearest
+ * the spec comes is on other parameters: `label`/`labels` "only works with non-statistical queries",
+ * and `export_format` is "only for non-statistical search queries". If this stops matching, look at
+ * what the API actually returns before looking at the spec.
  *
  * Matched on the raw [ApiResponse.body] (this runs before [toToolResult] pretty-prints and wraps it),
  * on either the numeric code or the message text, and never on a 2xx — a successful result body that
@@ -121,6 +129,21 @@ internal fun Map<String, List<String>>.withoutPagination(): Map<String, List<Str
     filterKeys { it != "per_page" && it != "sequence_number" }
 
 /**
+ * What to tell the model when a statistic query is rejected a second time, with `label`/`labels`
+ * still on it.
+ *
+ * It says what the spec says and stops there. That the labels CAUSED the rejection is a plausible
+ * guess, not something anyone has observed, so the note does not claim it.
+ */
+internal const val STATISTIC_LABELS_NOTE =
+    "This is a statistic (calculate/groupby) query. It was retried without per_page and " +
+        "sequence_number, which statistic queries do not accept, and was rejected again. It was sent " +
+        "with 'label'/'labels', which the Log Search spec says \"only works with non-statistical " +
+        "queries\". That filter was NOT removed automatically: dropping it would change which events " +
+        "are counted, and return a different answer without saying so. If the count does not need " +
+        "the label filter, run the query again without it."
+
+/**
  * Submit a Log Search query and poll it to completion, transparently handling statistic queries.
  *
  * A statistic query (`calculate`/`groupby`) cannot be paginated, but the server sends `per_page` on
@@ -130,6 +153,11 @@ internal fun Map<String, List<String>>.withoutPagination(): Map<String, List<Str
  * hit the retry: their 2xx submit flows straight to [awaitQueryCompletion] exactly as before, so
  * pagination for them is unchanged. All Log Search submit tools route through here (base is always
  * [ApiBase.LOG_SEARCH]).
+ *
+ * Pagination parameters are the ONLY thing the retry removes. They shape how a result is delivered;
+ * taking them off cannot change the answer. `label`/`labels` select which events are counted, so
+ * they are left alone even though the spec restricts them to non-statistical queries — if the retry
+ * still fails with them present, the model is told ([STATISTIC_LABELS_NOTE]) and decides.
  */
 internal suspend fun Rapid7Client.submitLogSearchQuery(
     method: HttpMethod,
@@ -142,6 +170,9 @@ internal suspend fun Rapid7Client.submitLogSearchQuery(
     var response = request(method, path, query = query, jsonBody = jsonBody, base = ApiBase.LOG_SEARCH)
     if (response.isStatisticPaginationRejection()) {
         response = request(method, path, query = query.withoutPagination(), jsonBody = jsonBody, base = ApiBase.LOG_SEARCH)
+        if (!response.ok && ("label" in query || "labels" in query)) {
+            return response.copy(serverNote = STATISTIC_LABELS_NOTE)
+        }
     }
     return awaitQueryCompletion(response, wait, timeout)
 }
@@ -207,9 +238,51 @@ internal fun timeWindowQuery(args: JsonObject): Map<String, List<String>> = quer
     "time_range" to args.stringOrNull("time_range"),
 )
 
+/**
+ * The `per_page` to send: the caller's value, or [default], held to what the API accepts.
+ *
+ * Every tool goes through this. Only the spool tool used to clamp; the rest passed `per_page=5000`
+ * (or `0`, or `-1`) straight to the API, which answers with a 400 the model then has to decode.
+ */
+internal fun perPage(args: JsonObject, default: Int = LS_DEFAULT_PER_PAGE): Int =
+    (args.intOrNull("per_page") ?: default).coerceIn(1, LS_MAX_PER_PAGE)
+
+/**
+ * Enforce the usage endpoints' date window, which is NOT the query endpoints' window: the dates are
+ * `YYYY-MM-DD` strings rather than epoch milliseconds, so [requireTimeWindow] would reject every
+ * valid call.
+ *
+ * [allowTimeRange] is true only for the per-log endpoint, the one the spec gives a `time_range`
+ * alternative, and says of it: "If `time_range` is used, then the `from` and `to` query parameters
+ * must not be used."
+ */
+internal fun requireUsageWindow(args: JsonObject, allowTimeRange: Boolean) {
+    val from = args.stringOrNull("from")
+    val to = args.stringOrNull("to")
+    if (allowTimeRange && args.stringOrNull("time_range") != null) {
+        require(from == null && to == null) { "'time_range' cannot be combined with 'from'/'to'. Use one or the other." }
+        return
+    }
+    require(from != null && to != null) {
+        if (allowTimeRange) {
+            "A date range is required: provide 'time_range' (e.g. 'yesterday' or 'last 7 days'), or both " +
+                "'from' and 'to' formatted YYYY-MM-DD."
+        } else {
+            "Both 'from' and 'to' are required, formatted YYYY-MM-DD."
+        }
+    }
+    require(!usageDate("from", from).isAfter(usageDate("to", to))) { "'from' must not be later than 'to'." }
+}
+
+private fun usageDate(name: String, value: String): LocalDate = try {
+    LocalDate.parse(value)
+} catch (e: DateTimeParseException) {
+    throw IllegalArgumentException("'$name' must be a real date formatted YYYY-MM-DD, for example 2026-01-31.")
+}
+
 /** Standard result-shaping query-parameter map from tool args; see [LS_DEFAULT_PER_PAGE]. */
 internal fun queryResultQuery(args: JsonObject): Map<String, List<String>> = query(
-    "per_page" to (args.intOrNull("per_page") ?: LS_DEFAULT_PER_PAGE),
+    "per_page" to perPage(args),
     "most_recent_first" to args.booleanOrNull("most_recent_first"),
     "kvp_info" to args.booleanOrNull("kvp_info"),
     "sequence_number" to args.longOrNull("sequence_number"),

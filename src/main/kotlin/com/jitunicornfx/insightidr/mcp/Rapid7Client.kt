@@ -50,6 +50,12 @@ class Rapid7Client(
         val ok: Boolean,
         val body: String,
         val contentType: String?,
+        /**
+         * Something THIS SERVER wants to tell the model about the response: never API content. It is
+         * rendered after the untrusted envelope, in the server's own voice, so a helper that knows
+         * why a request failed can say so without touching [body].
+         */
+        val serverNote: String? = null,
     )
 
     /**

@@ -209,7 +209,7 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
                 "timestamp" to args.requireString("timestamp"),
                 "log_keys" to args.requireString("log_key"),
                 "context_type" to args.requireString("context_type"),
-                "per_page" to (args.intOrNull("per_page") ?: LS_DEFAULT_PER_PAGE),
+                "per_page" to perPage(args),
                 "kvp_info" to args.booleanOrNull("kvp_info"),
                 "most_recent_first" to args.booleanOrNull("most_recent_first"),
             ),
@@ -364,7 +364,7 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
             HttpMethod.Get,
             "/query/saved_query/${seg(args.requireString("saved_query_id"))}",
             query = timeWindowQuery(args) + query(
-                "per_page" to (args.intOrNull("per_page") ?: LS_DEFAULT_PER_PAGE),
+                "per_page" to perPage(args),
                 "kvp_info" to args.booleanOrNull("kvp_info"),
                 "most_recent_first" to args.booleanOrNull("most_recent_first"),
             ),
@@ -393,7 +393,7 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
             HttpMethod.Get,
             "/query/logs/${seg(args.requireString("log_keys"))}/${seg(args.requireString("saved_query_id"))}",
             query = timeWindowQuery(args) + query(
-                "per_page" to (args.intOrNull("per_page") ?: LS_DEFAULT_PER_PAGE),
+                "per_page" to perPage(args),
                 "kvp_info" to args.booleanOrNull("kvp_info"),
                 "most_recent_first" to args.booleanOrNull("most_recent_first"),
             ),
