@@ -255,6 +255,33 @@ class UpdateStatusTest {
     }
 
     @Test
+    fun `a staged install that is lost stops promising that a restart will apply it`() {
+        UpdateStatus.markRunningFromJar(true)
+        UpdateStatus.recordCheck(UpdateChecker.Result(true, "0.3.1", "0.4.0"))
+        UpdateStatus.recordInstall(UpdateInstaller.Outcome.Staged("0.4.0", "/opt/app.jar.1.new", "abc"))
+        UpdateStatus.markStagedAppliesOnExit()
+        assertTrue(UpdateStatus.active.restartRequired)
+
+        UpdateStatus.markStagedLost()
+
+        val snapshot = UpdateStatus.active
+        assertFalse(snapshot.restartRequired, "restarting no longer applies anything")
+        assertEquals(UpdateStatus.InstallState.FAILED, snapshot.installState)
+        assertFalse(snapshot.appliesOnExit)
+        val summary = updateSummary(snapshot)
+        assertTrue(UpdateStatus.STAGED_LOST_REASON in summary, "was: $summary")
+        assertFalse("will be applied when this server exits" in summary)
+    }
+
+    @Test
+    fun `only a staged install can be lost`() {
+        UpdateStatus.recordInstall(UpdateInstaller.Outcome.Installed("0.4.0", "/opt/app.jar"))
+        UpdateStatus.markStagedLost()
+        assertEquals(UpdateStatus.InstallState.INSTALLED, UpdateStatus.active.installState)
+        assertTrue(UpdateStatus.active.restartRequired, "an atomic swap is already on disk; nothing was lost")
+    }
+
+    @Test
     fun `reset restores the initial snapshot`() {
         UpdateStatus.recordInstall(UpdateInstaller.Outcome.Installed("0.3.0", "/opt/app.jar"))
         UpdateStatus.reset()

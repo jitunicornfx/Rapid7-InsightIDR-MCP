@@ -97,6 +97,24 @@ object UpdateStatus {
     /** Called once the shutdown hook that applies a staged install has been registered. */
     fun markStagedAppliesOnExit() = update { it.copy(appliesOnExit = true) }
 
+    /**
+     * The staged download vanished from disk before this process could apply it. Without this the
+     * snapshot would go on promising that a restart applies the update, for the rest of the process.
+     * Only a STAGED install can be lost, so any other state is left alone.
+     */
+    fun markStagedLost() = update {
+        if (it.installState != InstallState.STAGED) {
+            it
+        } else {
+            it.copy(installState = InstallState.FAILED, failureReason = STAGED_LOST_REASON, appliesOnExit = false)
+        }
+    }
+
+    /** Fixed, server-authored text: it reaches the model through `insightidr_server_info`. */
+    const val STAGED_LOST_REASON =
+        "the verified download was removed from disk before it could be applied; " +
+            "it will be downloaded again the next time the server starts"
+
     /** Restore the initial snapshot. Tests only — the holder is process-wide. */
     internal fun reset() = state.set(Snapshot())
 

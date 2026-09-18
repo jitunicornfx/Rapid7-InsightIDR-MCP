@@ -22,6 +22,9 @@ import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.zip.ZipFile
 
 /**
@@ -245,6 +248,70 @@ object UpdateInstaller {
             if (!(name.startsWith(prefix) && name.endsWith(STAGED_SUFFIX))) continue
             val lastModified = runCatching { file.lastModified() }.getOrDefault(now)
             if (now - lastModified >= olderThanMillis) runCatching { file.delete() }
+        }
+    }
+
+    /** Name of the daemon thread that keeps a staged download alive; see [keepStagedFresh]. */
+    internal const val HEARTBEAT_THREAD_NAME = "insightidr-mcp-stage-heartbeat"
+
+    /**
+     * Re-stamp [staged]'s modification time, so [sweepStaleSidecars] run by ANOTHER process started
+     * from the same JAR keeps seeing it as in use. Returns false when the file is no longer there,
+     * which is the caller's cue that the staged update has been lost.
+     */
+    internal fun touchStaged(staged: File, now: Long = System.currentTimeMillis()): Boolean {
+        if (!staged.isFile) return false
+        runCatching { staged.setLastModified(now) }
+        return true
+    }
+
+    /**
+     * Keep a staged download alive until this process exits and applies it.
+     *
+     * A staged file is not applied until its process *exits* — for a long-running `--http` server
+     * that is days away, not the length of a download. Meanwhile every other server started from the
+     * same JAR runs [sweepStaleSidecars] at startup and deletes any `.new` older than
+     * [STALE_SIDECAR_MILLIS]. Without this, a second instance starting an hour later silently
+     * destroys the first one's pending update, which then goes on reporting "restart to apply".
+     *
+     * Two defences, because neither covers every platform:
+     *  - a **heartbeat** re-stamps the mtime every [intervalMillis] (a sixth of the sweep threshold,
+     *    so five consecutive ticks would have to be missed). This is what protects the file on POSIX.
+     *  - with [pin], the file is held open for reading. The JDK opens without `FILE_SHARE_DELETE`, so
+     *    on Windows another process's delete is refused outright. On POSIX it changes nothing.
+     *
+     * The tick doubles as a monitor: if the file is gone anyway, [onLost] runs once and the
+     * heartbeat stops. Runs on a daemon thread of its own rather than a coroutine — it has to
+     * outlive every session scope, and must never be the thing keeping the JVM alive.
+     *
+     * Close the returned handle BEFORE applying or deleting the staged file: on Windows the pin
+     * blocks this process's own delete too.
+     */
+    internal fun keepStagedFresh(
+        staged: File,
+        intervalMillis: Long = STALE_SIDECAR_MILLIS / 6,
+        pin: Boolean = true,
+        onLost: () -> Unit,
+    ): AutoCloseable {
+        val pinned = if (pin) runCatching { RandomAccessFile(staged, "r") }.getOrNull() else null
+        val scheduler = Executors.newSingleThreadScheduledExecutor { task ->
+            Thread(task, HEARTBEAT_THREAD_NAME).apply { isDaemon = true }
+        }
+        val reported = AtomicBoolean(false)
+        scheduler.scheduleWithFixedDelay(
+            {
+                if (!touchStaged(staged) && reported.compareAndSet(false, true)) {
+                    runCatching(onLost)
+                    scheduler.shutdown()
+                }
+            },
+            intervalMillis,
+            intervalMillis,
+            TimeUnit.MILLISECONDS,
+        )
+        return AutoCloseable {
+            scheduler.shutdownNow()
+            runCatching { pinned?.close() }
         }
     }
 
@@ -486,11 +553,17 @@ object UpdateInstaller {
 
     /**
      * Complete a [Outcome.Staged] install as the JVM exits, when overwriting the JAR in place is
-     * safe because class loading is finished. Best-effort and silent on failure: the staged file
-     * simply remains for the next start.
+     * safe because class loading is finished. Best-effort, but never silent: an update that was
+     * promised and then not applied is said so on stderr, since nothing else will ever mention it.
      */
     fun installStagedAtShutdown(staged: File, target: File, expectedSha256: String): Boolean {
-        if (!staged.isFile) return false
+        if (!staged.isFile) {
+            System.err.println(
+                "[insightidr-mcp] The staged update is no longer on disk, so nothing was applied. " +
+                    "It will be downloaded again on the next start.",
+            )
+            return false
+        }
         // The staged file has been sitting on disk for the whole session, so re-verify it against
         // the digest that authorised it. looksLikeServerJar is an anti-brick sanity check, never the
         // integrity gate — any ZIP carrying the right entry name would satisfy it.
@@ -501,6 +574,7 @@ object UpdateInstaller {
             return false
         }
         if (!looksLikeServerJar(staged)) {
+            System.err.println("[insightidr-mcp] Staged update is not a valid server JAR; discarding it.")
             runCatching { staged.delete() }
             return false
         }

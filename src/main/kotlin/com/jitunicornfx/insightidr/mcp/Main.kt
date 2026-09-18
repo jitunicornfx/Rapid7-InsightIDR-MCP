@@ -242,13 +242,28 @@ private suspend fun autoInstall(config: Config, result: UpdateChecker.Result): U
             val staged = File(outcome.stagedPath)
             val target = UpdateInstaller.runningJar()
             if (target != null) {
+                // The staged file has to survive until this process exits, which can be days away;
+                // see keepStagedFresh for what would otherwise delete it.
+                val keepAlive = UpdateInstaller.keepStagedFresh(staged) {
+                    System.err.println(
+                        "[insightidr-mcp] WARNING: staged ${outcome.version} has been removed from disk " +
+                            "and will NOT be applied. It will be downloaded again on the next start.",
+                    )
+                    UpdateStatus.markStagedLost()
+                }
                 // Registering a hook throws once shutdown has already begun — which is reachable
                 // here, since a stdio client can close stdin while the download is still running.
                 runCatching {
                     Runtime.getRuntime().addShutdownHook(
                         Thread {
-                            runCatching {
+                            // First: on Windows the keep-alive holds the staged file open, which
+                            // would block the swap's own delete of it.
+                            runCatching { keepAlive.close() }
+                            val applied = runCatching {
                                 UpdateInstaller.installStagedAtShutdown(staged, target, outcome.sha256)
+                            }.getOrDefault(false)
+                            if (!applied) {
+                                System.err.println("[insightidr-mcp] ${outcome.version} was not applied during shutdown.")
                             }
                         },
                     )
@@ -256,6 +271,7 @@ private suspend fun autoInstall(config: Config, result: UpdateChecker.Result): U
                     // never be applied, and the reported status must not claim otherwise.
                     UpdateStatus.markStagedAppliesOnExit()
                 }.onFailure {
+                    runCatching { keepAlive.close() }
                     System.err.println(
                         "[insightidr-mcp] Shutting down already; ${outcome.version} remains staged at " +
                             "${outcome.stagedPath} and will not be applied automatically.",

@@ -475,6 +475,117 @@ class UpdateInstallerTest {
     }
 
     // ---------------------------------------------------------------------
+    // Keeping a staged download alive. It waits for its process to EXIT, which for --http is days,
+    // while every sibling started from the same JAR sweeps old .new files at startup.
+    // ---------------------------------------------------------------------
+
+    private val twoHoursAgo get() = System.currentTimeMillis() - 2 * 60 * 60 * 1000
+
+    /** Poll rather than sleep a fixed time: the heartbeat runs on its own thread. */
+    private fun eventually(what: String, timeoutMillis: Long = 5_000, condition: () -> Boolean) {
+        val deadline = System.currentTimeMillis() + timeoutMillis
+        while (System.currentTimeMillis() < deadline) {
+            if (condition()) return
+            Thread.sleep(10)
+        }
+        kotlin.test.fail("timed out waiting for: $what")
+    }
+
+    private fun isFresh(file: File) =
+        System.currentTimeMillis() - file.lastModified() < UpdateInstaller.STALE_SIDECAR_MILLIS
+
+    @Test
+    fun `touchStaged re-stamps a staged file and reports a missing one`() {
+        val staged = File(tempDir, "app.jar.1.new").apply { writeText("x"); setLastModified(twoHoursAgo) }
+
+        assertTrue(UpdateInstaller.touchStaged(staged))
+        assertTrue(isFresh(staged), "the mtime must have moved to now")
+
+        staged.delete()
+        assertFalse(UpdateInstaller.touchStaged(staged), "a vanished file is the cue that the update is lost")
+    }
+
+    @Test
+    fun `a staged download kept fresh survives a sibling's startup sweep`() {
+        val target = serverJar(File(tempDir, "app.jar"))
+        val staged = File(tempDir, "app.jar.1.new").apply { writeText("x"); setLastModified(twoHoursAgo) }
+        val abandoned = File(tempDir, "app.jar.2.new").apply { writeText("x"); setLastModified(twoHoursAgo) }
+
+        UpdateInstaller.keepStagedFresh(staged, intervalMillis = 20) { }.use {
+            eventually("the heartbeat to re-stamp the staged file") { isFresh(staged) }
+            // What a second server started from the same JAR does as it starts.
+            UpdateInstaller.sweepStaleSidecars(target)
+        }
+
+        assertTrue(staged.exists(), "a live process's pending update must not be swept")
+        assertFalse(abandoned.exists(), "while a genuinely abandoned one still is")
+    }
+
+    @Test
+    fun `losing the staged file is reported exactly once`() {
+        val staged = File(tempDir, "app.jar.1.new").apply { writeText("x") }
+        val lost = java.util.concurrent.atomic.AtomicInteger()
+
+        // pin = false: on Windows the pin would (by design) stop this test deleting the file.
+        UpdateInstaller.keepStagedFresh(staged, intervalMillis = 20, pin = false) { lost.incrementAndGet() }.use {
+            assertTrue(staged.delete())
+            eventually("the loss to be noticed") { lost.get() > 0 }
+            Thread.sleep(150) // several more intervals
+        }
+
+        assertEquals(1, lost.get(), "the operator is told once, not every ten minutes")
+    }
+
+    @Test
+    fun `the pin stops the staged file being deleted on Windows until it is released`() {
+        val staged = File(tempDir, "app.jar.1.new").apply { writeText("x"); setLastModified(twoHoursAgo) }
+
+        val keepAlive = UpdateInstaller.keepStagedFresh(staged, intervalMillis = 20) { }
+        try {
+            // The pin must not get in the way of the heartbeat's own re-stamping.
+            eventually("the heartbeat to work with the file pinned") { isFresh(staged) }
+            val deletedWhilePinned = staged.delete()
+            // POSIX unlink ignores open descriptors, so there the heartbeat is the only defence.
+            assertEquals(!UpdateInstaller.IS_WINDOWS, deletedWhilePinned)
+        } finally {
+            keepAlive.close()
+        }
+        if (UpdateInstaller.IS_WINDOWS) assertTrue(staged.delete(), "closing must release the file for the swap")
+    }
+
+    @Test
+    fun `closing stops the heartbeat, and it never keeps the JVM alive`() {
+        val staged = File(tempDir, "app.jar.1.new").apply { writeText("x"); setLastModified(twoHoursAgo) }
+
+        val keepAlive = UpdateInstaller.keepStagedFresh(staged, intervalMillis = 20, pin = false) { }
+        eventually("the heartbeat to start") { isFresh(staged) }
+        val threads = Thread.getAllStackTraces().keys.filter { it.name == UpdateInstaller.HEARTBEAT_THREAD_NAME }
+        assertTrue(threads.isNotEmpty(), "the heartbeat runs on its own named thread")
+        assertTrue(threads.all { it.isDaemon }, "a non-daemon thread would stop the server ever exiting")
+
+        keepAlive.close()
+        staged.setLastModified(twoHoursAgo)
+        Thread.sleep(150)
+        assertFalse(isFresh(staged), "nothing may touch the file after close")
+    }
+
+    @Test
+    fun `a shutdown swap that finds its staged file gone says so`() {
+        val target = serverJar(File(tempDir, "app.jar"))
+        val realErr = System.err
+        val captured = java.io.ByteArrayOutputStream()
+        System.setErr(java.io.PrintStream(captured, true))
+        val applied = try {
+            UpdateInstaller.installStagedAtShutdown(File(tempDir, "app.jar.9.new"), target, "0".repeat(64))
+        } finally {
+            System.setErr(realErr)
+        }
+
+        assertFalse(applied)
+        assertTrue("no longer on disk" in captured.toString(), "was: $captured")
+    }
+
+    // ---------------------------------------------------------------------
     // The install lock. It is the only thing serialising two servers started from the same JAR, so
     // what these tests have to prove is that tidying up the lock file never weakens exclusion.
     // ---------------------------------------------------------------------
