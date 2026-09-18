@@ -95,7 +95,7 @@ internal class SpoolIo(
     },
     val encode: (JsonElement) -> String? = ::encodeEventOrNull,
     val freeSpace: (SpoolStore) -> Long? = { it.usableSpace() },
-    val writeManifest: (Path, String) -> Unit = { file, json -> Files.writeString(file, json) },
+    val writeManifest: (SpoolStore, Path, String) -> Unit = { store, file, json -> store.writePrivate(file, json) },
 )
 
 internal fun Server.registerLogSearchSpoolTools(client: Rapid7Client, spool: SpoolStore, io: SpoolIo) {
@@ -159,6 +159,15 @@ internal fun Server.registerLogSearchSpoolTools(client: Rapid7Client, spool: Spo
         val perPage = (args.intOrNull("per_page") ?: LS_MAX_PER_PAGE).coerceIn(1, LS_MAX_PER_PAGE)
 
         // Refuse before spending any API calls if there is nowhere to put the result.
+        try {
+            spool.prepare()
+        } catch (e: IOException) {
+            System.err.println("[insightidr-mcp] The spool directory is unusable: ${e::class.simpleName}: ${e.message}")
+            return@apiTool errorResult(
+                "Refusing to spool: the spool directory does not exist and could not be created. Point " +
+                    "${Config.ENV_SPOOL_DIR} at a directory this server can write to.",
+            )
+        }
         val free = io.freeSpace(spool)
         if (free != null && free < SpoolStore.MIN_FREE_BYTES) {
             return@apiTool errorResult(
@@ -674,6 +683,6 @@ private fun writeManifest(
         )
     }
     return runCatching {
-        io.writeManifest(spool.manifestFor(path), JsonCodec.pretty.encodeToString(JsonElement.serializer(), manifest))
+        io.writeManifest(spool, spool.manifestFor(path), JsonCodec.pretty.encodeToString(JsonElement.serializer(), manifest))
     }.isSuccess
 }

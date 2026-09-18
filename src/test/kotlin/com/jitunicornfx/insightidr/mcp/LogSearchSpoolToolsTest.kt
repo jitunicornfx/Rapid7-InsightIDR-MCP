@@ -246,6 +246,21 @@ class LogSearchSpoolToolsTest {
         assertFalse(result.isError == true)
     }
 
+    @Test
+    fun `a spool directory that cannot be created is refused before any API call`() = runBlocking {
+        // A regular file where the directory's parent should be: nothing can be created beneath it.
+        val blocker = File(tempDir, "not-a-directory").apply { writeText("x") }
+        val h = mcpHarness(responses = listOf(HttpStatusCode.OK to page("""{"id":1}"""))) {
+            registerLogSearchSpoolTools(it, SpoolStore(File(blocker, "spool").toPath(), warn = {}), SpoolIo())
+        }
+        val result = h.call("logsearch_spool_query_to_file", spoolArgs())
+
+        assertTrue(result.isError == true)
+        assertEquals(0, h.requests.size, "it used to run the whole query and then fail on the first write")
+        assertTrue(Config.ENV_SPOOL_DIR in textOf(result), "say what to change")
+        assertFalse(blocker.name in textOf(result), "and keep the host path out of the message")
+    }
+
     // -----------------------------------------------------------------------------------------
     // The summary must never overstate what was saved.
     // -----------------------------------------------------------------------------------------
@@ -377,7 +392,7 @@ class LogSearchSpoolToolsTest {
     fun `a manifest that cannot be written is said so, not pointed at`() = runBlocking {
         val h = harness(
             listOf(HttpStatusCode.OK to page("""{"id":1}""")),
-            io = SpoolIo(writeManifest = { _, _ -> throw IOException("read-only file system") }),
+            io = SpoolIo(writeManifest = { _, _, _ -> throw IOException("read-only file system") }),
         )
         val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
 
