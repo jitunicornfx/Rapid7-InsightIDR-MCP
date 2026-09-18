@@ -215,22 +215,23 @@ internal fun queryResultQuery(args: JsonObject): Map<String, List<String>> = que
     "sequence_number" to args.longOrNull("sequence_number"),
 )
 
-/** Build the `leql` object (`statement` + optional `during` window) used by query/saved-query bodies. */
-internal fun leqlObject(statement: String, args: JsonObject): JsonObject = buildJsonObject {
-    put("statement", statement)
+/** The `during` window built from `from`/`to`/`time_range`, or null when the caller gave none of them. */
+private fun duringOrNull(args: JsonObject): JsonObject? {
     val from = args.longOrNull("from")
     val to = args.longOrNull("to")
     val timeRange = args.stringOrNull("time_range")
-    if (from != null || to != null || timeRange != null) {
-        put(
-            "during",
-            buildJsonObject {
-                putOpt("from", from)
-                putOpt("to", to)
-                putOpt("time_range", timeRange)
-            },
-        )
+    if (from == null && to == null && timeRange == null) return null
+    return buildJsonObject {
+        putOpt("from", from)
+        putOpt("to", to)
+        putOpt("time_range", timeRange)
     }
+}
+
+/** Build the `leql` object (`statement` + optional `during` window) used by query/saved-query bodies. */
+internal fun leqlObject(statement: String, args: JsonObject): JsonObject = buildJsonObject {
+    put("statement", statement)
+    duringOrNull(args)?.let { put("during", it) }
 }
 
 /**
@@ -238,21 +239,10 @@ internal fun leqlObject(statement: String, args: JsonObject): JsonObject = build
  * returns null when neither is supplied, and supports a `during`-only update without a statement.
  */
 internal fun leqlObjectForPatch(statement: String?, args: JsonObject): JsonObject? {
-    val from = args.longOrNull("from")
-    val to = args.longOrNull("to")
-    val timeRange = args.stringOrNull("time_range")
-    if (statement == null && from == null && to == null && timeRange == null) return null
+    val during = duringOrNull(args)
+    if (statement == null && during == null) return null
     return buildJsonObject {
         putOpt("statement", statement)
-        if (from != null || to != null || timeRange != null) {
-            put(
-                "during",
-                buildJsonObject {
-                    putOpt("from", from)
-                    putOpt("to", to)
-                    putOpt("time_range", timeRange)
-                },
-            )
-        }
+        during?.let { put("during", it) }
     }
 }

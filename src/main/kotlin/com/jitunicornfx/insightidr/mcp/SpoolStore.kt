@@ -86,15 +86,8 @@ class SpoolStore(val directory: Path) {
      * never swept.
      */
     fun sweepStale(olderThanMillis: Long, now: Long = System.currentTimeMillis()) {
-        val entries = runCatching { directory.toFile().listFiles() }.getOrNull() ?: return
-        for (file in entries) {
-            if (!file.isFile) continue
-            val name = file.name
-            val sweepable = name.startsWith(FILE_PREFIX) &&
-                (name.endsWith(FILE_SUFFIX) || name.endsWith(MANIFEST_SUFFIX))
-            if (!sweepable) continue
-            val lastModified = runCatching { file.lastModified() }.getOrDefault(now)
-            if (now - lastModified >= olderThanMillis) runCatching { file.delete() }
+        sweepOlderThan(directory.toFile(), olderThanMillis, now) { name ->
+            name.startsWith(FILE_PREFIX) && (name.endsWith(FILE_SUFFIX) || name.endsWith(MANIFEST_SUFFIX))
         }
     }
 

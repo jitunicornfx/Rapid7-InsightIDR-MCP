@@ -111,7 +111,7 @@ object UpdateInstaller {
                 digest.update(buffer, 0, read)
             }
         }
-        digest.digest().joinToString("") { "%02x".format(it) }
+        digest.digest().toHex()
     }.getOrNull()
 
     /** Whether this JVM is running on Windows, which decides how the install lock file is cleaned up. */
@@ -241,14 +241,7 @@ object UpdateInstaller {
     ) {
         val dir = target.parentFile ?: return
         val prefix = target.name + "."
-        val entries = runCatching { dir.listFiles() }.getOrNull() ?: return
-        for (file in entries) {
-            if (!file.isFile) continue
-            val name = file.name
-            if (!(name.startsWith(prefix) && name.endsWith(STAGED_SUFFIX))) continue
-            val lastModified = runCatching { file.lastModified() }.getOrDefault(now)
-            if (now - lastModified >= olderThanMillis) runCatching { file.delete() }
-        }
+        sweepOlderThan(dir, olderThanMillis, now) { name -> name.startsWith(prefix) && name.endsWith(STAGED_SUFFIX) }
     }
 
     /** Name of the daemon thread that keeps a staged download alive; see [keepStagedFresh]. */
@@ -315,9 +308,6 @@ object UpdateInstaller {
         }
     }
 
-    /** Hex-encode a digest for comparison against GitHub's `sha256:` value. */
-    private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
-
     /**
      * Verify [file] is a genuine JAR that carries this server's entry point.
      *
@@ -345,50 +335,58 @@ object UpdateInstaller {
         val http = if (engine != null) HttpClient(engine) { configure() } else HttpClient(OkHttp) { configure() }
         http.use { client ->
             var url = asset.downloadUrl
-            var hops = 0
-            while (true) {
+            // One request for the asset itself, plus at most MAX_REDIRECTS hops after it.
+            repeat(MAX_REDIRECTS + 1) {
                 if (!UpdateChecker.isAllowedDownloadUrl(url)) return null
                 val response = client.get(url) {
                     header(HttpHeaders.Accept, "application/octet-stream")
                     header(HttpHeaders.UserAgent, "$SERVER_NAME/$SERVER_VERSION")
                 }
-                if (response.status.value in 300..399) {
-                    // Follow the CDN hop ourselves so the allow-list is re-checked for the target.
-                    val location = response.headers[HttpHeaders.Location] ?: return null
-                    if (++hops > MAX_REDIRECTS) return null
-                    url = location
-                    continue
-                }
-                if (response.status.value !in 200..299) return null
-                val declared = response.contentLength()
-                if (declared != null && declared > asset.sizeBytes) return null
-
-                val digest = MessageDigest.getInstance("SHA-256")
-                var written = 0L
-                val channel = response.bodyAsChannel()
-                destination.outputStream().buffered().use { out ->
-                    val buffer = ByteArray(64 * 1024)
-                    while (true) {
-                        val read = channel.readAvailable(buffer, 0, buffer.size)
-                        if (read == -1) break
-                        if (read == 0) continue
-                        written += read
-                        // Hard-stop a response that exceeds the advertised size rather than
-                        // buffering an unbounded stream to disk.
-                        if (written > asset.sizeBytes) return null
-                        digest.update(buffer, 0, read)
-                        out.write(buffer, 0, read)
-                    }
-                }
-                if (written != asset.sizeBytes) return null
-                return digest.digest().toHex()
+                if (response.status.value !in 300..399) return streamVerified(response, asset, destination)
+                // Follow the CDN hop ourselves so the allow-list is re-checked for the target.
+                url = response.headers[HttpHeaders.Location] ?: return null
             }
-            @Suppress("UNREACHABLE_CODE") null
+            null // still being redirected after MAX_REDIRECTS hops
         }
     }.getOrElse { failure ->
         // The caller's own cancellation is not a failed download; see UpdateChecker.check.
         if (failure is CancellationException) currentCoroutineContext().ensureActive()
         null
+    }
+
+    /**
+     * Write a final (non-redirect) [response] to [destination], hashing and size-capping it as it
+     * streams. Returns the SHA-256 of exactly the bytes written, or null when the response is not a
+     * success or its length disagrees with what the release advertised.
+     */
+    private suspend fun streamVerified(
+        response: HttpResponse,
+        asset: UpdateChecker.ReleaseAsset,
+        destination: File,
+    ): String? {
+        if (response.status.value !in 200..299) return null
+        val declared = response.contentLength()
+        if (declared != null && declared > asset.sizeBytes) return null
+
+        val digest = MessageDigest.getInstance("SHA-256")
+        var written = 0L
+        val channel = response.bodyAsChannel()
+        destination.outputStream().buffered().use { out ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val read = channel.readAvailable(buffer, 0, buffer.size)
+                if (read == -1) break
+                if (read == 0) continue
+                written += read
+                // Hard-stop a response that exceeds the advertised size rather than buffering an
+                // unbounded stream to disk.
+                if (written > asset.sizeBytes) return null
+                digest.update(buffer, 0, read)
+                out.write(buffer, 0, read)
+            }
+        }
+        if (written != asset.sizeBytes) return null
+        return digest.digest().toHex()
     }
 
     /**

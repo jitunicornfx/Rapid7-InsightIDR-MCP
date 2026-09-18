@@ -277,9 +277,12 @@ class UpdateInstallerTest {
         val outcome = UpdateInstaller.install(result, engine, target)
 
         assertTrue(outcome is UpdateInstaller.Outcome.Failed)
-        assertTrue(
-            engine.requestHistory.size <= UpdateInstaller.MAX_REDIRECTS + 1,
-            "must stop after ${UpdateInstaller.MAX_REDIRECTS} hops, made ${engine.requestHistory.size}",
+        // Exactly: the asset request plus MAX_REDIRECTS hops. Fewer would mean a legitimate CDN chain
+        // is abandoned early; more would mean the limit is not the limit.
+        assertEquals(
+            UpdateInstaller.MAX_REDIRECTS + 1,
+            engine.requestHistory.size,
+            "must follow ${UpdateInstaller.MAX_REDIRECTS} hops and then stop",
         )
     }
 
