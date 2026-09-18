@@ -9,15 +9,18 @@ import io.ktor.client.statement.*
 import io.ktor.http.*
 import io.ktor.utils.io.core.remaining
 import io.ktor.utils.io.readAvailable
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.IOException
 import java.io.RandomAccessFile
+import java.nio.channels.OverlappingFileLockException
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
-import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
 import java.util.zip.ZipFile
 
@@ -108,77 +111,96 @@ object UpdateInstaller {
         digest.digest().joinToString("") { "%02x".format(it) }
     }.getOrNull()
 
+    /** Whether this JVM is running on Windows, which decides how the install lock file is cleaned up. */
+    internal val IS_WINDOWS: Boolean =
+        System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)
+
     /**
-     * Run [block] while holding an exclusive lock on a sidecar beside [target], or return null if
-     * another process already holds it.
+     * The outcome of [withInstallLock]. The three cases are kept apart because they mean different
+     * things to an operator: [Contended] is normal and transient, [Unavailable] is a broken install
+     * directory that will not fix itself.
+     */
+    internal sealed interface LockResult<out T> {
+        /** The lock was held for the whole of the block, which returned [value]. */
+        data class Acquired<T>(val value: T) : LockResult<T>
+
+        /** Another process (or another thread of this one) holds the lock. The block did not run. */
+        data object Contended : LockResult<Nothing>
+
+        /**
+         * The lock file could not be opened or locked at all — typically a read-only install
+         * directory. The block did not run. [reason] is server-authored and names the lock file
+         * only, never its directory.
+         */
+        data class Unavailable(val reason: String) : LockResult<Nothing>
+    }
+
+    /**
+     * Run [block] while holding an exclusive lock on a sidecar beside [target].
      *
      * The staging file and the target JAR are machine-wide resources: the usual stdio deployment
      * starts one JVM per MCP client from the same JAR path, so an in-process flag cannot serialise
      * them. Everything from download through swap runs inside this lock.
-     */
-    internal fun <T> withInstallLock(target: File, block: () -> T): T? {
-        val lockFile = File(target.parentFile, target.name + LOCK_SUFFIX)
-        // Set only once we actually hold the lock, so a contended caller never deletes someone
-        // else's lock file on its way out.
-        var held = false
-        val result = runCatching {
-            RandomAccessFile(lockFile, "rw").use { raf ->
-                val openedKey = fileKeyOf(lockFile)
-                raf.channel.use { channel ->
-                    val lock = runCatching { channel.tryLock() }.getOrNull() ?: return null
-                    lock.use {
-                        // We may be holding a lock on an inode that is no longer at this path: the
-                        // previous holder unlinks the file before releasing, and it can do so between
-                        // our open() and our tryLock(). A lock on an unlinked inode is not mutual
-                        // exclusion, because the next process creates a fresh file at the same path
-                        // and locks that one instead. Re-read the path's identity and give up if it
-                        // moved — the caller already treats null as "someone else is installing".
-                        //
-                        // This is a POSIX guard. Windows returns null from fileKey() (measured on
-                        // Windows 11), so both reads are null, the comparison passes and the check is
-                        // inert there — which is correct, because Windows cannot reach this state at
-                        // all: the JDK opens without FILE_SHARE_DELETE, so deleting a lock file any
-                        // process still holds open fails outright.
-                        if (fileKeyOf(lockFile) != openedKey) return null
-                        // Nothing is ever written to this file, so without this its mtime would stay
-                        // at whenever it was first created beside the JAR. sweepStaleSidecars decides
-                        // what is abandoned by age, and must never see a held lock as stale.
-                        runCatching { lockFile.setLastModified(System.currentTimeMillis()) }
-                        held = true
-                        try {
-                            block()
-                        } finally {
-                            // Unlink while STILL holding the lock, so a competitor that already
-                            // opened this inode is excluded at the moment the path disappears and is
-                            // then caught by the identity check above. Deleting after release would
-                            // leave a window in which it could lock the unlinked inode and proceed.
-                            //
-                            // This succeeds on POSIX and fails on Windows, where a file cannot be
-                            // deleted while this process still holds it open — hence the retry below.
-                            runCatching { lockFile.delete() }
-                        }
-                    }
-                }
-            }
-        }
-        // The Windows path: now that the handle is closed the delete can succeed. It is safe to run
-        // after release precisely because Windows refuses it while ANY process holds the file open,
-        // so it can never remove a lock another server is using. On POSIX the file is already gone
-        // and this is a no-op.
-        if (held) runCatching { lockFile.delete() }
-        return result.getOrNull()
-    }
-
-    /**
-     * The key identifying the file currently at [file] — null when the path is gone, or when the
-     * platform does not expose one (Windows always returns null; POSIX returns device+inode).
      *
-     * Used to detect that a lock file was unlinked or replaced underneath us. Comparing two nulls
-     * therefore reads as "unchanged" on Windows, which is the intended behaviour there.
+     * Whatever [block] throws — cancellation included — propagates, after the lock is released.
+     * `inline`, so a suspending caller can suspend inside the block; the lock belongs to the process
+     * rather than to a thread, so resuming on a different thread is harmless.
+     *
+     * ## Cleaning up the lock file
+     *
+     * The file is 0 bytes and inert: a leftover one never blocks a later acquisition, because the OS
+     * drops the lock when its holder exits, however it exits. Removing it is purely cosmetic, so it
+     * is only done where it cannot do harm:
+     *
+     *  - **Windows:** deleted once our handle is closed. The JDK opens files without
+     *    `FILE_SHARE_DELETE`, so the delete is refused while *any* process still has the file open
+     *    (measured). It therefore cannot remove a lock that is in use: it either removes a file
+     *    nobody holds, or fails.
+     *  - **POSIX:** never deleted. `unlink()` ignores open descriptors and `fcntl` locks, so it would
+     *    succeed against a file a newcomer has already opened and locked; the next arrival then
+     *    creates a fresh file at the same path, locks *that*, and two installs run at once. This
+     *    cannot be fenced from Java: telling "the file I opened" from "the file now at this path"
+     *    needs `fstat` on the descriptor, and the JDK only reads attributes by path — which races
+     *    with exactly the unlink it is meant to detect.
+     *
+     * [deleteOnRelease] exists so both behaviours can be tested on either platform.
      */
-    private fun fileKeyOf(file: File): Any? = runCatching {
-        Files.readAttributes(file.toPath(), BasicFileAttributes::class.java).fileKey()
-    }.getOrNull()
+    internal inline fun <T> withInstallLock(
+        target: File,
+        deleteOnRelease: Boolean = IS_WINDOWS,
+        block: () -> T,
+    ): LockResult<T> {
+        val lockFile = File(target.parentFile, target.name + LOCK_SUFFIX)
+        val raf = try {
+            RandomAccessFile(lockFile, "rw")
+        } catch (e: IOException) {
+            return LockResult.Unavailable("could not open ${lockFile.name} in the install directory")
+        } catch (e: SecurityException) {
+            return LockResult.Unavailable("not permitted to open ${lockFile.name} in the install directory")
+        }
+        // Set only once we actually hold the lock, so a contended caller never deletes the file.
+        var acquired = false
+        try {
+            val lock = try {
+                raf.channel.tryLock()
+            } catch (e: OverlappingFileLockException) {
+                null // held by another thread of this same JVM
+            } catch (e: IOException) {
+                return LockResult.Unavailable("could not lock ${lockFile.name} in the install directory")
+            }
+            if (lock == null) return LockResult.Contended
+            acquired = true
+            return LockResult.Acquired(block())
+        } finally {
+            // Closing the file closes its channel, which releases the lock.
+            try {
+                raf.close()
+            } catch (e: IOException) {
+            }
+            // Strictly after the close: see "Cleaning up the lock file" above.
+            if (acquired && deleteOnRelease) lockFile.delete()
+        }
+    }
 
     /**
      * Locate the JAR this JVM is running from, or null when not running from a JAR (e.g. tests and
@@ -194,21 +216,20 @@ object UpdateInstaller {
     }
 
     /**
-     * Delete this JAR's abandoned update sidecars left behind by processes that were killed before
-     * they could finish or apply an update: staged downloads (`<jar>.<n>.new`, ~20 MB each) and the
-     * cross-process lock (`<jar>.update.lock`).
-     *
-     * [withInstallLock] removes its own lock file on release, so one surviving a run means a process
-     * died holding it — that is the case this sweeps. It also stamps the file's mtime on every
-     * acquisition, which is what makes the age test below meaningful: a held lock is always recent,
-     * so it is never mistaken for debris. (Before that stamping the mtime was fixed at the file's
-     * first creation, and a long-lived deployment's lock could be swept while genuinely held.)
+     * Delete this JAR's abandoned staged downloads (`<jar>.<n>.new`, ~20 MB each) left behind by
+     * processes that were killed before they could finish or apply an update.
      *
      * Best-effort and never throws. Only files older than [olderThanMillis] are removed, so a
-     * download or lock a concurrent install is actively using is left alone; on Windows a file
-     * another process still holds open cannot be deleted and is simply skipped anyway. The pre-swap
-     * backup (`<jar>.bak`) is deliberately NOT swept: it is an operator's recovery copy after a
-     * failed write. The running JAR has no sidecar suffix and is never a candidate.
+     * download a concurrent install is still writing is left alone.
+     *
+     * Two sidecars are deliberately NOT swept:
+     *  - the install lock (`<jar>.update.lock`). It is 0 bytes and inert, and its age says nothing
+     *    about whether it is held — nothing is ever written to it, so a lock held right now can carry
+     *    an mtime from months ago. On POSIX, sweeping a held one silently ends mutual exclusion; see
+     *    [withInstallLock].
+     *  - the pre-swap backup (`<jar>.bak`), an operator's recovery copy after a failed write.
+     *
+     * The running JAR has no sidecar suffix and is never a candidate.
      */
     fun sweepStaleSidecars(
         target: File,
@@ -221,9 +242,7 @@ object UpdateInstaller {
         for (file in entries) {
             if (!file.isFile) continue
             val name = file.name
-            val sweepable = name.startsWith(prefix) &&
-                (name.endsWith(STAGED_SUFFIX) || name.endsWith(LOCK_SUFFIX))
-            if (!sweepable) continue
+            if (!(name.startsWith(prefix) && name.endsWith(STAGED_SUFFIX))) continue
             val lastModified = runCatching { file.lastModified() }.getOrDefault(now)
             if (now - lastModified >= olderThanMillis) runCatching { file.delete() }
         }
@@ -299,7 +318,11 @@ object UpdateInstaller {
             }
             @Suppress("UNREACHABLE_CODE") null
         }
-    }.getOrNull()
+    }.getOrElse { failure ->
+        // The caller's own cancellation is not a failed download; see UpdateChecker.check.
+        if (failure is CancellationException) currentCoroutineContext().ensureActive()
+        null
+    }
 
     /**
      * Replace [target] with [staged].
@@ -395,43 +418,70 @@ object UpdateInstaller {
             ?: return@withContext Outcome.Failed("not running from a .jar, so there is nothing to replace")
 
         // Serialise the whole download-verify-swap against other processes started from this JAR.
-        val outcome = withInstallLock(target) {
-            // A unique staging file, created exclusively: two processes can never share one, and a
-            // pre-existing file left by someone else is never adopted or deleted.
-            val stagedPath = runCatching {
-                Files.createTempFile(target.parentFile.toPath(), "${target.name}.", STAGED_SUFFIX)
-            }.getOrNull() ?: return@withInstallLock Outcome.Failed("could not create a staging file next to ${target.name}")
-            val staged = stagedPath.toFile()
+        val locked = try {
+            withInstallLock(target) { downloadVerifyAndSwap(version, asset, target, engine) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // "Never throws" is this function's contract. The text is fixed because an exception
+            // message raised in here could carry a filesystem path.
+            return@withContext Outcome.Failed("installing $version failed unexpectedly")
+        }
+        when (locked) {
+            is LockResult.Acquired -> locked.value
+            LockResult.Contended -> Outcome.Failed("another process is already installing an update")
+            is LockResult.Unavailable -> Outcome.Failed("could not take the install lock: ${locked.reason}")
+        }
+    }
 
-            fun fail(reason: String): Outcome {
-                runCatching { staged.delete() }
-                return Outcome.Failed(reason)
-            }
+    /**
+     * The body of [install], run while holding the install lock. The staged file is removed on every
+     * path that does not hand it on: a refusal, an exception, or cancellation mid-download.
+     */
+    private suspend fun downloadVerifyAndSwap(
+        version: String,
+        asset: UpdateChecker.ReleaseAsset,
+        target: File,
+        engine: HttpClientEngine?,
+    ): Outcome {
+        // A unique staging file, created exclusively: two processes can never share one, and a
+        // pre-existing file left by someone else is never adopted or deleted.
+        val staged = runCatching {
+            Files.createTempFile(target.parentFile.toPath(), "${target.name}.", STAGED_SUFFIX)
+        }.getOrNull()?.toFile() ?: return Outcome.Failed("could not create a staging file next to ${target.name}")
 
-            val streamedDigest = runBlocking { downloadTo(asset, staged, engine) }
-                ?: return@withInstallLock fail("download of $version failed or exceeded its advertised size")
+        fun fail(reason: String): Outcome {
+            runCatching { staged.delete() }
+            return Outcome.Failed(reason)
+        }
+
+        try {
+            val streamedDigest = downloadTo(asset, staged, engine)
+                ?: return fail("download of $version failed or exceeded its advertised size")
 
             // Two checks, deliberately: the streamed digest catches a tampered/truncated transfer,
             // and re-hashing the file catches anything that touched it after it was written. The
             // value that authorises the swap is always computed from the bytes on disk.
             if (!streamedDigest.equals(asset.sha256, ignoreCase = true)) {
-                return@withInstallLock fail("SHA-256 mismatch for $version — refusing to install")
+                return fail("SHA-256 mismatch for $version — refusing to install")
             }
             val onDisk = sha256Of(staged)
             if (onDisk == null || !onDisk.equals(asset.sha256, ignoreCase = true)) {
-                return@withInstallLock fail("staged $version does not match its published SHA-256 — refusing to install")
+                return fail("staged $version does not match its published SHA-256 — refusing to install")
             }
             if (!looksLikeServerJar(staged)) {
-                return@withInstallLock fail("downloaded $version is not a valid server JAR — refusing to install")
+                return fail("downloaded $version is not a valid server JAR — refusing to install")
             }
 
-            if (tryAtomicSwap(staged, target)) {
+            return if (tryAtomicSwap(staged, target)) {
                 Outcome.Installed(version, target.absolutePath)
             } else {
                 Outcome.Staged(version, staged.absolutePath, asset.sha256)
             }
+        } catch (e: Throwable) {
+            runCatching { staged.delete() }
+            throw e
         }
-        outcome ?: Outcome.Failed("another process is already installing an update")
     }
 
     /**
@@ -454,8 +504,11 @@ object UpdateInstaller {
             runCatching { staged.delete() }
             return false
         }
-        // Only swap when no other process from this JAR is mid-install.
-        return withInstallLock(target) { overwriteInPlace(staged, target, expectedSha256) } ?: false
+        // Only swap when no other process from this JAR is mid-install. Anything other than a clean
+        // acquisition leaves the staged file in place for the next start.
+        val locked = runCatching { withInstallLock(target) { overwriteInPlace(staged, target, expectedSha256) } }
+            .getOrNull()
+        return (locked as? LockResult.Acquired)?.value ?: false
     }
 
     private fun HttpClientConfig<*>.configure() {

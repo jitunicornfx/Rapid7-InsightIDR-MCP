@@ -143,8 +143,8 @@ outcome is `Failed` *and* that the target JAR's SHA-256 is byte-for-byte unchang
 The success paths are covered too — a good download installs and cleans up its staging file, a GitHub
 CDN redirect is followed and installed, `tryAtomicSwap` replaces the target, `overwriteInPlace`
 swaps contents and removes its backup, and `installStagedAtShutdown` refuses a staged file that isn't
-a valid server JAR, and `sweepStaleSidecars` reaps old orphaned `.new`/`.update.lock` files while
-leaving the JAR, fresh in-flight files, the `.bak` backup, and other JARs' sidecars untouched.
+a valid server JAR, and `sweepStaleSidecars` reaps old orphaned `.new` files while leaving the JAR,
+the install lock, fresh in-flight files, the `.bak` backup, and other JARs' sidecars untouched.
 
 Three of these are regressions for defects an adversarial review found in the first cut of this code,
 and each was confirmed to fail against the buggy version before the fix landed:

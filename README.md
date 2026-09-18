@@ -353,7 +353,9 @@ How a download is trusted before it replaces anything:
 - **No credentials leave Rapid7.** The download uses its own unauthenticated client.
 
 > **Running more than one instance from the same JAR.** Installation is serialised across processes
-> with a lock file beside the JAR, and a contended install is skipped rather than raced. But where the
+> with a lock file beside the JAR (`<jar>.update.lock`), and a contended install is skipped rather than
+> raced. The lock file is empty and harmless: on Windows it is removed after each install, on Linux
+> and macOS it is left in place, because removing it there could let two installs run at once. But where the
 > operating system forbids replacing a running JAR (Windows), applying the update means rewriting that
 > file's bytes — and *other* server processes started from the same path have it open and load classes
 > from it lazily. If you run several instances from one JAR (for example one stdio process per MCP

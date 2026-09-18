@@ -144,8 +144,8 @@ private fun runServer(transport: Transport, host: String, port: Int, config: Con
     val client = Rapid7Client(config)
     Runtime.getRuntime().addShutdownHook(Thread { runCatching { client.close() } })
 
-    // Reap abandoned update sidecars (orphaned .new downloads and the .update.lock) from earlier
-    // runs killed mid-update, so they don't pile up beside the JAR.
+    // Reap abandoned staged downloads (orphaned .new files) from earlier runs killed mid-update, so
+    // they don't pile up beside the JAR. The 0-byte install lock is deliberately not swept.
     // Reuse this single resolution for the reported status, so no tool handler ever has to do
     // classloader/URI work (or handle the host path) itself.
     UpdateInstaller.runningJar()
