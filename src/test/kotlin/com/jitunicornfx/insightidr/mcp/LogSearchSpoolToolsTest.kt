@@ -1,5 +1,6 @@
 package com.jitunicornfx.insightidr.mcp
 
+import com.jitunicornfx.insightidr.mcp.testutil.parseEnvelope
 import com.jitunicornfx.insightidr.mcp.tools.registerLogSearchSpoolTools
 import io.ktor.http.HttpStatusCode
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
@@ -75,11 +76,10 @@ class LogSearchSpoolToolsTest {
         val h = harness(listOf(HttpStatusCode.OK to page("""{"id":1},{"id":2}""")))
         val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
 
-        val begin = "----- BEGIN UNTRUSTED INSIGHTIDR API DATA -----"
-        assertEquals(1, text.split(begin).size - 1, "samples must be fenced exactly once")
+        val envelope = parseEnvelope(text) // samples must be fenced exactly once
         val file = spooled().single()
         assertTrue(
-            text.indexOf(file.path) < text.indexOf(begin),
+            file.path in envelope.before,
             "server-authored facts must sit before the fence so nothing inside can impersonate them",
         )
         assertTrue("UNTRUSTED THIRD-PARTY LOG DATA" in text, "the file's own contents must be flagged")
@@ -160,7 +160,7 @@ class LogSearchSpoolToolsTest {
         assertTrue(spooled().isEmpty(), "a statistic query has nothing to spool")
         assertTrue("statistics" in text)
         assertTrue("calculate" in text, "the explanation must say why nothing was spooled")
-        assertTrue("----- BEGIN UNTRUSTED INSIGHTIDR API DATA -----" in text, "it is still API data")
+        assertTrue("statistics" in parseEnvelope(text).body, "it is still API data, so it is still fenced")
     }
 
     @Test

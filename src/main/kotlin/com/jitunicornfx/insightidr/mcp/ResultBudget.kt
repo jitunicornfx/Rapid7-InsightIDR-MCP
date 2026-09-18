@@ -109,8 +109,10 @@ internal fun renderWithinBudget(raw: String, budget: ResultBudget, ok: Boolean):
 
     // Not JSON at all, or too large to hold as a tree.
     if (element == null) {
-        return if (raw.length <= limit) BudgetedBody(raw, null, BudgetStrategy.PRETTY)
-        else lineAwareCut(raw, limit, budget, wasJson = false)
+        // Escaped before it is measured, for the same reason encodeOrNull does it.
+        val text = escapeInvisible(raw)
+        return if (text.length <= limit) BudgetedBody(text, null, BudgetStrategy.PRETTY)
+        else lineAwareCut(text, limit, budget, wasJson = false)
     }
 
     // Rung 1 — pretty, the historical behaviour. Skipped when the raw body already exceeds the
@@ -147,8 +149,16 @@ private fun parseOrNull(raw: String): JsonElement? = try {
     null
 }
 
+/**
+ * Encode [element], with invisible characters already escaped.
+ *
+ * Every rung of the ladder measures what this returns. Escaping here rather than in the envelope is
+ * what keeps the budget honest: an escape is up to six times longer than the character it replaces,
+ * so a body of zero-width characters that "fit" before escaping would leave the server at six times
+ * its limit.
+ */
 private fun encodeOrNull(json: Json, element: JsonElement): String? = try {
-    json.encodeToString(JsonElement.serializer(), element)
+    escapeInvisible(json.encodeToString(JsonElement.serializer(), element))
 } catch (_: StackOverflowError) {
     null
 } catch (_: Exception) {
