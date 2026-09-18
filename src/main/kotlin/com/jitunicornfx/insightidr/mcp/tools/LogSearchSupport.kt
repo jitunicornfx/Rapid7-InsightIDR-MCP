@@ -191,8 +191,8 @@ internal fun JsonObject.pollArgs(): Pair<Boolean, Long> {
 
 /** `from`/`to` (epoch millis) and `time_range` (relative) window parameters. */
 internal fun JsonObjectBuilder.timeWindowParams() {
-    integerParam("from", "Start of the time range as a UNIX timestamp in milliseconds. Use with 'to'; mutually exclusive with 'time_range'.")
-    integerParam("to", "End of the time range as a UNIX timestamp in milliseconds. Use with 'from'; mutually exclusive with 'time_range'.")
+    integerParam("from", "Start of the time range as a UNIX timestamp in milliseconds. Use with 'to'; mutually exclusive with 'time_range'.", min = 0)
+    integerParam("to", "End of the time range as a UNIX timestamp in milliseconds. Use with 'from'; mutually exclusive with 'time_range'.", min = 0)
     stringParam(
         "time_range",
         "Relative time range instead of from/to, e.g. 'today', 'yesterday', or 'last x mins/hours/days/weeks/months/years'.",
@@ -213,7 +213,7 @@ internal fun requireTimeWindow(args: JsonObject) {
 
 /** Pagination / result-shaping parameters shared by the query endpoints. */
 internal fun JsonObjectBuilder.queryResultParams() {
-    integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to $LS_DEFAULT_PER_PAGE, which fits the response budget; larger pages are likely to be truncated. Ignored for statistic (calculate/groupby) queries, which cannot be paginated.")
+    integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to $LS_DEFAULT_PER_PAGE, which fits the response budget; larger pages are likely to be truncated. Ignored for statistic (calculate/groupby) queries, which cannot be paginated.", min = 1, max = LS_MAX_PER_PAGE.toLong(), default = LS_DEFAULT_PER_PAGE.toLong())
     booleanParam("most_recent_first", "When true, return the most recent events first. Defaults to false.")
     booleanParam("kvp_info", "When true, include parsed key-value-pair info for each returned log entry.")
     integerParam("sequence_number", "Include entries in the 'from' millisecond with sequence numbers at/after this value.")
@@ -228,6 +228,9 @@ internal fun JsonObjectBuilder.pollingParams() {
     integerParam(
         "poll_timeout_ms",
         "Maximum time to spend polling for completion, in ms (default $LS_DEFAULT_POLL_TIMEOUT_MS, max $LS_MAX_POLL_TIMEOUT_MS).",
+        min = 0,
+        max = LS_MAX_POLL_TIMEOUT_MS,
+        default = LS_DEFAULT_POLL_TIMEOUT_MS,
     )
 }
 

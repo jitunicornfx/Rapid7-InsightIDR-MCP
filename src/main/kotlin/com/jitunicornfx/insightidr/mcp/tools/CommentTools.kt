@@ -15,7 +15,7 @@ fun Server.registerCommentTools(client: Rapid7Client) {
         readOnly = true,
         inputSchema = toolSchema("target") {
             stringParam("target", "RRN of the resource whose comments to list (e.g. an investigation RRN).")
-            pagingParams("Page size (max 100). Defaults to 20.")
+            pagingParams("Page size (max 100). Defaults to 20.", maxSize = 100, defaultSize = 20)
             stringParam("sortDirection", "Sort direction by creation time.", enum = listOf("ASC", "DESC"))
         },
     ) { args ->

@@ -12,7 +12,7 @@ fun Server.registerHealthMetricTools(client: Rapid7Client) {
         description = "Retrieve InsightIDR health metrics for the organization (e.g. collector/event source health) (API v1).",
         readOnly = true,
         inputSchema = toolSchema {
-            pagingParams("Page size (max 100). Defaults to 20.")
+            pagingParams("Page size (max 100). Defaults to 20.", maxSize = 100, defaultSize = 20)
             stringParam("resourceTypes", "Comma-separated resource types to filter metrics by.")
             stringParam("orgId", "Optional organization id to scope the metrics to.")
         },

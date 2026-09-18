@@ -50,10 +50,31 @@ fun JsonObjectBuilder.stringParam(name: String, description: String, enum: List<
     }
 }
 
-fun JsonObjectBuilder.integerParam(name: String, description: String) {
+/**
+ * An integer parameter, with the bounds the API (or this server) actually enforces.
+ *
+ * Prose like "up to 500" tells a model a limit exists; `maximum: 500` lets the client refuse a bad
+ * value before the call is made, and lets the model see the limit as structure rather than parse it
+ * out of a sentence. Bounds are [Long] because byte and millisecond limits overflow an Int.
+ * [default] is what happens when the argument is omitted, whoever applies it.
+ */
+fun JsonObjectBuilder.integerParam(
+    name: String,
+    description: String,
+    min: Long? = null,
+    max: Long? = null,
+    default: Long? = null,
+) {
+    require(min == null || max == null || min <= max) { "'$name': min $min is above max $max" }
+    require(default == null || ((min == null || default >= min) && (max == null || default <= max))) {
+        "'$name': default $default is outside $min..$max"
+    }
     putJsonObject(name) {
         put("type", "integer")
         put("description", description)
+        putOpt("minimum", min)
+        putOpt("maximum", max)
+        putOpt("default", default)
     }
 }
 
@@ -64,11 +85,21 @@ fun JsonObjectBuilder.booleanParam(name: String, description: String) {
     }
 }
 
-fun JsonObjectBuilder.stringArrayParam(name: String, description: String) {
+/** An array of strings. [itemEnum] lists the only values an item may take, when the API fixes them. */
+fun JsonObjectBuilder.stringArrayParam(
+    name: String,
+    description: String,
+    itemEnum: List<String>? = null,
+    maxItems: Int? = null,
+) {
     putJsonObject(name) {
         put("type", "array")
         put("description", description)
-        putJsonObject("items") { put("type", "string") }
+        putJsonObject("items") {
+            put("type", "string")
+            if (itemEnum != null) putJsonArray("enum") { itemEnum.forEach { add(it) } }
+        }
+        putOpt("maxItems", maxItems)
     }
 }
 
@@ -113,11 +144,18 @@ fun JsonObjectBuilder.objectParam(
 
 /**
  * Declare the standard `index` / `size` pagination parameters (paired with [pagingQuery] at
- * request-build time). [sizeDescription] carries the per-API size limit and default.
+ * request-build time). The limits differ per API, so they are passed in: the v1/v2 specs give
+ * `size` a minimum of 1 and a maximum of 100 (1000 for the v1 entity searches); the alert-triage spec
+ * gives it a minimum of 0 and no maximum at all.
  */
-fun JsonObjectBuilder.pagingParams(sizeDescription: String = "Page size.") {
-    integerParam("index", "Zero-based page index. Defaults to 0.")
-    integerParam("size", sizeDescription)
+fun JsonObjectBuilder.pagingParams(
+    sizeDescription: String = "Page size.",
+    minSize: Long = 1,
+    maxSize: Long? = null,
+    defaultSize: Long? = null,
+) {
+    integerParam("index", "Zero-based page index. Defaults to 0.", min = 0, default = 0)
+    integerParam("size", sizeDescription, min = minSize, max = maxSize, default = defaultSize)
 }
 
 // ---------------------------------------------------------------------------

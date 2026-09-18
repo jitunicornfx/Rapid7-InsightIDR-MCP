@@ -131,16 +131,22 @@ internal fun Server.registerLogSearchSpoolTools(client: Rapid7Client, spool: Spo
                 "per_page",
                 "Events per API page, up to $LS_MAX_PER_PAGE. Defaults to the maximum — these events never " +
                     "enter the conversation, so larger pages are strictly cheaper.",
+                min = 1,
+                max = LS_MAX_PER_PAGE.toLong(),
+                default = LS_MAX_PER_PAGE.toLong(),
             )
-            integerParam("max_pages", "Stop after this many pages. Default $SPOOL_DEFAULT_MAX_PAGES, max $SPOOL_MAX_PAGES_CEILING.")
-            integerParam("max_events", "Stop after this many events. Default $SPOOL_DEFAULT_MAX_EVENTS, max $SPOOL_MAX_EVENTS_CEILING.")
-            integerParam("max_bytes", "Stop once the file reaches this size in bytes. Default ${SPOOL_DEFAULT_MAX_BYTES / (1024 * 1024)} MiB.")
+            integerParam("max_pages", "Stop after this many pages. Default $SPOOL_DEFAULT_MAX_PAGES, max $SPOOL_MAX_PAGES_CEILING.", min = 1, max = SPOOL_MAX_PAGES_CEILING.toLong(), default = SPOOL_DEFAULT_MAX_PAGES.toLong())
+            integerParam("max_events", "Stop after this many events. Default $SPOOL_DEFAULT_MAX_EVENTS, max $SPOOL_MAX_EVENTS_CEILING.", min = 1, max = SPOOL_MAX_EVENTS_CEILING, default = SPOOL_DEFAULT_MAX_EVENTS)
+            integerParam("max_bytes", "Stop once the file reaches this size in bytes. Default ${SPOOL_DEFAULT_MAX_BYTES / (1024 * 1024)} MiB, max ${SPOOL_MAX_BYTES_CEILING / (1024 * 1024 * 1024)} GiB.", min = 1, max = SPOOL_MAX_BYTES_CEILING, default = SPOOL_DEFAULT_MAX_BYTES)
             integerParam(
                 "max_duration_ms",
                 "Wall-clock budget. Default $SPOOL_DEFAULT_BUDGET_MS, max $SPOOL_MAX_BUDGET_MS. Keep it below your " +
                     "MCP client's tool timeout, or the call is cancelled before you get a summary.",
+                min = 1_000,
+                max = SPOOL_MAX_BUDGET_MS,
+                default = SPOOL_DEFAULT_BUDGET_MS,
             )
-            integerParam("sample_events", "How many events to show in the summary. Default $SPOOL_DEFAULT_SAMPLE_EVENTS, max $SPOOL_MAX_SAMPLE_EVENTS.")
+            integerParam("sample_events", "How many events to show in the summary. Default $SPOOL_DEFAULT_SAMPLE_EVENTS, max $SPOOL_MAX_SAMPLE_EVENTS.", min = 0, max = SPOOL_MAX_SAMPLE_EVENTS.toLong(), default = SPOOL_DEFAULT_SAMPLE_EVENTS.toLong())
             stringParam(
                 "resume_from_next_link",
                 "Resume a run that stopped at a cap: pass the 'next link' from a previous spool summary. " +

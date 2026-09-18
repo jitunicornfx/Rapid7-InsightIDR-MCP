@@ -127,7 +127,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
             "priority, assignee, tags, and a time window, with pagination and sorting.",
         readOnly = true,
         inputSchema = toolSchema {
-            pagingParams("Number of investigations per page (max 100). Defaults to 20.")
+            pagingParams("Number of investigations per page (max 100). Defaults to 20.", maxSize = 100, defaultSize = 20)
             stringParam("statuses", "Comma-separated statuses to include (OPEN, INVESTIGATING, WAITING, CLOSED).")
             stringParam("sources", "Comma-separated investigation sources to include (e.g. ALERT, MANUAL, HUNT).")
             stringParam("priorities", "Comma-separated priorities to include (UNSPECIFIED, LOW, MEDIUM, HIGH, CRITICAL).")
@@ -179,7 +179,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
             objectArrayParam("sort", SEARCH_SORT_DESC)
             stringParam("start_time", "ISO-8601 start of the created_time window. Defaults to 28 days ago.")
             stringParam("end_time", "ISO-8601 end of the created_time window. Defaults to the current time.")
-            pagingParams("Page size (max 100). Defaults to 20.")
+            pagingParams("Page size (max 100). Defaults to 20.", maxSize = 100, defaultSize = 20)
             booleanParam(MULTI_CUSTOMER_ARG, MULTI_CUSTOMER_DESC)
         },
     ) { args ->
@@ -366,7 +366,12 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
             stringParam("alert_type", "Category of alert types to close (required for some sources).")
             stringParam("disposition", "Disposition to set on closed investigations. Defaults to NOT_APPLICABLE.", enum = DISPOSITION_BODY_VALUES)
             stringParam("detection_rule_rrn", "Only close investigations associated with this detection rule RRN.")
-            integerParam("max_investigations_to_close", "Optional maximum number of investigations to close.")
+            integerParam(
+                "max_investigations_to_close",
+                "Optional safety limit on how many this request may close. If the limit is exceeded the " +
+                    "API returns a 400 error. When omitted there is no maximum. Minimum 0.",
+                min = 0,
+            )
         },
     ) { args ->
         val body = buildJsonObject {
@@ -388,7 +393,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         readOnly = true,
         inputSchema = toolSchema("identifier") {
             stringParam("identifier", ID_DESC)
-            pagingParams("Page size (max 100). Defaults to 20.")
+            pagingParams("Page size (max 100). Defaults to 20.", maxSize = 100, defaultSize = 20)
             booleanParam(MULTI_CUSTOMER_ARG, MULTI_CUSTOMER_DESC)
         },
     ) { args ->

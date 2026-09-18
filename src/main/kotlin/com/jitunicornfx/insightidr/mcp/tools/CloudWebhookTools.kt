@@ -37,7 +37,7 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
         description = "List configured cloud webhooks (API v1).",
         readOnly = true,
         inputSchema = toolSchema {
-            pagingParams("Page size (max 100). Defaults to 10.")
+            pagingParams("Page size (max 100). Defaults to 10.", maxSize = 100, defaultSize = 10)
         },
     ) { args ->
         client.requestV1(HttpMethod.Get, "/idr/v1/cloud-webhooks", query = pagingQuery(args)).toToolResult()
@@ -123,7 +123,7 @@ fun Server.registerCloudWebhookTools(client: Rapid7Client) {
             "asynchronously — a 202 means the replay was queued, not that it finished.",
         inputSchema = toolSchema("webhook_rrn") {
             stringParam("webhook_rrn", CLOUDHOOK_STATUS)
-            stringArrayParam("event_ids", "List of event ids to replay. At most 100, and must be unique.")
+            stringArrayParam("event_ids", "List of event ids to replay. At most 100, and must be unique.", maxItems = 100)
             stringParam(
                 "start_time",
                 "ISO-8601 UTC timestamp to replay events from (inclusive). Cannot be more than 3 days " +
