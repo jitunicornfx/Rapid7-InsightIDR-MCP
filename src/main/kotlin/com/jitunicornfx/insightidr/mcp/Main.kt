@@ -132,6 +132,8 @@ fun main(args: Array<String>) = Rapid7InsightIdrCommand().main(args)
 
 /** Creates the shared client and dispatches to the selected transport. */
 private fun runServer(transport: Transport, host: String, port: Int, config: Config) {
+    config.startupWarnings().forEach { System.err.println("[insightidr-mcp] $it") }
+
     // Install before anything can serve a tool call. There is exactly one Config per process — the
     // --http path builds a fresh Server per connection but never a fresh Config — so one budget and
     // one spool directory per process is the right granularity.

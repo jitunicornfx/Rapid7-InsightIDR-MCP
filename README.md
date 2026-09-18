@@ -43,6 +43,18 @@ Configuration is read from environment variables:
 
 See [`.env.example`](.env.example).
 
+Configuration is checked at startup, and a value that cannot be used stops the server with a message
+naming the variable — it is never silently replaced by the default:
+
+- **Numbers** (`INSIGHTIDR_TIMEOUT_MS`, `INSIGHTIDR_MAX_RESULT_CHARS`,
+  `INSIGHTIDR_SPOOL_RETENTION_HOURS`) must be whole numbers in range. A typo in the retention setting
+  used to mean "24 hours", which is how preserved evidence gets swept.
+- **Base URL overrides** must be `https://` with a host, and no credentials, query string or
+  fragment. Plain `http://` is accepted only for `localhost`, for testing. Every request carries the
+  API key, so an override that points outside `rapid7.com` is allowed but logged as a warning.
+
+Leaving a variable unset, or blank, still means "use the default".
+
 ## Build
 
 ```PowerShell

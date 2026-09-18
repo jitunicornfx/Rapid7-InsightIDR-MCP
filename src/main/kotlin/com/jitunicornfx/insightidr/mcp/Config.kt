@@ -1,5 +1,8 @@
 package com.jitunicornfx.insightidr.mcp
 
+import java.net.URI
+import java.net.URISyntaxException
+
 /**
  * Insight platform regional data centers.
  *
@@ -102,6 +105,25 @@ data class Config(
      */
     val autoUpdateDisabled: Boolean = false,
 ) {
+    /**
+     * Things the operator should be told at startup. Separate from [fromEnv] so that stays a pure
+     * function of its input; Main prints these to stderr.
+     *
+     * A base URL outside rapid7.com is legitimate — a proxy, a test double — but it is also where a
+     * tampered environment would point the server to collect the API key, which is attached to every
+     * request. It is allowed, and said out loud.
+     */
+    fun startupWarnings(): List<String> = listOf(
+        ENV_BASE_URL to baseUrl,
+        ENV_V1_BASE_URL to v1BaseUrl,
+        ENV_LOG_SEARCH_BASE_URL to logSearchBaseUrl,
+    ).mapNotNull { (variable, url) ->
+        val host = runCatching { URI(url).host }.getOrNull()?.lowercase() ?: return@mapNotNull null
+        if (host == "rapid7.com" || host.endsWith(".rapid7.com") || isLoopbackHost(host)) return@mapNotNull null
+        "WARNING: $variable points at '$host', which is not a rapid7.com host. " +
+            "The InsightIDR API key is sent with every request to it."
+    }
+
     /** The API key is a secret; never include it in [toString] output or logs. */
     override fun toString(): String =
         "Config(region=${region.code}, baseUrl=$baseUrl, v1BaseUrl=$v1BaseUrl, logSearchBaseUrl=$logSearchBaseUrl, " +
@@ -126,6 +148,64 @@ data class Config(
 
         internal fun isTruthy(value: String?): Boolean = value?.trim()?.lowercase() in TRUTHY
 
+        /** Literal loopback names only. No DNS: a hosts-file entry must not be able to widen this. */
+        internal fun isLoopbackHost(host: String): Boolean =
+            host.lowercase() in setOf("localhost", "127.0.0.1", "::1", "[::1]")
+
+        /**
+         * Check a base-URL override and return it without its trailing slash.
+         *
+         * Every request to a base URL carries the API key, so a malformed one is refused at startup
+         * rather than discovered at the first tool call — or not at all: Ktor parses `https://` to
+         * the host `localhost`, and would quietly send the key there. The checks run on the raw
+         * string for that reason.
+         *
+         * No message ever repeats the value. It may contain credentials (which is one of the things
+         * being rejected), and these messages end up in logs.
+         */
+        internal fun validateBaseUrl(variable: String, raw: String): String {
+            fun bad(why: String): Nothing = throw IllegalStateException("$variable $why")
+
+            val value = raw.trim()
+            if ('@' in value) bad("must not contain credentials (an '@').")
+            if (value.any { it.isWhitespace() || it.isISOControl() }) bad("must not contain spaces or control characters.")
+            val uri = try {
+                URI(value)
+            } catch (e: URISyntaxException) {
+                bad("is not a valid URL. Expected something like https://us.api.insight.rapid7.com.")
+            }
+            val scheme = uri.scheme?.lowercase() ?: bad("must start with https://.")
+            val host = uri.host?.takeIf { it.isNotEmpty() }
+                ?: bad("must name a host, e.g. https://us.api.insight.rapid7.com.")
+            when (scheme) {
+                "https" -> Unit
+                "http" -> if (!isLoopbackHost(host)) {
+                    bad("must use https://. Plain http:// is accepted only for localhost, for testing.")
+                }
+                else -> bad("must use https://.")
+            }
+            if (uri.rawQuery != null || uri.rawFragment != null) bad("must not contain a query string or a fragment.")
+            return value.trimEnd('/')
+        }
+
+        /**
+         * Read a whole-number variable, failing loudly on anything that is not one.
+         *
+         * A typo used to fall back to the default in silence. For most settings that is merely
+         * confusing; for the spool retention it is data loss — `INSIGHTIDR_SPOOL_RETENTION_HOURS=never`
+         * meant "24 hours", and an analyst's preserved evidence was swept the next day. Unset or blank
+         * still means "use the default". The value is never repeated in the message: a secret pasted
+         * into the wrong variable should not be echoed into a log.
+         */
+        internal fun wholeNumber(env: Map<String, String>, variable: String, min: Long, max: Long): Long? {
+            val raw = env[variable]?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            val number = raw.toLongOrNull()
+            if (number == null || number < min || number > max) {
+                throw IllegalStateException("$variable must be a whole number from $min to $max.")
+            }
+            return number
+        }
+
         const val DEFAULT_REGION = "us"
         const val DEFAULT_TIMEOUT_MS = 60_000L
         const val DEFAULT_MAX_RESULT_CHARS = ResultBudget.DEFAULT_MAX_CHARS
@@ -133,6 +213,12 @@ data class Config(
         /** Below this a result is too small to be diagnostically useful; a misconfiguration is clamped up. */
         const val MIN_MAX_RESULT_CHARS = 2_000
         const val DEFAULT_SPOOL_RETENTION_HOURS = 24
+
+        /** One hour. Longer than any single InsightIDR request should ever be allowed to hang. */
+        const val MAX_TIMEOUT_MS = 3_600_000L
+
+        /** Ten years. Large enough to mean "effectively forever"; small enough not to overflow as millis. */
+        const val MAX_SPOOL_RETENTION_HOURS = 87_600L
 
         fun fromEnv(env: Map<String, String> = System.getenv()): Config {
             val apiKey = env[ENV_API_KEY]?.takeIf { it.isNotBlank() }
@@ -143,19 +229,14 @@ data class Config(
 
             val region = Region.fromCode(env[ENV_REGION]?.takeIf { it.isNotBlank() } ?: DEFAULT_REGION)
 
-            val baseUrl = (env[ENV_BASE_URL]?.takeIf { it.isNotBlank() }
-                ?: "https://${region.code}.api.insight.rapid7.com")
-                .trimEnd('/')
+            fun baseUrl(variable: String, default: String): String =
+                env[variable]?.takeIf { it.isNotBlank() }?.let { validateBaseUrl(variable, it) } ?: default
 
-            val logSearchBaseUrl = (env[ENV_LOG_SEARCH_BASE_URL]?.takeIf { it.isNotBlank() }
-                ?: "https://${region.code}.rest.logs.insight.rapid7.com")
-                .trimEnd('/')
+            val baseUrl = baseUrl(ENV_BASE_URL, "https://${region.code}.api.insight.rapid7.com")
+            val logSearchBaseUrl = baseUrl(ENV_LOG_SEARCH_BASE_URL, "https://${region.code}.rest.logs.insight.rapid7.com")
+            val v1BaseUrl = baseUrl(ENV_V1_BASE_URL, "https://${region.code}.api.insight.rapid7.com")
 
-            val v1BaseUrl = (env[ENV_V1_BASE_URL]?.takeIf { it.isNotBlank() }
-                ?: "https://${region.code}.api.insight.rapid7.com")
-                .trimEnd('/')
-
-            val timeout = env[ENV_TIMEOUT_MS]?.toLongOrNull()?.takeIf { it > 0 } ?: DEFAULT_TIMEOUT_MS
+            val timeout = wholeNumber(env, ENV_TIMEOUT_MS, min = 1, max = MAX_TIMEOUT_MS) ?: DEFAULT_TIMEOUT_MS
 
             val httpAllowedOrigins = env[ENV_HTTP_ALLOWED_ORIGINS]
                 ?.split(',')
@@ -166,14 +247,18 @@ data class Config(
             val updateCheckDisabled = isTruthy(env[ENV_DISABLE_UPDATE_CHECK])
             val autoUpdateDisabled = isTruthy(env[ENV_DISABLE_AUTO_UPDATE])
 
+            // A number below the floor is still clamped up rather than refused: it is a valid
+            // number, and the floor exists so that a result is never too small to be diagnosable.
             val maxResultChars = (
-                env[ENV_MAX_RESULT_CHARS]?.toIntOrNull()?.takeIf { it > 0 } ?: DEFAULT_MAX_RESULT_CHARS
+                wholeNumber(env, ENV_MAX_RESULT_CHARS, min = 1, max = Int.MAX_VALUE.toLong())?.toInt()
+                    ?: DEFAULT_MAX_RESULT_CHARS
                 ).coerceAtLeast(MIN_MAX_RESULT_CHARS)
 
             val spoolDirectory = env[ENV_SPOOL_DIR]?.trim()?.takeIf { it.isNotBlank() }
 
-            val spoolRetentionHours = env[ENV_SPOOL_RETENTION_HOURS]?.toIntOrNull()?.takeIf { it >= 0 }
-                ?: DEFAULT_SPOOL_RETENTION_HOURS
+            val spoolRetentionHours =
+                wholeNumber(env, ENV_SPOOL_RETENTION_HOURS, min = 0, max = MAX_SPOOL_RETENTION_HOURS)?.toInt()
+                    ?: DEFAULT_SPOOL_RETENTION_HOURS
 
             return Config(
                 apiKey = apiKey,

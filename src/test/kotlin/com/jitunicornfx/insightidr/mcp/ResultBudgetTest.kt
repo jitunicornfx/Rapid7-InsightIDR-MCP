@@ -268,7 +268,7 @@ class ResultBudgetConfigTest {
         assertEquals(Config.DEFAULT_MAX_RESULT_CHARS, config().maxResultChars)
         assertEquals(50_000, config(Config.ENV_MAX_RESULT_CHARS to "50000").maxResultChars)
         assertEquals(Config.MIN_MAX_RESULT_CHARS, config(Config.ENV_MAX_RESULT_CHARS to "5").maxResultChars)
-        assertEquals(Config.DEFAULT_MAX_RESULT_CHARS, config(Config.ENV_MAX_RESULT_CHARS to "garbage").maxResultChars)
+        assertEquals(Config.DEFAULT_MAX_RESULT_CHARS, config(Config.ENV_MAX_RESULT_CHARS to "  ").maxResultChars)
     }
 
     @Test
