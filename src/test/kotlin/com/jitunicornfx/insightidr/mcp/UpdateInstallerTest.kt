@@ -5,6 +5,8 @@ import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import io.ktor.utils.io.writeFully
+import io.ktor.utils.io.writer
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
@@ -514,6 +516,137 @@ class UpdateInstallerTest {
         // An empty directory must be a silent no-op, not an exception.
         val emptyDir = File(tempDir, "empty").apply { mkdirs() }
         UpdateInstaller.sweepStaleSidecars(File(emptyDir, "nothere.jar"))
+    }
+
+    // ---------------------------------------------------------------------
+    // The shutdown swap rewrites the JAR's bytes in place. It must not do that to anyone else.
+    // ---------------------------------------------------------------------
+
+    /** Capture stderr around [block]: the swap runs in a shutdown hook, where stderr is all there is. */
+    private fun <T> capturingStderr(block: () -> T): Pair<T, String> {
+        val realErr = System.err
+        val captured = java.io.ByteArrayOutputStream()
+        System.setErr(java.io.PrintStream(captured, true))
+        try {
+            return block() to captured.toString()
+        } finally {
+            System.setErr(realErr)
+        }
+    }
+
+    @Test
+    fun `the JAR is not rewritten underneath another server that is still running from it`() {
+        // One stdio server per MCP client is the normal deployment: several JVMs, one JAR. They load
+        // classes from it lazily, so new bytes underneath them are a ZipException or a
+        // NoClassDefFoundError in the middle of someone's investigation.
+        val target = serverJar(File(tempDir, "app.jar"), marker = "OLD")
+        val staged = serverJar(File(tempDir, "app.jar.1.new"), marker = "NEW")
+        val before = sha256(target)
+        val sibling = UpdateInstaller.markInUse(target)!!
+
+        val (applied, log) = capturingStderr { UpdateInstaller.installStagedAtShutdown(staged, target, sha256(staged)) }
+
+        assertFalse(applied)
+        assertEquals(before, sha256(target), "the JAR a sibling is running from must be left exactly as it is")
+        assertTrue("still running" in log, log)
+
+        // Once the last other server has gone, the swap goes ahead.
+        sibling.close()
+        assertTrue(UpdateInstaller.installStagedAtShutdown(staged, target, sha256(staged)))
+        assertEquals(sha256(serverJar(File(tempDir, "expected.jar"), marker = "NEW")), sha256(target))
+    }
+
+    @Test
+    fun `an update staged against a JAR that has since been replaced is discarded, not applied`() {
+        // A long-running server staged v2 days ago. Since then a sibling installed v3. Applying the
+        // staged v2 on exit would silently downgrade the installation, possibly past a security fix.
+        val target = serverJar(File(tempDir, "app.jar"), marker = "v1")
+        val whatWasThereWhenStaged = sha256(target)
+        val staged = serverJar(File(tempDir, "app.jar.1.new"), marker = "v2")
+        serverJar(target, marker = "v3")
+        val v3 = sha256(target)
+
+        val (applied, log) = capturingStderr {
+            UpdateInstaller.installStagedAtShutdown(staged, target, sha256(staged), replacesSha256 = whatWasThereWhenStaged)
+        }
+
+        assertFalse(applied)
+        assertEquals(v3, sha256(target), "the newer JAR must survive")
+        assertFalse(staged.exists(), "and the stale copy is removed")
+        assertTrue("stale" in log, log)
+    }
+
+    @Test
+    fun `an update staged against the JAR that is still there is applied`() {
+        val target = serverJar(File(tempDir, "app.jar"), marker = "v1")
+        val staged = serverJar(File(tempDir, "app.jar.1.new"), marker = "v2")
+        assertTrue(UpdateInstaller.installStagedAtShutdown(staged, target, sha256(staged), replacesSha256 = sha256(target)))
+    }
+
+    @Test
+    fun `a JAR that could not be opened for writing is reported as unchanged, not as needing recovery`() {
+        // Read-only, or held by an antivirus scan. Nothing was truncated, so the JAR is fine - but the
+        // message used to say "the original could not be restored; recover it from the backup".
+        val target = serverJar(File(tempDir, "app.jar"), marker = "OLD")
+        val staged = serverJar(File(tempDir, "app.jar.1.new"), marker = "NEW")
+        val before = sha256(target)
+        assertTrue(target.setReadOnly())
+        try {
+            val (applied, log) = capturingStderr { UpdateInstaller.overwriteInPlace(staged, target, sha256(staged)) }
+
+            assertFalse(applied)
+            assertEquals(before, sha256(target))
+            assertTrue("unchanged" in log, log)
+            assertFalse("could not be restored" in log, "a false alarm that sends the operator to repair a working file")
+            assertFalse(File(tempDir, "app.jar${UpdateInstaller.BACKUP_SUFFIX}").exists(), "no backup is needed of a file that was never touched")
+        } finally {
+            target.setWritable(true)
+        }
+    }
+
+    @Test
+    fun `the installed JAR keeps the permissions it had`() {
+        // On POSIX a temp file is created rw-------, and a move carries that onto the JAR: the next
+        // user to launch it cannot read it. Where there are no POSIX permissions there is nothing to copy.
+        val target = serverJar(File(tempDir, "app.jar"))
+        val staged = serverJar(File(tempDir, "app.jar.1.new"))
+        val posix = "posix" in tempDir.toPath().fileSystem.supportedFileAttributeViews()
+        if (posix) {
+            java.nio.file.Files.setPosixFilePermissions(target.toPath(), java.nio.file.attribute.PosixFilePermissions.fromString("rw-r--r--"))
+            java.nio.file.Files.setPosixFilePermissions(staged.toPath(), java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"))
+        }
+
+        val copied = UpdateInstaller.copyPermissions(from = target, to = staged)
+
+        assertEquals(posix, copied)
+        if (posix) {
+            assertEquals("rw-r--r--", java.nio.file.attribute.PosixFilePermissions.toString(java.nio.file.Files.getPosixFilePermissions(staged.toPath())))
+        }
+    }
+
+    @Test
+    fun `a download is consumed as a stream, so an endless one is abandoned rather than buffered`() = runBlocking {
+        // get() reads the whole body into memory before handing back a response, so the size cap only
+        // ever saw bytes that had already been accepted. Here the body is produced lazily and counted:
+        // read as a stream and cut off at the advertised 10 bytes, almost none of it is ever asked for.
+        val source = serverJar(File(tempDir, "source.jar"))
+        val produced = java.util.concurrent.atomic.AtomicLong()
+        val engine = MockEngine {
+            val body = kotlinx.coroutines.GlobalScope.writer(Dispatchers.IO) {
+                val chunk = ByteArray(64 * 1024)
+                repeat(1_024) { // 64 MiB on offer
+                    channel.writeFully(chunk)
+                    channel.flush()
+                    produced.addAndGet(chunk.size.toLong())
+                }
+            }.channel
+            respond(body, HttpStatusCode.OK)
+        }
+
+        val digest = UpdateInstaller.downloadTo(assetFor(source).copy(sizeBytes = 10), File(tempDir, "staged.new"), engine)
+
+        assertNull(digest)
+        assertTrue(produced.get() < 16L * 1024 * 1024, "${produced.get()} bytes were pulled from a body advertised as 10")
     }
 
     // ---------------------------------------------------------------------

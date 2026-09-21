@@ -59,6 +59,13 @@ const val DEPRECATED_ROOT_SSE_PATH = "/"
  */
 internal const val HTTP_NOTIFY_GRACE_MILLIS = 2_000L
 
+/**
+ * This process's "running from this JAR" marker; see [UpdateInstaller.markInUse]. A top-level
+ * reference on purpose: it has to stay reachable for the life of the process, or its lock is dropped.
+ */
+@Volatile
+private var inUseMarker: AutoCloseable? = null
+
 /** Guards [autoInstall] so a release is downloaded and installed at most once per process. */
 private val installAttempted = java.util.concurrent.atomic.AtomicBoolean(false)
 
@@ -210,7 +217,10 @@ private fun runServer(transport: Transport, host: String, port: Int, config: Con
     // classloader/URI work (or handle the host path) itself.
     UpdateInstaller.runningJar()
         .also { UpdateStatus.markRunningFromJar(it != null) }
-        ?.let { UpdateInstaller.sweepStaleSidecars(it) }
+        ?.let {
+            inUseMarker = UpdateInstaller.markInUse(it)
+            UpdateInstaller.sweepStaleSidecars(it)
+        }
 
     // Likewise for spooled Log Search results, which are far larger. Retention 0 keeps them forever,
     // for an analyst who needs the files preserved as evidence.
@@ -319,8 +329,10 @@ private suspend fun autoInstall(config: Config, result: UpdateChecker.Result): U
                             // First: on Windows the keep-alive holds the staged file open, which
                             // would block the swap's own delete of it.
                             runCatching { keepAlive.close() }
+                            // Our own marker has to go before anyone can have sole use of the JAR.
+                            runCatching { inUseMarker?.close() }
                             val applied = runCatching {
-                                UpdateInstaller.installStagedAtShutdown(staged, target, outcome.sha256)
+                                UpdateInstaller.installStagedAtShutdown(staged, target, outcome.sha256, outcome.replacesSha256)
                             }.getOrDefault(false)
                             if (!applied) {
                                 System.err.println("[insightidr-mcp] ${outcome.version} was not applied during shutdown.")

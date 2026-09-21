@@ -473,14 +473,22 @@ How a download is trusted before it replaces anything:
   alongside it and applied as the server exits, with a backup taken first so a failed write rolls back.
 - **No credentials leave Rapid7.** The download uses its own unauthenticated client.
 
-> **Running more than one instance from the same JAR.** Installation is serialised across processes
-> with a lock file beside the JAR (`<jar>.update.lock`), and a contended install is skipped rather than
-> raced. The lock file is empty and harmless: on Windows it is removed after each install, on Linux
-> and macOS it is left in place, because removing it there could let two installs run at once. But where the
-> operating system forbids replacing a running JAR (Windows), applying the update means rewriting that
-> file's bytes — and *other* server processes started from the same path have it open and load classes
-> from it lazily. If you run several instances from one JAR (for example one stdio process per MCP
-> client), set `INSIGHTIDR_DISABLE_AUTO_UPDATE=1` and update deliberately while they are stopped.
+> **Running more than one instance from the same JAR** (for example one stdio process per MCP
+> client) is the normal deployment, and is safe:
+>
+> - Installation is serialised across processes with a lock file beside the JAR
+>   (`<jar>.update.lock`); a contended install is skipped rather than raced.
+> - Where the operating system forbids replacing a running JAR (Windows), an update is applied by
+>   rewriting that file's bytes as a server exits. Other servers started from the same JAR still have
+>   it open and load classes from it lazily, so that is **only done when no other server is running
+>   from it**. Each server holds a marker (`<jar>.inuse`) while it runs; if any other is still up at
+>   exit, the JAR is left alone and the update is fetched again on a later start.
+> - An update staged days ago is not applied over a JAR that has been replaced since: that would be a
+>   silent downgrade.
+>
+> Both sidecar files are empty and harmless. The lock file is removed after each install on Windows
+> and left in place on Linux and macOS, where removing it could let two installs run at once; the
+> marker is never removed.
 
 > **Residual risk, stated plainly.** The digest is published by the same GitHub API response that
 > advertises the download, so verification protects against a tampered or corrupted *download* — not

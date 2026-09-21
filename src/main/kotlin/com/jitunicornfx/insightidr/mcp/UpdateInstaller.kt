@@ -15,6 +15,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.io.RandomAccessFile
 import java.nio.channels.OverlappingFileLockException
@@ -91,7 +92,17 @@ object UpdateInstaller {
          * this process exits — at which point [sha256] is re-checked against the file on disk, so a
          * staged file that changed in the meantime is never installed.
          */
-        data class Staged(val version: String, val stagedPath: String, val sha256: String) : Outcome
+        data class Staged(
+            val version: String,
+            val stagedPath: String,
+            val sha256: String,
+            /**
+             * SHA-256 of the installed JAR at the moment this was staged, or null if it could not be
+             * read. The swap happens when the process exits, which can be days later; if the installed
+             * JAR is no longer this, someone else has updated it since and this copy is stale.
+             */
+            val replacesSha256: String? = null,
+        ) : Outcome
 
         /** Nothing was installed. [reason] is server-authored text, never remote content. */
         data class Failed(val reason: String) : Outcome
@@ -120,6 +131,63 @@ object UpdateInstaller {
      * Windows machine that is the only place this project's tests ever run.
      */
     internal fun isWindows(osName: String?): Boolean = osName.orEmpty().startsWith("Windows", ignoreCase = true)
+
+    /** Sidecar on which every server started from a JAR holds a shared lock for as long as it runs. */
+    const val IN_USE_SUFFIX = ".inuse"
+
+    /**
+     * Declare that this process is running from [target], until the returned handle is closed.
+     *
+     * Where the JAR cannot be swapped atomically (Windows), an update is applied by rewriting its bytes
+     * in place as a process exits. But OTHER processes started from the same JAR - one per MCP client
+     * is the normal stdio deployment - still have it open and load classes from it lazily: rewrite it
+     * underneath them and their next first-time class load is a ZipException or NoClassDefFoundError
+     * in the middle of someone's investigation. So every server holds a SHARED lock on a sidecar, and
+     * the rewrite only happens when it can take that lock EXCLUSIVELY, i.e. when nobody else is running
+     * ([withSoleUse]). The file is 0 bytes and is never deleted, for the reasons given at
+     * [withInstallLock]. Returns null if the marker could not be taken, which only costs the protection.
+     *
+     * Keep a strong reference to the result: an unreachable RandomAccessFile is closed by its cleaner,
+     * and the lock goes with it.
+     */
+    internal fun markInUse(target: File): AutoCloseable? = runCatching {
+        val file = RandomAccessFile(File(target.parentFile, target.name + IN_USE_SUFFIX), "rw")
+        val lock = runCatching { file.channel.tryLock(0, Long.MAX_VALUE, true) }.getOrNull()
+        if (lock == null) {
+            file.close()
+            null
+        } else {
+            AutoCloseable { runCatching { file.close() } }
+        }
+    }.getOrNull()
+
+    /**
+     * Run [block] only if no OTHER process holds [markInUse] on [target]; null if one does. This
+     * process must have closed its own marker first. The exclusive lock is held for the whole of
+     * [block], so a server starting meanwhile cannot take its marker until the rewrite is over.
+     */
+    internal inline fun <T> withSoleUse(target: File, block: () -> T): T? {
+        val file = try {
+            RandomAccessFile(File(target.parentFile, target.name + IN_USE_SUFFIX), "rw")
+        } catch (e: IOException) {
+            return block() // no marker file can be made here, so nobody else has one either
+        }
+        try {
+            val lock = try {
+                file.channel.tryLock()
+            } catch (e: OverlappingFileLockException) {
+                null // held within this same JVM
+            } catch (e: IOException) {
+                null
+            }
+            return if (lock == null) null else block()
+        } finally {
+            try {
+                file.close()
+            } catch (e: IOException) {
+            }
+        }
+    }
 
     /** Whether this JVM is running on Windows. */
     internal val IS_WINDOWS: Boolean = isWindows(System.getProperty("os.name"))
@@ -354,13 +422,21 @@ object UpdateInstaller {
             // One request for the asset itself, plus at most MAX_REDIRECTS hops after it.
             repeat(MAX_REDIRECTS + 1) {
                 if (!UpdateChecker.isAllowedDownloadUrl(url)) return null
-                val response = client.get(url) {
+                // execute { }, not get(): get() buffers the ENTIRE body in memory before returning, so
+                // the size cap below would only ever see bytes that had already been accepted - a
+                // chunked multi-gigabyte answer is an OutOfMemoryError in a server handling tool calls.
+                val hop = client.prepareGet(url) {
                     header(HttpHeaders.Accept, "application/octet-stream")
                     header(HttpHeaders.UserAgent, "$SERVER_NAME/$SERVER_VERSION")
+                }.execute { response ->
+                    if (response.status.value in 300..399) Hop.Redirect(response.headers[HttpHeaders.Location])
+                    else Hop.Final(streamVerified(response, asset, destination))
                 }
-                if (response.status.value !in 300..399) return streamVerified(response, asset, destination)
-                // Follow the CDN hop ourselves so the allow-list is re-checked for the target.
-                url = response.headers[HttpHeaders.Location] ?: return null
+                when (hop) {
+                    is Hop.Final -> return hop.digest
+                    // Follow the CDN hop ourselves so the allow-list is re-checked for the target.
+                    is Hop.Redirect -> url = hop.location ?: return null
+                }
             }
             null // still being redirected after MAX_REDIRECTS hops
         }
@@ -368,6 +444,12 @@ object UpdateInstaller {
         // The caller's own cancellation is not a failed download; see UpdateChecker.check.
         if (failure is CancellationException) currentCoroutineContext().ensureActive()
         null
+    }
+
+    /** What one request in the redirect chain turned out to be. */
+    private sealed interface Hop {
+        data class Redirect(val location: String?) : Hop
+        data class Final(val digest: String?) : Hop
     }
 
     /**
@@ -387,7 +469,8 @@ object UpdateInstaller {
         val digest = MessageDigest.getInstance("SHA-256")
         var written = 0L
         val channel = response.bodyAsChannel()
-        destination.outputStream().buffered().use { out ->
+        FileOutputStream(destination).use { file ->
+            val out = file.buffered()
             val buffer = ByteArray(64 * 1024)
             while (true) {
                 val read = channel.readAvailable(buffer, 0, buffer.size)
@@ -400,10 +483,22 @@ object UpdateInstaller {
                 digest.update(buffer, 0, read)
                 out.write(buffer, 0, read)
             }
+            out.flush()
+            // On disk, not merely in the page cache, before anything is renamed over the JAR.
+            runCatching { file.fd.sync() }
         }
         if (written != asset.sizeBytes) return null
         return digest.digest().toHex()
     }
+
+    /**
+     * Give [to] the POSIX permissions of [from]. Returns whether anything was applied: on a
+     * filesystem without POSIX permissions (Windows) there is nothing to copy, and that is fine.
+     */
+    internal fun copyPermissions(from: File, to: File): Boolean = runCatching {
+        Files.setPosixFilePermissions(to.toPath(), Files.getPosixFilePermissions(from.toPath()))
+        true
+    }.getOrDefault(false)
 
     /**
      * Replace [target] with [staged].
@@ -452,7 +547,14 @@ object UpdateInstaller {
             source.inputStream().buffered().use { input ->
                 // Truncating open() on the existing path is permitted on Windows even while the JVM
                 // holds the JAR, unlike rename/move — and it keeps the path's identity intact.
-                destination.outputStream().buffered().use { output -> input.copyTo(output) }
+                FileOutputStream(destination).use { file ->
+                    val output = file.buffered()
+                    input.copyTo(output)
+                    output.flush()
+                    // Forced to disk BEFORE the caller deletes the backup. Verified from the page cache
+                    // and then lost to a power cut, the JAR would be garbage with no .bak to restore.
+                    file.fd.sync()
+                }
             }
             true
         }.getOrDefault(false)
@@ -465,9 +567,23 @@ object UpdateInstaller {
             return true
         }
 
-        // The write failed or produced the wrong bytes. Restore the original in place, and KEEP the
-        // backup and the staged file either way so an operator always has something to recover from.
-        val restored = writeOver(backup, target) && sha256Of(target) == sha256Of(backup)
+        // The write failed or produced the wrong bytes. First: was the JAR touched at all? If it could
+        // not even be opened for writing (read-only attribute, an antivirus handle) it is exactly as
+        // it was, and "could not be restored - recover it from the backup" would be a false alarm
+        // telling the operator to repair a file that is fine.
+        val backupSha = sha256Of(backup)
+        if (backupSha != null && sha256Of(target) == backupSha) {
+            System.err.println(
+                "[insightidr-mcp] Could not write to ${target.name}, so the update was not applied. The installed " +
+                    "JAR is unchanged. Check that it is not read-only or held open by another program.",
+            )
+            runCatching { backup.delete() }
+            return false
+        }
+
+        // It was changed. Restore the original in place, and KEEP the backup and the staged file
+        // either way so an operator always has something to recover from.
+        val restored = writeOver(backup, target) && backupSha != null && sha256Of(target) == backupSha
         System.err.println(
             if (restored) {
                 "[insightidr-mcp] Update write failed; restored the previous ${target.name}. " +
@@ -554,10 +670,13 @@ object UpdateInstaller {
                 return fail("downloaded $version is not a valid server JAR — refusing to install")
             }
 
+            // createTempFile makes the staged file rw------- on POSIX, and the move would carry that
+            // mode onto the installed JAR: the next user to launch it gets "Unable to access jarfile".
+            copyPermissions(from = target, to = staged)
             return if (tryAtomicSwap(staged, target)) {
                 Outcome.Installed(version, target.absolutePath)
             } else {
-                Outcome.Staged(version, staged.absolutePath, asset.sha256)
+                Outcome.Staged(version, staged.absolutePath, asset.sha256, replacesSha256 = sha256Of(target))
             }
         } catch (e: Throwable) {
             runCatching { staged.delete() }
@@ -570,7 +689,13 @@ object UpdateInstaller {
      * safe because class loading is finished. Best-effort, but never silent: an update that was
      * promised and then not applied is said so on stderr, since nothing else will ever mention it.
      */
-    fun installStagedAtShutdown(staged: File, target: File, expectedSha256: String): Boolean {
+    fun installStagedAtShutdown(
+        staged: File,
+        target: File,
+        expectedSha256: String,
+        /** [Outcome.Staged.replacesSha256]: what the installed JAR was when this update was staged. */
+        replacesSha256: String? = null,
+    ): Boolean {
         if (!staged.isFile) {
             System.err.println(
                 "[insightidr-mcp] The staged update is no longer on disk, so nothing was applied. " +
@@ -594,8 +719,31 @@ object UpdateInstaller {
         }
         // Only swap when no other process from this JAR is mid-install. Anything other than a clean
         // acquisition leaves the staged file in place for the next start.
-        val locked = runCatching { withInstallLock(target) { overwriteInPlace(staged, target, expectedSha256) } }
-            .getOrNull()
+        val locked = runCatching {
+            withInstallLock(target) {
+                when {
+                    // Staged days ago against a JAR that has since been replaced - by a sibling that
+                    // installed something NEWER. Writing this copy over it would be a silent downgrade,
+                    // possibly past a security fix.
+                    replacesSha256 != null && sha256Of(target) != replacesSha256 -> {
+                        System.err.println(
+                            "[insightidr-mcp] ${target.name} has changed since this update was staged (another " +
+                                "instance updated it), so the staged copy is stale and was discarded.",
+                        )
+                        runCatching { staged.delete() }
+                        false
+                    }
+
+                    else -> withSoleUse(target) { overwriteInPlace(staged, target, expectedSha256) } ?: run {
+                        System.err.println(
+                            "[insightidr-mcp] Other servers are still running from ${target.name}, so it was not " +
+                                "rewritten underneath them. The update will be fetched again on a later start.",
+                        )
+                        false
+                    }
+                }
+            }
+        }.getOrNull()
         return (locked as? LockResult.Acquired)?.value ?: false
     }
 
