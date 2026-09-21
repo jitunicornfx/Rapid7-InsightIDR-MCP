@@ -66,12 +66,30 @@ class UploadPolicy(
         val real = try {
             lexical.toRealPath()
         } catch (e: IOException) {
+            // Missing - but missing WHERE? If the path runs through a link that leaves the directory,
+            // "no such file" for one name and "outside" for another would let a model list whatever
+            // lies beyond the link by asking. So a path whose nearest existing ancestor is already
+            // outside gets the same answer as a file that exists there.
+            require(nearestExistingAncestor(lexical)?.startsWith(realRoot) == true) { OUTSIDE_MESSAGE }
             throw IllegalArgumentException("No such file in the upload directory.")
         }
         // A symbolic link or junction inside the directory can name a file outside it.
         require(real.startsWith(realRoot)) { OUTSIDE_MESSAGE }
         require(Files.isRegularFile(real, LinkOption.NOFOLLOW_LINKS)) { "'file_path' is not a regular file." }
         return real
+    }
+
+    /** The real path of the deepest part of [path] that exists, or null if even its root does not. */
+    private fun nearestExistingAncestor(path: Path): Path? {
+        var candidate: Path? = path.parent
+        while (candidate != null) {
+            try {
+                return candidate.toRealPath()
+            } catch (e: IOException) {
+                candidate = candidate.parent
+            }
+        }
+        return null
     }
 
     /**
@@ -81,8 +99,11 @@ class UploadPolicy(
      * grow between the two, and `length()` followed by `readBytes()` would then read all of it. The
      * size check first is only there to refuse an obviously huge file without reading 100 MiB of it.
      */
-    fun readCapped(file: Path): ByteArray {
-        require(Files.size(file) <= maxBytes) { tooLarge() }
+    fun readCapped(file: Path): ByteArray = readCapped(file, Files::size)
+
+    /** [sizeOf] is a parameter so a test can make the size lookup disagree with the file, as growth does. */
+    internal fun readCapped(file: Path, sizeOf: (Path) -> Long): ByteArray {
+        require(sizeOf(file) <= maxBytes) { tooLarge() }
         return Files.newInputStream(file, LinkOption.NOFOLLOW_LINKS).use(::readAtMost)
     }
 

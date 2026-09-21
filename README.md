@@ -383,6 +383,9 @@ need with ordinary shell tools.
   server creates is private too. One that already exists is left exactly as you set it up; if other
   users can get into it, the server says so at startup, because the file *names* (a log key and a
   timestamp) are then visible to them.
+  Permissions only mean something on a volume that keeps them: FAT, exFAT and some network shares
+  accept the request and ignore it. The server checks what it actually created and warns if a
+  spooled file did not come out private.
 - **Caps:** pages, events, bytes and wall-clock, all overridable per call. A run that hits a cap
   returns a resume link you can pass back as `resume_from_next_link`.
 - **Retention:** swept at startup after `INSIGHTIDR_SPOOL_RETENTION_HOURS` (default 24; `0` never

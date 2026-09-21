@@ -191,6 +191,28 @@ class AttachmentToolsTest {
     }
 
     @Test
+    fun `a link inside the directory does not turn the tool into a way of listing what is beyond it`() = runBlocking {
+        // 'case-notes/id_rsa' exists beyond the link and 'case-notes/nope' does not. If the two got
+        // different answers - "outside" for one, "no such file" for the other - a model could walk
+        // the filesystem below any link by asking, without ever being allowed to read a byte.
+        File(outside, "id_rsa").writeText("PRIVATE KEY")
+        val jump = File(uploadDir, "case-notes")
+        linkDirectory(jump, outside)
+        val h = uploading()
+
+        val exists = text(h.call("upload_attachment", mapOf("file_path" to "case-notes/id_rsa")))
+        val missing = text(h.call("upload_attachment", mapOf("file_path" to "case-notes/nope")))
+        val missingDeeper = text(h.call("upload_attachment", mapOf("file_path" to "case-notes/no/such/dir/file")))
+
+        assertEquals(exists, missing)
+        assertEquals(exists, missingDeeper)
+        assertTrue("outside the upload directory" in exists, exists)
+        // A file that is genuinely missing INSIDE the directory still says so.
+        assertTrue("No such file" in text(h.call("upload_attachment", mapOf("file_path" to "really-not-here.bin"))))
+        Files.delete(jump.toPath())
+    }
+
+    @Test
     fun `UNC, remote and device paths are refused before the filesystem is consulted`() = runBlocking {
         val h = uploading()
         for (path in listOf("""\\attacker.example.com\share\x""", "//attacker.example.com/share/x", """\\?\C:\Windows\win.ini""")) {
@@ -229,6 +251,17 @@ class AttachmentToolsTest {
         val policy = UploadPolicy(uploadDir.toPath(), maxBytes = 1_000)
         assertEquals(1_000, policy.readAtMost(ByteArray(1_000).inputStream()).size)
         assertFailsWith<IllegalArgumentException> { policy.readAtMost(ByteArray(5_000).inputStream()) }
+    }
+
+    @Test
+    fun `readCapped itself enforces the limit on what it reads, whatever the size lookup said`() {
+        // The size check and the counted read are two lines; only the second one is the guarantee.
+        // Here the lookup lies the way a growing file makes it lie: small then, large now.
+        val policy = UploadPolicy(uploadDir.toPath(), maxBytes = 1_000)
+        val grown = File(uploadDir, "grown.bin").apply { writeBytes(ByteArray(5_000)) }
+
+        val refused = assertFailsWith<IllegalArgumentException> { policy.readCapped(grown.toPath(), sizeOf = { 10 }) }
+        assertTrue("upload limit" in refused.message.orEmpty())
     }
 
     @Test

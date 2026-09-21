@@ -47,20 +47,54 @@ import java.time.format.DateTimeFormatter
  *
  * [warn] defaults to stderr, never stdout, which carries the stdio JSON-RPC stream.
  */
-class SpoolStore(
+class SpoolStore internal constructor(
     val directory: Path,
     /** True for the per-user default location, which this server owns by convention. */
-    private val isDefaultLocation: Boolean = false,
-    private val warn: (String) -> Unit = { System.err.println("[insightidr-mcp] $it") },
+    private val isDefaultLocation: Boolean,
+    private val warn: (String) -> Unit,
     /** The home directory of the user running the server. A parameter so tests can move it. */
-    private val homeDirectory: Path? = runCatching { File(System.getProperty("user.home")).toPath() }.getOrNull(),
+    private val homeDirectory: Path?,
+    /**
+     * How files are made private. A parameter only so a test can stand in for a volume that accepts
+     * the owner-only attribute and quietly ignores it, which no developer machine has to hand.
+     * Internal, like this constructor: nothing outside the module can switch privacy off.
+     */
+    privacyFor: (Path, (String) -> Unit) -> Privacy,
 ) {
+    constructor(
+        directory: Path,
+        isDefaultLocation: Boolean = false,
+        warn: (String) -> Unit = { System.err.println("[insightidr-mcp] $it") },
+        homeDirectory: Path? = runCatching { File(System.getProperty("user.home")).toPath() }.getOrNull(),
+    ) : this(directory, isDefaultLocation, warn, homeDirectory, Privacy::of)
+
     private val lock = Any()
 
     @Volatile
     private var prepared = false
 
-    private val privacy: Privacy by lazy { Privacy.of(directory, warn) }
+    @Volatile
+    private var audited = false
+
+    private val privacy: Privacy by lazy { privacyFor(directory, warn) }
+
+    /**
+     * Look at an existing spool directory and say what is wrong with it, WITHOUT creating or
+     * changing anything. Called once from Main.
+     *
+     * The warnings used to come out of [prepare], which runs on the first spool - hours or days
+     * after the operator stopped watching stderr, and at the very moment the file names became
+     * visible to whoever the warning was about. A directory that does not exist yet is left alone:
+     * a server that never spools should leave nothing behind, and one this server creates is private.
+     */
+    fun auditAtStartup() {
+        synchronized(lock) {
+            if (audited || !Files.isDirectory(directory)) return
+            audited = true
+            privacy.auditExistingDirectory(directory)
+            warnIfOutsideHome()
+        }
+    }
 
     /**
      * Make sure the spool directory exists, and return it.
@@ -81,11 +115,12 @@ class SpoolStore(
                 // Someone else's directory: look, do not touch. The one exception is the default
                 // location on POSIX, which is ours by convention and has always been kept at 700.
                 if (isDefaultLocation) privacy.restrictExistingDirectory(directory)
-                privacy.auditExistingDirectory(directory)
+                if (!audited) privacy.auditExistingDirectory(directory)
             } else {
                 privacy.createDirectories(directory)
             }
-            warnIfOutsideHome()
+            if (!audited) warnIfOutsideHome()
+            audited = true
             writeReadmeOnce()
             prepared = true
         }
@@ -110,6 +145,7 @@ class SpoolStore(
         val safe = sanitizeLabel(label)
         val stamp = STAMP_FORMAT.format(Instant.now())
         val file = privacy.createTempFile(dir, "$FILE_PREFIX$stamp-$safe-", FILE_SUFFIX)
+        privacy.verify(file)
         // Belt and braces: prove containment even though createTempFile already guarantees it.
         require(file.normalize().startsWith(dir.normalize())) {
             "Refusing a spool path outside the spool directory."
@@ -193,10 +229,11 @@ class SpoolStore(
     /**
      * How "private to the owner" is expressed on this platform, as create-time [FileAttribute]s.
      *
-     * If the volume refuses the attribute (FAT, some network shares) the file is created without it
-     * and the operator is told, once: there is nothing on such a volume to enforce.
+     * A volume that cannot hold permissions (FAT, exFAT, some network shares) does not refuse the
+     * attribute: it accepts it and ignores it, with no exception to catch. So after creating a file
+     * this LOOKS at what came out ([verify]) and tells the operator, once, if it is not private.
      */
-    private class Privacy(
+    internal class Privacy(
         private val directoryAttributes: Array<FileAttribute<*>>,
         private val fileAttributes: Array<FileAttribute<*>>,
         /** The principal files are private to. Null on POSIX, where the mode bits say "owner". */
@@ -205,6 +242,34 @@ class SpoolStore(
     ) {
         @Volatile
         private var warnedUnsupported = false
+
+        @Volatile
+        private var warnedNotPrivate = false
+
+        /** Read back what was created. Never throws, and never the reason a spool fails. */
+        fun verify(file: Path) {
+            if (warnedNotPrivate) return
+            val private = runCatching { isOwnerOnly(file) }.getOrDefault(true)
+            if (!private) {
+                warnedNotPrivate = true
+                warn(
+                    "WARNING: a spooled file could not be made private to the user running this server - the " +
+                        "volume ignores file permissions (FAT, exFAT and some network shares do). Other users of " +
+                        "this machine may be able to read spooled log data. Point ${Config.ENV_SPOOL_DIR} at a " +
+                        "volume that supports permissions.",
+                )
+            }
+        }
+
+        private fun isOwnerOnly(file: Path): Boolean =
+            if (owner == null && fileAttributes.isNotEmpty()) {
+                Files.getPosixFilePermissions(file).none { it.name.startsWith("GROUP_") || it.name.startsWith("OTHERS_") }
+            } else {
+                val allowed = Files.getFileAttributeView(file, AclFileAttributeView::class.java)?.acl.orEmpty()
+                    .filter { it.type() == AclEntryType.ALLOW }.map { it.principal() }.toSet()
+                // An empty list means the volume keeps no ACL at all, which is the case being looked for.
+                allowed.isNotEmpty() && allowed == setOfNotNull(owner ?: runCatching { Files.getOwner(file) }.getOrNull())
+            }
 
         fun createDirectories(dir: Path) {
             withFallback({ Files.createDirectories(dir, *directoryAttributes) }, { Files.createDirectories(dir) })
@@ -278,6 +343,9 @@ class SpoolStore(
             private val OWNER_ONLY_DIRECTORY = PosixFilePermissions.fromString("rwx------")
             private val OWNER_ONLY_FILE = PosixFilePermissions.fromString("rw-------")
 
+            /** No restriction at all: what a volume that ignores permissions amounts to. */
+            internal fun none(warn: (String) -> Unit) = Privacy(emptyArray(), emptyArray(), owner = null, warn = warn)
+
             fun of(directory: Path, warn: (String) -> Unit): Privacy {
                 val views = directory.fileSystem.supportedFileAttributeViews()
                 if ("posix" in views) {
@@ -303,14 +371,23 @@ class SpoolStore(
              * one. (Elevated, the answer is the Administrators group. That is still correct: it is who
              * owns the files, and this process is a member.)
              */
-            private fun processOwner(): UserPrincipal? = runCatching {
-                val probe = Files.createTempFile("insightidr-mcp-owner", null)
+            private fun processOwner(): UserPrincipal? =
+                // The temp directory first; the home directory if that volume keeps no ACLs. Asking a
+                // FAT or exFAT volume (a RAM disk as TEMP) who owns a file gets the answer "Everyone",
+                // and an ACL built from that would GRANT every spool file to every user.
+                sequenceOf(System.getProperty("java.io.tmpdir"), System.getProperty("user.home"))
+                    .filterNotNull()
+                    .firstNotNullOfOrNull { dir -> runCatching { ownerAccordingTo(File(dir).toPath()) }.getOrNull() }
+
+            private fun ownerAccordingTo(dir: Path): UserPrincipal? {
+                val probe = Files.createTempFile(dir, "insightidr-mcp-owner", null)
                 try {
-                    Files.getOwner(probe)
+                    if (!Files.getFileStore(probe).supportsFileAttributeView(AclFileAttributeView::class.java)) return null
+                    return Files.getOwner(probe)
                 } finally {
                     Files.deleteIfExists(probe)
                 }
-            }.getOrNull()
+            }
 
             private fun aclAttribute(owner: UserPrincipal, inheritable: Boolean): FileAttribute<List<AclEntry>> {
                 val entry = AclEntry.newBuilder()

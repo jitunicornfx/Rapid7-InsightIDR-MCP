@@ -194,6 +194,8 @@ private fun runServer(transport: Transport, host: String, port: Int, config: Con
     // one spool directory per process is the right granularity.
     ResultBudget.install(ResultBudget(maxChars = config.maxResultChars))
     SpoolStore.install(SpoolStore.resolve(config.spoolDirectory))
+    // Now, while the operator is watching - not on the first spool, days later.
+    SpoolStore.active.auditAtStartup()
     UploadPolicy.install(UploadPolicy.resolve(config.uploadDirectory))
     // Narrowed from the post-flag-merge config, so the update flags reported by
     // insightidr_server_info reflect --no-update-check / --no-auto-update, not just the environment.

@@ -167,4 +167,101 @@ class SpoolStorePrivacyTest {
         assertTrue(warnings.none { "outside the home directory" in it }, "was: $warnings")
     }
 
+
+    // ---------------------------------------------------------------------
+    // The startup sweep runs in a directory that may be an operator's evidence folder.
+    // ---------------------------------------------------------------------
+
+    @Test
+    fun `the sweep removes only this server's own old files`() {
+        val dir = File(root, "evidence").apply { mkdirs() }
+        val store = store(dir)
+        val longAgo = System.currentTimeMillis() - 48L * 60 * 60 * 1000
+        fun aged(name: String) = File(dir, name).apply { writeText("x"); setLastModified(longAgo) }
+
+        val oldSpool = aged("${SpoolStore.FILE_PREFIX}20260101-000000-lk1-1${SpoolStore.FILE_SUFFIX}")
+        val oldManifest = aged("${SpoolStore.FILE_PREFIX}20260101-000000-lk1-1${SpoolStore.MANIFEST_SUFFIX}")
+        // Everything below is somebody else's, however old it is.
+        val analystsCase = aged("case-4411.ndjson")
+        val notes = aged("notes.txt")
+        val readme = aged(SpoolStore.README_NAME)
+        val lookAlike = aged("my-${SpoolStore.FILE_PREFIX}export${SpoolStore.FILE_SUFFIX}")
+        val freshSpool = File(dir, "${SpoolStore.FILE_PREFIX}20260921-000000-lk1-2${SpoolStore.FILE_SUFFIX}").apply { writeText("x") }
+
+        store.sweepStale(olderThanMillis = 24L * 60 * 60 * 1000)
+
+        assertFalse(oldSpool.exists(), "an old spool file is what the sweep is for")
+        assertFalse(oldManifest.exists(), "and its manifest goes with it")
+        for (kept in listOf(analystsCase, notes, readme, lookAlike, freshSpool)) {
+            assertTrue(kept.exists(), "${kept.name} must survive the sweep")
+        }
+    }
+
+    @Test
+    fun `a file whose age cannot be read is left alone`() {
+        // File.lastModified() reports "could not read it" as 0, which naive arithmetic reads as 50
+        // years stale. Only a file KNOWN to be old is deleted.
+        val dir = File(root, "spool").apply { mkdirs() }
+        val unreadable = File(dir, "${SpoolStore.FILE_PREFIX}x${SpoolStore.FILE_SUFFIX}").apply { writeText("x") }
+        assertTrue(unreadable.setLastModified(0), "precondition: the platform lets the test set an epoch mtime")
+
+        store(dir).sweepStale(olderThanMillis = 1)
+
+        assertTrue(unreadable.exists())
+    }
+
+    // ---------------------------------------------------------------------
+    // Telling the operator, at the time they are looking.
+    // ---------------------------------------------------------------------
+
+    @Test
+    fun `an existing spool directory is audited at startup, without being created or changed`() {
+        val shared = File(root, "shared-evidence").apply { mkdirs() }
+        share(shared)
+        val store = store(shared)
+
+        store.auditAtStartup()
+
+        assertEquals(1, warnings.count { "accessible to" in it }, "said at startup, while the operator is watching: $warnings")
+        assertFalse(File(shared, SpoolStore.README_NAME).exists(), "auditing is not preparing: nothing is written yet")
+
+        store.prepare()
+        assertEquals(1, warnings.count { "accessible to" in it }, "and not said a second time on first use")
+    }
+
+    @Test
+    fun `auditing at startup never creates the spool directory`() {
+        val absent = File(root, "not-yet")
+        store(absent).auditAtStartup()
+        assertFalse(absent.exists(), "a server that never spools should leave no directory behind")
+        assertTrue(warnings.none { "accessible to" in it })
+    }
+
+    @Test
+    fun `a file that did not come out private is reported, once`() {
+        // FAT, exFAT and some network shares accept the owner-only attribute and quietly ignore it:
+        // no exception, so nothing to catch. The only way to know is to look at what was created.
+        val shared = File(root, "shared-evidence").apply { mkdirs() }
+        share(shared)
+        val store = SpoolStore(
+            directory = shared.toPath(),
+            isDefaultLocation = false,
+            warn = { warnings += it },
+            homeDirectory = null,
+            privacyFor = { _, warn -> SpoolStore.Privacy.none(warn) },
+        )
+
+        store.newSpoolFile("lk1")
+        store.newSpoolFile("lk2")
+
+        assertEquals(1, warnings.count { "could not be made private" in it }, "$warnings")
+    }
+
+    @Test
+    fun `files that did come out private raise no such warning`() {
+        val shared = File(root, "shared-evidence").apply { mkdirs() }
+        share(shared)
+        store(shared).newSpoolFile("lk1")
+        assertTrue(warnings.none { "could not be made private" in it }, "$warnings")
+    }
 }
