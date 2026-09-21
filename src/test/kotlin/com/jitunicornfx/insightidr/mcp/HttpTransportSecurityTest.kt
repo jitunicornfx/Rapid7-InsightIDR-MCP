@@ -244,6 +244,46 @@ class HttpTransportSecurityTest {
         }
 
     @Test
+    fun `requests that present no credential do not spend the lockout budget`() = app(loopbackToken.copy(maxAuthFailures = 3)) { c ->
+        // A web page cannot attach an Authorization header to a cross-site request, but it can fire
+        // as many credential-less ones as it likes: `new Image().src = "http://127.0.0.1:3001/"` sends
+        // no Origin (so the origin check does not apply) and the right Host. If those counted, any
+        // page the analyst opened could lock them out of their own server, a minute at a time.
+        repeat(25) {
+            assertEquals(HttpStatusCode.Unauthorized, c.get("/mcp") { header(HttpHeaders.Host, "127.0.0.1:3072") }.status)
+        }
+        val owner = c.get("/mcp") { header(HttpHeaders.Host, "localhost"); header(HttpHeaders.Authorization, "Bearer s3cret-token") }
+        assertEquals(HttpStatusCode.OK, owner.status, "the real user must not have been locked out")
+
+        // Guessing still costs: a PRESENTED token that is wrong is what the budget is for.
+        repeat(3) {
+            c.get("/mcp") { header(HttpHeaders.Host, "localhost"); header(HttpHeaders.Authorization, "Bearer guess-$it") }
+        }
+        val afterGuessing = c.get("/mcp") { header(HttpHeaders.Host, "localhost"); header(HttpHeaders.Authorization, "Bearer s3cret-token") }
+        assertEquals(HttpStatusCode.TooManyRequests, afterGuessing.status)
+    }
+
+    @Test
+    fun `only a real preflight is excused the token, not any OPTIONS that names an origin`() =
+        app(loopbackToken.copy(allowedOrigins = listOf("http://localhost:5173"))) { c ->
+            // A preflight always carries Access-Control-Request-Method; that header is what makes the
+            // CORS plugin answer it. Without it CORS steps aside, and the request would go on to the
+            // MCP routes having skipped authentication.
+            val notAPreflight = c.options("/mcp") {
+                header(HttpHeaders.Host, "localhost:5173")
+                header(HttpHeaders.Origin, "http://localhost:5173")
+            }
+            assertEquals(HttpStatusCode.Unauthorized, notAPreflight.status)
+
+            val preflight = c.options("/mcp") {
+                header(HttpHeaders.Host, "localhost:3072")
+                header(HttpHeaders.Origin, "http://localhost:5173")
+                header(HttpHeaders.AccessControlRequestMethod, "POST")
+            }
+            assertEquals(HttpStatusCode.OK, preflight.status)
+        }
+
+    @Test
     fun `loopback is decided from the literal address, never from DNS`() {
         for (local in listOf("127.0.0.1", "127.5.5.5", "localhost", "LOCALHOST", "::1", "[::1]", " 127.0.0.1 ")) {
             assertTrue(isLoopback(local), local)

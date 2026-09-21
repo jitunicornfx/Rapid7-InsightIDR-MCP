@@ -107,8 +107,9 @@ internal class AuthFailureLimiter(
  *  3. **Bearer token** — when configured, every request must carry the exact token; comparison is
  *     constant-time. Startup refuses to bind a non-loopback interface without a token.
  *  4. **Body size cap** — declared `Content-Length` above the limit is refused with 413.
- *  5. **Brute-force throttle** — after [HttpSecurity.maxAuthFailures] bad tokens from one client
- *     address within the window, further attempts get 429 until the window passes.
+ *  5. **Brute-force throttle** — after [HttpSecurity.maxAuthFailures] WRONG tokens from one client
+ *     address within the window, further attempts get 429 until the window passes. A request that
+ *     presents no token at all is refused but not counted: see the comment at the check.
  *  6. **CORS** — default-deny; only the allow-listed origins get CORS headers.
  */
 fun Application.installTransportSecurity(security: HttpSecurity) {
@@ -145,8 +146,14 @@ fun Application.installTransportSecurity(security: HttpSecurity) {
             }
         }
 
-        // CORS preflights carry no credentials; let the CORS plugin answer them (only for allowed origins).
-        val isPreflight = request.httpMethod == HttpMethod.Options && request.header(HttpHeaders.Origin) != null
+        // A CORS preflight carries no credentials, so the CORS plugin is left to answer it (and it only
+        // grants anything to an allow-listed origin). "Preflight" means exactly what that plugin means
+        // by it: OPTIONS, an Origin, AND Access-Control-Request-Method. Without that last header the
+        // plugin steps aside, and an OPTIONS excused the token would go on to the MCP routes
+        // unauthenticated.
+        val isPreflight = request.httpMethod == HttpMethod.Options &&
+            request.header(HttpHeaders.Origin) != null &&
+            request.header(HttpHeaders.AccessControlRequestMethod) != null
 
         security.token?.let { expected ->
             if (!isPreflight) {
@@ -158,7 +165,12 @@ fun Application.installTransportSecurity(security: HttpSecurity) {
                 }
                 val presented = request.header(HttpHeaders.Authorization)?.let(::bearerToken)
                 if (presented == null || !constantTimeEquals(presented, expected)) {
-                    limiter.recordFailure(client)
+                    // Only a token that was PRESENTED and wrong counts towards the lockout. Guessing
+                    // needs a presented token, so nothing is lost; but a request with no credential
+                    // is something any web page can make a browser send to 127.0.0.1 — no Origin on
+                    // a no-cors GET, the right Host — and if those counted, any page the analyst
+                    // opened could lock them out of their own server a minute at a time.
+                    if (presented != null) limiter.recordFailure(client)
                     call.response.header(HttpHeaders.WWWAuthenticate, "Bearer realm=\"$SERVER_NAME\"")
                     call.respondText("Unauthorized.", status = HttpStatusCode.Unauthorized)
                     return@intercept finish()
