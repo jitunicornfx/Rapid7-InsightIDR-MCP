@@ -177,6 +177,19 @@ fun JsonObject.requireStringAllowEmpty(key: String): String =
 fun JsonObject.intOrNull(key: String): Int? =
     primitive(key)?.let { it.intOrNull ?: it.contentOrNull?.toIntOrNull() }
 
+private val PLAIN_TOKEN = Regex("^[A-Za-z0-9_.-]{1,32}$")
+
+/**
+ * How to mention a rejected argument value in an error message: quoted when it is a short plain
+ * token, otherwise not at all.
+ *
+ * "got 'LIKE'" genuinely helps a model correct itself. But the value is the model's, often lifted
+ * from alert or log data, and the message is the server's own voice - so anything that could carry
+ * prose or a line break is described rather than repeated.
+ */
+internal fun echoToken(value: String?): String =
+    if (value != null && PLAIN_TOKEN.matches(value)) "got '$value'" else "got a value that is not one of them"
+
 /**
  * An optional integer that GUARDS something: absent is fine, present-but-unreadable is an error.
  *
@@ -321,17 +334,26 @@ internal fun newEnvelopeNonce(): String = ByteArray(8).also(nonceSource::nextByt
 private val MARKER_SHAPED = Regex("""(?iuU)(BEGIN|END)\s++UNTRUSTED\s++INSIGHTIDR\s++API\s++DATA""")
 
 /**
- * Whether [c] is invisible, or silently changes how the text around it is displayed.
+ * Whether code point [cp] is invisible, renders as a blank, or silently changes how the text around
+ * it is displayed.
  *
- * Bidi overrides can make text read in a different order than it is stored; zero-width characters
- * can split a word so it no longer matches a filter while looking identical; and the plane-14 tag
- * block is a known channel for instructions a human reviewer cannot see at all. Plane 14 is reached
- * through its high surrogates (U+DB40..U+DB43), since a Kotlin String is UTF-16.
+ * Bidi overrides make text read in a different order than it is stored. Zero-width characters, the
+ * combining grapheme joiner and variation selectors can sit INSIDE a word so it no longer matches
+ * a filter while looking identical. The Hangul fillers and the braille blank look like a space and
+ * are not one, so they can stand between the words of a forged marker where `\s` does not reach.
+ * The plane-14 tag block is a known channel for instructions a human reviewer cannot see at all.
  */
-private fun isInvisible(c: Char): Boolean = when (c.code) {
-    0x00AD, 0x061C, 0x180E, 0xFEFF -> true
-    in 0x200B..0x200F, in 0x2028..0x202E, in 0x2060..0x206F, in 0xFFF9..0xFFFB -> true
-    in 0xDB40..0xDB43 -> true
+private fun isInvisible(cp: Int): Boolean = when (cp) {
+    // Control characters. The JSON encoder already escapes everything below U+0020, so these only
+    // ever arrive raw in a body that is NOT JSON (a downloaded log, an HTML error page) - where an
+    // ESC begins an ANSI sequence that can hide or recolour text in a terminal client, and a
+    // backspace or bare carriage return can overwrite what came before it. Tab and line feed are
+    // ordinary text; a carriage return is too, but only as half of CRLF (see escapeInvisible).
+    in 0x00..0x08, 0x0B, 0x0C, in 0x0E..0x1F, in 0x7F..0x9F -> true
+    0x00AD, 0x034F, 0x061C, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x2800, 0x3164, 0xFEFF, 0xFFA0 -> true
+    in 0x180B..0x180F, in 0x200B..0x200F, in 0x2028..0x202E, in 0x2060..0x206F -> true
+    in 0xFE00..0xFE0F, in 0xFFF9..0xFFFB -> true
+    in 0x1BCA0..0x1BCA3, in 0x1D173..0x1D17A, in 0xE0000..0xE0FFF -> true
     else -> false
 }
 
@@ -340,7 +362,8 @@ private fun StringBuilder.appendEscaped(c: Char) {
 }
 
 /**
- * Rewrite every invisible or display-altering character in [text] as its `\uXXXX` escape.
+ * Rewrite every invisible or display-altering character in [text] as its `\uXXXX` escape (a
+ * supplementary character as its two surrogate escapes, which is how JSON spells it).
  *
  * Escaped, NOT stripped. This server fronts a SIEM: a right-to-left override inside a file name is
  * itself an indicator of compromise, and deleting it would destroy the evidence an analyst is
@@ -352,22 +375,28 @@ private fun StringBuilder.appendEscaped(c: Char) {
  * same instance when there is nothing to escape, which is nearly always.
  */
 internal fun escapeInvisible(text: String): String {
-    val first = text.indexOfFirst(::isInvisible)
-    if (first < 0) return text
-    val out = StringBuilder(text.length + 64).append(text, 0, first)
-    var i = first
+    // A carriage return is left alone as half of a CRLF line ending and escaped on its own, where
+    // all it can do is send a terminal back to the start of the line to overwrite it.
+    fun hides(cp: Int, at: Int) = isInvisible(cp) || (cp == 0x0D && text.getOrNull(at + 1) != '\n')
+
+    var i = 0
     while (i < text.length) {
-        val c = text[i]
-        if (!isInvisible(c)) {
-            out.append(c)
+        val cp = text.codePointAt(i)
+        if (hides(cp, i)) break
+        i += Character.charCount(cp)
+    }
+    if (i >= text.length) return text
+
+    val out = StringBuilder(text.length + 64).append(text, 0, i)
+    while (i < text.length) {
+        val cp = text.codePointAt(i)
+        val width = Character.charCount(cp)
+        if (hides(cp, i)) {
+            for (k in 0 until width) out.appendEscaped(text[i + k])
         } else {
-            out.appendEscaped(c)
-            // The low half of a plane-14 pair is meaningless alone; escape it with its high half.
-            if (c.isHighSurrogate() && i + 1 < text.length && text[i + 1].isLowSurrogate()) {
-                out.appendEscaped(text[++i])
-            }
+            out.append(text, i, i + width)
         }
-        i++
+        i += width
     }
     return out.toString()
 }

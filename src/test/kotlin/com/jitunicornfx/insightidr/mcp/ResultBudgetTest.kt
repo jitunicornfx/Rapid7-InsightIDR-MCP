@@ -94,23 +94,57 @@ class ResultBudgetTest {
 
     @Test
     fun `links is never chosen for trimming even when it is the largest top-level array`() {
-        // The trimmer picks the LARGEST top-level array. Construct a document where that would be
-        // `links`, with the Next href last so a head-first trim would drop it. Only NEVER_TRIM_KEYS
-        // stops that, so this is the test that fails if the guard is removed.
-        // 12 link entries vs 5 events, so `links` is the array the size rule would pick.
-        val fillers = (0 until 11).joinToString(",") { """{"rel":"filler$it","href":"${"p".repeat(200)}"}""" }
+        // The trimmer tries the array taking the most SPACE first. Here that is `links` - long hrefs,
+        // with the Next href last so a head-first trim would drop it. Only NEVER_TRIM_KEYS stops that,
+        // so this is the test that fails if the guard is removed.
+        val fillers = (0 until 11).joinToString(",") { """{"rel":"filler$it","href":"${"p".repeat(600)}"}""" }
         val links = """"links":[$fillers,{"rel":"Next","href":"https://us.rest.logs.insight.rapid7.com/query/next-1"}]"""
-        val events = (0 until 5).joinToString(",") { """{"id":$it,"message":"${"x".repeat(900)}"}""" }
+        val events = (0 until 20).joinToString(",") { """{"id":$it,"message":"${"x".repeat(150)}"}""" }
         val body = """{$links,"events":[$events]}"""
+        assertTrue(links.length > events.length * 2, "precondition: links is what takes the space")
 
-        val text = textOf(ok(body, ResultBudget(maxChars = 6_000)))
+        val text = textOf(ok(body, ResultBudget(maxChars = 9_000)))
 
         val parsed = JsonCodec.compact.parseToJsonElement(fenced(text)).jsonObject
         assertEquals(12, parsed["links"]!!.jsonArray.size, "every link entry must survive")
         assertTrue("query/next-1" in text, "the Next href must never be trimmed away")
-        // The events array was trimmed instead — that is the array the caller can afford to lose.
-        assertTrue(parsed["events"]!!.jsonArray.size < 5)
+        // The events array was trimmed instead - that is the array the caller can afford to lose.
+        assertTrue(parsed["events"]!!.jsonArray.size < 20)
         assertEquals("events", parsed[ResultBudget.TRUNCATION_KEY]!!.jsonObject["array"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `when two arrays could each make room, the bigger one gives it`() {
+        // 300 tiny entries (about 6 KB) beside 20 large ones (about 40 KB), a little over budget.
+        // Either could be trimmed to fit. By count the tiny array would lose half its entries; by
+        // size the large one loses a couple, which is what "the largest array" has always meant.
+        val tiny = (0 until 300).joinToString(",") { """{"k":"tag-$it"}""" }
+        val large = (0 until 20).joinToString(",") { """{"id":$it,"message":"${"x".repeat(2_000)}"}""" }
+        val body = """{"tags":[$tiny],"events":[$large]}"""
+        // Over budget by less than the small array holds, so trimming EITHER array alone would fit.
+        // That is what makes this about the choice, not about falling back when the first fails.
+        val limit = body.length - 1_500
+        assertTrue(tiny.length > 1_500 + 1_000, "precondition: the small array alone could make the room")
+
+        val parsed = JsonCodec.compact.parseToJsonElement(fenced(textOf(ok(body, ResultBudget(maxChars = limit))))).jsonObject
+
+        assertEquals("events", parsed[ResultBudget.TRUNCATION_KEY]!!.jsonObject["array"]!!.jsonPrimitive.content)
+        assertEquals(300, parsed["tags"]!!.jsonArray.size, "the small array is left whole")
+    }
+
+    @Test
+    fun `when the biggest array cannot be trimmed, the next one is tried`() {
+        // One enormous element cannot be trimmed (there is nothing to drop but all of it). Giving up
+        // there would cut the document mid-way; the events beside it can still make room.
+        val blob = """{"raw":"${"b".repeat(30_000)}"}"""
+        val events = (0 until 100).joinToString(",") { """{"id":$it,"message":"${"x".repeat(250)}"}""" }
+        val body = """{"attachment":[$blob],"events":[$events]}"""
+
+        val text = textOf(ok(body, ResultBudget(maxChars = 45_000)))
+        val parsed = JsonCodec.compact.parseToJsonElement(fenced(text)).jsonObject
+
+        assertEquals(1, parsed["attachment"]!!.jsonArray.size)
+        assertTrue(parsed["events"]!!.jsonArray.size in 1..99, "valid JSON, with the events trimmed")
     }
 
     @Test
@@ -221,6 +255,24 @@ class ResultBudgetTest {
         assertFalse("SYSTEM" in hostile, "was: $hostile")
         assertTrue("the largest array" in hostile)
         assertFalse("x".repeat(70) in noticeFor("x".repeat(500)), "nor may it be unbounded")
+    }
+
+    @Test
+    fun `the array that is trimmed is the one taking the space, not the one with the most entries`() {
+        // A logset query over 150 logs: 150 small "logs" entries, 100 large events. Chosen by COUNT,
+        // "logs" is picked, emptying it frees almost nothing, the trim gives up, and the body is cut
+        // mid-document: invalid JSON, and the Next link - which sits at the END - is lost.
+        val logs = (0 until 150).joinToString(",") { """{"id":"log-$it","name":"n$it"}""" }
+        val events = (0 until 100).joinToString(",") { """{"id":$it,"message":"${"x".repeat(1_500)}"}""" }
+        val body = """{"logs":[$logs],"events":[$events],"links":[{"rel":"Next","href":"https://us.rest.logs.insight.rapid7.com/query/next"}]}"""
+
+        val text = textOf(ok(body, ResultBudget(maxChars = 60_000)))
+        val parsed = JsonCodec.compact.parseToJsonElement(fenced(text)).jsonObject
+
+        assertEquals(150, parsed["logs"]!!.jsonArray.size, "the small array is left whole")
+        assertTrue(parsed["events"]!!.jsonArray.size in 1..99, "the large one is what gets trimmed")
+        assertEquals("Next", parsed["links"]!!.jsonArray.single().jsonObject["rel"]!!.jsonPrimitive.content, "and the way to the next page survives")
+        assertEquals("events", parsed[ResultBudget.TRUNCATION_KEY]!!.jsonObject["array"]!!.jsonPrimitive.content)
     }
 
     @Test

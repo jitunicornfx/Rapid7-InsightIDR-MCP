@@ -127,8 +127,13 @@ internal fun renderWithinBudget(raw: String, budget: ResultBudget, ok: Boolean):
 
     // Rung 2 — compact. Recovers the whitespace pretty added, which rescues bodies in the
     // [limit, ~2x limit] band. It does not shrink an already-dense API response.
+    // Encoding failed (nesting deep enough to overflow the encoder), so fall back to the text as it
+    // arrived - escaped first, like every other path, and returned whole if that already fits.
     val compact = encodeOrNull(JsonCodec.compact, element)
-        ?: return lineAwareCut(raw, limit, budget, wasJson = false)
+        ?: return escapeInvisible(raw).let { text ->
+            if (text.length <= limit) BudgetedBody(text, null, BudgetStrategy.PRETTY)
+            else lineAwareCut(text, limit, budget, wasJson = false)
+        }
     if (compact.length <= limit) {
         return BudgetedBody(compact, compactedNotice(limit), BudgetStrategy.COMPACT)
     }
@@ -175,27 +180,26 @@ private fun encodeOrNull(json: Json, element: JsonElement): String? = try {
  * DIRECT children of the root are considered — recursing would produce a valid-but-misleading
  * document for a marginal saving.
  */
-private fun trimLargestArray(root: JsonElement, limit: Int, budget: ResultBudget): BudgetedBody? {
-    val key: String?
-    val array: JsonArray
-    when (root) {
-        is JsonArray -> {
-            key = null
-            array = root
-        }
+private fun trimLargestArray(root: JsonElement, limit: Int, budget: ResultBudget): BudgetedBody? = when (root) {
+    is JsonArray -> trimArray(root, null, root, limit, budget)
 
-        is JsonObject -> {
-            val candidate = root.entries
-                .filter { it.key !in ResultBudget.NEVER_TRIM_KEYS }
-                .mapNotNull { entry -> (entry.value as? JsonArray)?.let { entry.key to it } }
-                .maxByOrNull { it.second.size }
-                ?: return null
-            key = candidate.first
-            array = candidate.second
-        }
+    // "Largest" means largest ENCODED, not most entries. A logset query over 150 logs returns 150
+    // small `logs` entries beside 100 large events; chosen by count, `logs` wins, emptying it frees
+    // almost nothing, the trim gives up and the body is cut mid-document - invalid JSON, and the
+    // Next link at the end of it lost. Candidates are tried biggest first, so a body with two large
+    // arrays still trims if either one can make it fit.
+    is JsonObject -> root.entries.asSequence()
+        .filter { it.key !in ResultBudget.NEVER_TRIM_KEYS }
+        .mapNotNull { entry -> (entry.value as? JsonArray)?.let { entry.key to it } }
+        .map { (key, array) -> Triple(key, array, encodeOrNull(JsonCodec.compact, array)?.length ?: 0) }
+        .sortedByDescending { it.third }
+        .firstNotNullOfOrNull { (key, array, _) -> trimArray(root, key, array, limit, budget) }
 
-        else -> return null
-    }
+    else -> null
+}
+
+/** Trim [array] - the root itself when [key] is null, else `root[key]` - so that the document fits. */
+private fun trimArray(root: JsonElement, key: String?, array: JsonArray, limit: Int, budget: ResultBudget): BudgetedBody? {
     if (array.size < 2) return null
 
     // One pass: encode each entry once and accumulate. No binary search, no repeated whole-document

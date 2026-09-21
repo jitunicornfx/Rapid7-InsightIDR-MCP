@@ -13,7 +13,9 @@ import java.nio.file.StandardOpenOption
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
@@ -74,6 +76,21 @@ internal fun safeMediaType(contentType: String?): String =
 
 private fun String.shortened(max: Int): String =
     if (length <= max) this else take(max) + " ... (${length - max} more characters)"
+
+/** `take` can split a surrogate pair; a dangling half must not be emitted. */
+private fun String.dropLoneSurrogate(): String = if (isNotEmpty() && last().isHighSurrogate()) dropLast(1) else this
+
+/**
+ * An argument echoed into the summary, as ONE line that cannot be mistaken for the summary's own.
+ *
+ * These are the model's own arguments, but a model pivots on values it read in alerts and logs, so
+ * they are attacker-influenced. Echoed raw, a query containing line breaks writes its own `status:`
+ * line and resume instruction into text the server speaks in its own voice. Rendered as a JSON
+ * string, line breaks become `\n`, quotes are escaped, invisible characters are made visible, and
+ * the whole stays on the line it was put on.
+ */
+private fun echoed(value: String, max: Int): String =
+    escapeInvisible(JsonCodec.compact.encodeToString(JsonPrimitive.serializer(), JsonPrimitive(value.shortened(max))))
 
 /**
  * Log Search API — spool a whole result set to a file instead of into the conversation.
@@ -280,7 +297,9 @@ internal fun Server.registerLogSearchSpoolTools(client: Rapid7Client, spool: Spo
                         break@loop
                     }
                     if (samples.size < sampleCount) {
-                        io.encode(event)?.let { samples += it.take(SPOOL_SAMPLE_EVENT_CHARS) }
+                        // Escaped BEFORE it is shortened: an escape is six times what it replaces, so
+                        // 2,000 zero-width characters cut first would still come out as 12,000.
+                        io.encode(event)?.let { samples += escapeInvisible(it).take(SPOOL_SAMPLE_EVENT_CHARS).dropLoneSurrogate() }
                     }
                     eventTimestamp(event)?.let {
                         if (firstTimestamp == null) firstTimestamp = it
@@ -612,13 +631,13 @@ private fun spoolSummary(
     append("  status:    $status\n")
     logKeys?.let { keys ->
         val shown = keys.take(SPOOL_SUMMARY_MAX_KEYS).joinToString(", ") { key ->
-            key.toString().trim('"').take(SPOOL_SUMMARY_KEY_CHARS)
+            echoed((key as? JsonPrimitive)?.contentOrNull ?: key.toString(), SPOOL_SUMMARY_KEY_CHARS)
         }
         val more = if (keys.size > SPOOL_SUMMARY_MAX_KEYS) " (+${keys.size - SPOOL_SUMMARY_MAX_KEYS} more)" else ""
         append("  logs:      $shown$more\n")
     }
-    queryText?.let { append("  query:     ${it.shortened(SPOOL_SUMMARY_QUERY_CHARS)}\n") }
-    append("  window:    ${window.shortened(SPOOL_SUMMARY_WINDOW_CHARS)}\n")
+    queryText?.let { append("  query:     ${echoed(it, SPOOL_SUMMARY_QUERY_CHARS)}\n") }
+    append("  window:    ${echoed(window, SPOOL_SUMMARY_WINDOW_CHARS)}\n")
     if (path != null) {
         append("  retention: swept automatically after the configured retention period — copy it elsewhere to keep it\n")
     }

@@ -9,7 +9,7 @@ private fun contentTypeForFormat(format: String): ContentType = when (format.tri
     "json" -> ContentType.Application.Json
     "csv" -> ContentType.Text.CSV
     "stix_xml" -> ContentType.Text.Xml
-    else -> throw IllegalArgumentException("Unsupported indicator format '$format'. Use json, csv, or stix_xml.")
+    else -> throw IllegalArgumentException("Unsupported indicator format (${echoToken(format)}). Use json, csv, or stix_xml.")
 }
 
 /** Registers the InsightIDR API v1 Community Threats tools (custom threat feeds and their indicators). */

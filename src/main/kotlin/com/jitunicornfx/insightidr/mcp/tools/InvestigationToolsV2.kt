@@ -94,7 +94,7 @@ private fun validateSearchCriteria(search: JsonArray?) {
         val operator = obj.primitiveText("operator")
         if (operator == null || operator.uppercase() !in SEARCH_OPERATORS) {
             throw IllegalArgumentException(
-                "search[$i].operator must be one of ${SEARCH_OPERATORS.joinToString(", ")} (got '${operator ?: "null"}').",
+                "search[$i].operator must be one of ${SEARCH_OPERATORS.joinToString(", ")} (${echoToken(operator)}).",
             )
         }
         if (obj["value"].let { it == null || it is JsonNull }) {
@@ -113,7 +113,7 @@ private fun validateSort(sort: JsonArray?) {
         }
         val order = obj.primitiveText("order")
         if (order == null || order.uppercase() !in listOf("ASC", "DESC")) {
-            throw IllegalArgumentException("sort[$i].order must be ASC or DESC (got '${order ?: "null"}').")
+            throw IllegalArgumentException("sort[$i].order must be ASC or DESC (${echoToken(order)}).")
         }
     }
 }
