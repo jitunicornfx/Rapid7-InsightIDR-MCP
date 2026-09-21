@@ -12,9 +12,10 @@ import com.github.ajalt.clikt.parameters.options.switch
 import com.github.ajalt.clikt.parameters.types.int
 import io.ktor.server.cio.*
 import io.ktor.server.engine.*
+import io.ktor.server.routing.routing
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.StdioServerTransport
-import io.modelcontextprotocol.kotlin.sdk.server.mcp
+import io.modelcontextprotocol.kotlin.sdk.server.mcpStreamableHttp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -22,6 +23,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.io.asSink
@@ -33,6 +35,30 @@ import java.io.PrintStream
 private const val DEFAULT_HTTP_HOST = "127.0.0.1"
 private const val DEFAULT_HTTP_PORT = 3001
 
+/** Streamable HTTP, the current MCP transport: POST/GET/DELETE on one path, sessions by header. */
+const val STREAMABLE_HTTP_PATH = "/mcp"
+
+/** The older HTTP+SSE transport: GET opens the event stream, POST `?sessionId=` carries messages. */
+const val LEGACY_SSE_PATH = "/sse"
+
+/**
+ * Where the legacy transport used to live, and the only URL 0.3.x clients know. Kept for one release
+ * so that an unattended self-update does not strand them; new configurations should use
+ * [STREAMABLE_HTTP_PATH]. Remove together with its README note.
+ */
+const val DEPRECATED_ROOT_SSE_PATH = "/"
+
+/**
+ * How long to wait, after a client says `initialized`, before pushing it the update notice.
+ *
+ * Over Streamable HTTP a server-initiated message travels on a stream the CLIENT opens with a GET,
+ * and clients open it just after `initialized`, not before. A notice sent the instant `initialized`
+ * arrives therefore has nowhere to go and is dropped. This gives the client time to open the stream.
+ * It remains best-effort: a client that never opens one never gets the push, which is why
+ * `insightidr_server_info` — a request the client makes — is the authoritative answer.
+ */
+internal const val HTTP_NOTIFY_GRACE_MILLIS = 2_000L
+
 /** Guards [autoInstall] so a release is downloaded and installed at most once per process. */
 private val installAttempted = java.util.concurrent.atomic.AtomicBoolean(false)
 
@@ -43,7 +69,7 @@ internal enum class Transport { STDIO, HTTP }
  *
  * Transports:
  *  - `--stdio` (default): standard MCP stdio transport for local desktop clients.
- *  - `--http`: Streamable HTTP / SSE transport, bound to `--host`/`--port`.
+ *  - `--http`: Streamable HTTP on `/mcp` (and legacy HTTP+SSE on `/sse`), bound to `--host`/`--port`.
  *
  * All diagnostics are written to stderr so stdout stays reserved for the JSON-RPC channel.
  *
@@ -363,13 +389,25 @@ internal class HttpRuntime(
 }
 
 /** Build the HTTP transport — the request guard, then the MCP routes — without starting it. */
-internal fun buildHttpRuntime(client: Rapid7Client, config: Config, host: String, port: Int): HttpRuntime {
+internal fun buildHttpRuntime(
+    client: Rapid7Client,
+    config: Config,
+    host: String,
+    port: Int,
+    notifyGraceMillis: Long = HTTP_NOTIFY_GRACE_MILLIS,
+    /** Starts the one update check for the process. A parameter so tests need not call GitHub. */
+    startCheck: CoroutineScope.(Config) -> Deferred<UpdateChecker.Result>? = { startUpdateCheck(it) },
+): HttpRuntime {
     // The command already refuses this. Checked again here because this is what actually opens the
     // port, and a second caller must not be able to skip the rule by not going through the command.
     require(unauthenticatedExposure(Transport.HTTP, host, config) == null) {
         "Refusing to serve HTTP on a non-loopback address without ${Config.ENV_HTTP_TOKEN}."
     }
     System.err.println("[insightidr-mcp] Starting over HTTP on $host:$port — region=${config.region.code}, baseUrl=${config.baseUrl}")
+    System.err.println(
+        "[insightidr-mcp] Streamable HTTP at $STREAMABLE_HTTP_PATH; legacy HTTP+SSE at $LEGACY_SSE_PATH " +
+            "(and, deprecated, at $DEPRECATED_ROOT_SSE_PATH).",
+    )
     if (config.httpAuthToken == null) {
         System.err.println(
             "[insightidr-mcp] WARNING: no ${Config.ENV_HTTP_TOKEN} is set, so ANY local process — and any web " +
@@ -379,7 +417,7 @@ internal fun buildHttpRuntime(client: Rapid7Client, config: Config, host: String
     // One check for the process, shared by every connecting session (a server is built per
     // connection); a supervisor scope keeps a failed check from cancelling anything else.
     val checkScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    val updateCheck = checkScope.startUpdateCheck(config)
+    val updateCheck = checkScope.startCheck(config)
     val engine = embeddedServer(CIO, host = host, port = port) {
         // FIRST, ahead of routing: nothing below may run for a request the guard would refuse.
         installTransportSecurity(
@@ -398,6 +436,7 @@ internal fun buildHttpRuntime(client: Rapid7Client, config: Config, host: String
                         if (result == null) {
                             UpdateStatus.markCheckFailed()
                         } else {
+                            delay(notifyGraceMillis) // see HTTP_NOTIFY_GRACE_MILLIS
                             server.notifyUpdateAvailable(session, result)
                             if (result.updateAvailable) {
                                 val outcome = autoInstall(config, result)
@@ -413,7 +452,14 @@ internal fun buildHttpRuntime(client: Rapid7Client, config: Config, host: String
         // both. With it on, an allow-listed browser origin was let through by CORS and then refused
         // here — the setting had never worked. installTransportSecurity above does the same checks
         // with that knowledge, and runs first.
-        mcp(enableDnsRebindingProtection = false) { newServer() }
+        //
+        // Streamable HTTP first: it installs the Ktor SSE plugin that the legacy routes below need,
+        // and installing that plugin twice throws.
+        mcpStreamableHttp(path = STREAMABLE_HTTP_PATH, enableDnsRebindingProtection = false) { newServer() }
+        routing {
+            legacySseTransport(LEGACY_SSE_PATH, newServer = newServer)
+            legacySseTransport(DEPRECATED_ROOT_SSE_PATH, newServer = newServer)
+        }
     }
     return HttpRuntime(engine, checkScope, updateCheck, client)
 }

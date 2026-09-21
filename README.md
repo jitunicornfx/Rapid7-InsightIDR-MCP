@@ -96,6 +96,16 @@ INSIGHTIDR_API_KEY=xxxx INSIGHTIDR_REGION=us \
 
 ### HTTP
 
+Serves two MCP transports on one port:
+
+| Path | Transport | Use it when |
+|---|---|---|
+| `/mcp` | **Streamable HTTP** (current MCP spec) | Always, if your client supports it. |
+| `/sse` | HTTP+SSE (the older transport) | Your client only speaks the older transport. |
+| `/` | HTTP+SSE, **deprecated** | Never for new setups. This is where 0.3.x served it; it stays for one release so that a self-updated server does not strand existing clients, and will then be removed. Move to `/mcp` or `/sse`. |
+
+So a client URL looks like `http://127.0.0.1:3001/mcp`.
+
 Binds to `127.0.0.1:3001` by default, which only programs on the same machine can reach. Override the
 port with `--port`:
 
@@ -152,6 +162,15 @@ What the transport checks, in this order, before any MCP code runs:
 Browsers are denied by default. To let a web client in, list its origin in
 `INSIGHTIDR_HTTP_ALLOWED_ORIGINS`; it still needs the token. Only a CORS *preflight* is answered
 without one, because a browser cannot attach credentials to a preflight.
+
+**Update notices over HTTP are best-effort.** Under Streamable HTTP a message the server initiates
+travels on a stream the *client* opens, shortly after it connects, and a notice sent before that
+stream exists is dropped rather than queued. The server waits two seconds before announcing an
+update to give the client time; a client that never opens the stream never hears. The
+`insightidr_server_info` tool always has the current answer.
+
+Sessions last until the client ends them or the server restarts; an abandoned session is not yet
+expired on a timer.
 
 Run `--help` to see all options. You can also run during development with
 `./gradlew run --args="--stdio"`.
