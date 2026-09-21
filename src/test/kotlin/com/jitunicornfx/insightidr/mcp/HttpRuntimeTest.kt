@@ -220,6 +220,28 @@ class HttpRuntimeTest {
     }
 
     @Test
+    fun `a legacy message with no session, or someone else's guess at one, goes nowhere`() = runBlocking {
+        // The legacy transport addresses a session by an id in the query string. A message for a
+        // session that does not exist must not reach any server, and says nothing about the others.
+        val base = start(tokenConfig)
+        for (path in listOf(LEGACY_SSE_PATH, DEPRECATED_ROOT_SSE_PATH)) {
+            val noSession = http.post("$base$path") {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                contentType(ContentType.Application.Json)
+                setBody(initialize)
+            }
+            assertEquals(HttpStatusCode.BadRequest, noSession.status, path)
+
+            val guessed = http.post("$base$path?sessionId=00000000-0000-0000-0000-000000000000") {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                contentType(ContentType.Application.Json)
+                setBody(initialize)
+            }
+            assertEquals(HttpStatusCode.NotFound, guessed.status, path)
+        }
+    }
+
+    @Test
     fun `the startup log names the paths`() {
         start(tokenConfig)
         for (path in listOf(STREAMABLE_HTTP_PATH, LEGACY_SSE_PATH)) assertTrue(path in startupLog, startupLog)

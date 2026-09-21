@@ -75,27 +75,43 @@ line-by-line highlighting.
 
 ## Current baseline
 
-Current overall coverage is roughly **95% line / 93% method / 69% branch** across ~218 tests.
-Every tool-domain source file — all v1/v2 IDR domains, the SIEM Alerts API tools (`AlertTools`, at
-100%), all Log Search domains, `Rapid7Client` (100%), `Config`, `ToolSupport`, and `LogSearchSupport`
-— sits at **96–100% line coverage** (the full 144-tool inventory is verified by listing tools through
-an in-process MCP client), with two deliberate exceptions:
+Measured 2026-09-21 on a clean build with the Gradle build cache off: **94.5% line / 94.3% method /
+77.8% branch** across **478 tests**, none skipped. Every tool-domain source file - all v1/v2 IDR
+domains, the SIEM Alerts API tools, all Log Search domains, `Rapid7Client`, `Config`, `ToolSupport`
+and `LogSearchSupport` - sits at **92-100% line coverage**. The full **146-tool** inventory is verified
+by listing tools through an in-process MCP client, and `ToolSchemaBoundsTest` reads every tool's
+schema the same way.
 
-`Main.kt` sits around **25%** by design: the Clikt command (option parsing, the `run()` dispatch, and
-the config-error path) is tested via injected seams, but `runStdio`/`runHttp`/`runServer` start real,
-blocking servers and are not unit-tested. The update-check wiring added to those functions
-(`startUpdateCheck`/`notifyWhenInitialized` and the HTTP `attachUpdateNotifier` hook) lives inside
-that same untested region, which is why the file's percentage fell — the *logic* it delegates to is
-covered elsewhere (see below).
+The files below the rest, and why:
 
-`McpServerFactory.kt` sits around **89%**: `notifyUpdateAvailable`, `notifyUpdateInstalled` and the
-tool registry are covered, but the `attachUpdateNotifier` callback bodies only run when a live HTTP
-client connects.
+`Main.kt` sits around **48%**. The Clikt command (option parsing, the `run()` dispatch, the
+config-error path and the refuse-to-start rule) is tested through injected seams, and
+`buildHttpRuntime` is driven **over a real socket** by `HttpRuntimeTest`: the request guard in front of
+the routes, Streamable HTTP and both legacy SSE paths through the SDK's own clients, and the update
+notice including its grace period. What remains untested is what cannot be run in a unit test:
+`runStdio`, `runServer`, the blocking `engine.start(wait = true)`, and the shutdown hook that applies
+a staged update.
 
-`UpdateInstaller.kt` sits around **89%**. The uncovered remainder is environment-bound rather than
-untested logic: the production `HttpClient(OkHttp)` branch (tests always inject a `MockEngine`), and the
-paths that only execute when the JVM is genuinely running from a JAR — `runningJar()` resolving a real
-code source, and the Windows shutdown swap. Every decision that gates *installing* code is covered.
+`UpdateInstaller.kt`, `SpoolStore.kt` and `UploadPolicy.kt` sit around **89%**. The uncovered
+remainder is environment-bound rather than untested logic: the production `HttpClient(OkHttp)` branch
+(tests always inject a `MockEngine`); the paths that only execute when the JVM is genuinely running
+from a JAR (`runningJar()` resolving a real code source, the real `Staged` outcome); and the branches
+for a platform or volume this machine is not - POSIX permissions, and a volume that keeps no ACLs.
+
+**There is no CI, and the suite runs on one Windows machine.** Tests therefore *branch* on the
+platform rather than being skipped on the other one, so the executed count is the same everywhere and
+a skipped security test cannot hide; and wherever a decision depends on the platform
+(`UpdateInstaller.isWindows`, `SpoolStore.Privacy.of`), the decision is a pure function that is tested
+with the other platform's answer passed in.
+
+### How the tests themselves are checked
+
+Coverage says a line ran, not that a test would notice it breaking. The security-relevant changes in
+this codebase were **mutation-tested** as they were written: the guard is deliberately broken (a
+comparison negated, a check removed, an old bug put back) and the suite must fail. Roughly one change
+in three had a mutant survive at first, and each survivor was a real gap: an assertion that held
+regardless of the code, a check masked by a second layer, a platform branch that asserted nothing, a
+test fixture that made the interesting path unreachable.
 
 Branch coverage trails line coverage because each tool has many independent optional parameters;
 exercising every combination isn't necessary.
