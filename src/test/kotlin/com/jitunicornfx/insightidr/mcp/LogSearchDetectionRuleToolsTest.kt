@@ -106,6 +106,17 @@ class LogSearchDetectionRuleToolsTest {
     }
 
     @Test
+    fun `a target named only by its id is forwarded as given`() = runBlocking {
+        // Spec 3.0.2's own code sample attaches an EXISTING target as {"target": {"id": ...}}. That is
+        // a reference, not a definition: filling in empty alert_content_set/user_data beside the id
+        // could only ask the API to blank them on a target that already has them.
+        val h = harness(body = "{}")
+        h.call("logsearch_update_notification_targets", mapOf("notification_id" to "n1", "target" to mapOf("id" to "t-123")))
+
+        assertEquals("""{"id":"t-123"}""", h.lastBodyJson().getValue("target").toString())
+    }
+
+    @Test
     fun `target crud maps to management-targets endpoints and builds the body`() = runBlocking {
         val h = harness(body = "[]")
         h.call("logsearch_list_targets")

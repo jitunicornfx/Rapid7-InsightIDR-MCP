@@ -218,7 +218,8 @@ fun Server.registerLogSearchDetectionRuleTools(client: Rapid7Client) {
         description = "Modify the targets attached to a detection-rule notification (PATCH, Log Search API). " +
             "Provide the 'target' object: { name, description, type (${TARGET_TYPES.joinToString("/")}), params_set, " +
             "alert_content_set, user_data }. The API requires all six; alert_content_set (e.g. " +
-            "{\"le_context\": \"true\"}) and user_data are sent as {} when you omit them.",
+            "{\"le_context\": \"true\"}) and user_data are sent as {} when you omit them. To attach a " +
+            "target that already exists, send { \"id\": \"<target id>\" } alone; it is forwarded as given.",
         inputSchema = toolSchema("notification_id", "target") {
             stringParam("notification_id", "The id of the notification.")
             objectParam("target", "The target definition to attach (see tool description for shape).")
@@ -229,12 +230,21 @@ fun Server.registerLogSearchDetectionRuleTools(client: Rapid7Client) {
         // Spec 3.0.2 marks alert_content_set and user_data REQUIRED on this body. The create and
         // replace target tools already send {} for whichever is omitted; this one forwarded the
         // caller's object untouched, so the same omission failed here and nowhere else.
-        val completed = JsonObject(
-            buildJsonObject {
-                put("alert_content_set", buildJsonObject {})
-                put("user_data", buildJsonObject {})
-            } + target,
-        )
+        //
+        // Not when the target is named by id alone. Spec 3.0.2's own code sample attaches an EXISTING
+        // target as {"target": {"id": ...}}: a reference, not a definition. Empty objects beside the
+        // id could only ask the API to blank those fields on a target that already has them.
+        val isReference = target.keys == setOf("id")
+        val completed = if (isReference) {
+            target
+        } else {
+            JsonObject(
+                buildJsonObject {
+                    put("alert_content_set", buildJsonObject {})
+                    put("user_data", buildJsonObject {})
+                } + target,
+            )
+        }
         val body = buildJsonObject { put("target", completed) }
         client.request(
             HttpMethod.Patch,

@@ -177,6 +177,23 @@ fun JsonObject.requireStringAllowEmpty(key: String): String =
 fun JsonObject.intOrNull(key: String): Int? =
     primitive(key)?.let { it.intOrNull ?: it.contentOrNull?.toIntOrNull() }
 
+/**
+ * An optional integer that GUARDS something: absent is fine, present-but-unreadable is an error.
+ *
+ * [intOrNull] treats a value it cannot read as if it had not been sent, which is right for a page
+ * size and wrong for a safety limit. `25.0` passes a JSON-Schema "integer" check in many clients and
+ * parses to null here; dropping it silently turns "close at most 25" into "close everything".
+ */
+fun JsonObject.strictIntOrNull(key: String, min: Int = Int.MIN_VALUE): Int? {
+    if (elementOrNull(key) == null) return null
+    val value = intOrNull(key)
+    require(value != null && value >= min) {
+        "'$key' must be a whole number" + (if (min > Int.MIN_VALUE) " of $min or more" else "") +
+            ". It was sent but could not be read, and it is a safety limit, so the call was refused rather than run without it."
+    }
+    return value
+}
+
 fun JsonObject.longOrNull(key: String): Long? =
     primitive(key)?.let { it.longOrNull ?: it.contentOrNull?.toLongOrNull() }
 

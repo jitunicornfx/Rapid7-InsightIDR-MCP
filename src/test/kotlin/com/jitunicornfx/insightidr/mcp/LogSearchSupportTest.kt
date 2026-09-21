@@ -103,6 +103,18 @@ class LogSearchSupportTest {
     }
 
     @Test
+    fun `the statistic rejection is recognised by its code or its message, in whatever shape they arrive`() {
+        fun rejected(body: String, status: Int = 400) = ApiResponse(status, false, body, "application/json").isStatisticPaginationRejection()
+
+        assertTrue(rejected("""{"code":101009,"message":"x"}"""), "numeric code")
+        assertTrue(rejected("""{"code":"101009"}"""), "the same code as a string")
+        assertTrue(rejected("""{"message":"Pagination is not supported with statistic queries"}"""), "message alone")
+        assertTrue(rejected("Pagination is not supported with statistic queries"), "a body that is not JSON at all")
+        assertFalse(rejected("""{"code":100001,"message":"from=1710100900000 is invalid"}"""), "the digits inside another number")
+        assertFalse(rejected("""{"code":1010090}"""))
+    }
+
+    @Test
     fun `withoutPagination drops only per_page and sequence_number`() {
         val full = mapOf(
             "per_page" to listOf("500"),

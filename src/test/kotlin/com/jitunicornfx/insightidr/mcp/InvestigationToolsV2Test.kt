@@ -221,6 +221,30 @@ class InvestigationToolsV2Test {
     }
 
     @Test
+    fun `a safety limit that cannot be read stops bulk_close instead of being dropped`() = runBlocking {
+        // The limit is what stands between "close these 25" and "close every investigation in the
+        // window". An unreadable value used to parse to null, the key was left out of the body, and
+        // the destructive call ran unbounded without a word.
+        val window = mapOf("source" to "ALERT", "from" to "2026-01-01T00:00:00Z", "to" to "2026-02-01T00:00:00Z")
+        val h = harness()
+        for (unreadable in listOf<Any>(25.5, "25.0", "twenty-five", "3000000000", -1, "")) {
+            val result = h.call("bulk_close_investigations", window + ("max_investigations_to_close" to unreadable))
+            assertTrue(result.isError == true, "max_investigations_to_close=$unreadable must be refused")
+            assertTrue("max_investigations_to_close" in (result.content.first() as TextContent).text)
+        }
+        assertEquals(0, h.requests.size, "nothing may be closed on a limit that could not be read")
+
+        h.call("bulk_close_investigations", window + ("max_investigations_to_close" to 25))
+        assertEquals(25, h.lastBodyJson()["max_investigations_to_close"]!!.jsonPrimitive.content.toInt())
+        h.call("bulk_close_investigations", window + ("max_investigations_to_close" to "25"))
+        assertEquals(25, h.lastBodyJson()["max_investigations_to_close"]!!.jsonPrimitive.content.toInt(), "a numeric string is fine")
+        h.call("bulk_close_investigations", window + ("max_investigations_to_close" to 0))
+        assertEquals(0, h.lastBodyJson()["max_investigations_to_close"]!!.jsonPrimitive.content.toInt(), "the spec's minimum is 0")
+        h.call("bulk_close_investigations", window)
+        assertNull(h.lastBodyJson()["max_investigations_to_close"], "omitted still means no limit, as documented")
+    }
+
+    @Test
     fun `the tools that change many investigations at once are annotated destructive`() = runBlocking {
         val h = harness()
         val annotations = h.tools().associate { it.name to it.annotations?.destructiveHint }

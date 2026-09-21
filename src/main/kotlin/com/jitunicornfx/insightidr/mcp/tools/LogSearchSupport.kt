@@ -72,6 +72,10 @@ internal fun exportFormatDescription(pollTool: String): String =
  * [LS_RESULT_SIZE_GUIDANCE] for the AUDIT query tools, which need their own wording: the spool tool
  * posts to `/query/logs` and cannot reach `/audit/query/logs`, so sending a model there for "every
  * event" would send it to a tool that cannot do the job.
+ *
+ * Spec 3.0.2's prose says the ordinary `/query` endpoints "can be used to search for both audit logs and
+ * regular logs". The live API disagrees: checked 2026-09-21 with read-only count queries, it REJECTS an
+ * audit log key on `/query/logs`. The observation wins, as it does for error 101009 below.
  */
 internal const val LS_AUDIT_RESULT_SIZE_GUIDANCE =
     "Returns ONE page — use it to look at a sample. To COUNT or AGGREGATE, put calculate(count) or " +
@@ -145,9 +149,23 @@ internal suspend fun Rapid7Client.awaitQueryCompletion(
  * on either the numeric code or the message text, and never on a 2xx — a successful result body that
  * happens to contain the string `101009` (e.g. a log line) must not trigger a retry.
  */
-internal fun ApiResponse.isStatisticPaginationRejection(): Boolean =
-    status !in 200..299 &&
-        (body.contains("101009") || body.contains("pagination is not supported", ignoreCase = true))
+internal fun ApiResponse.isStatisticPaginationRejection(): Boolean {
+    if (status in 200..299) return false
+    if (body.contains("pagination is not supported", ignoreCase = true)) return true
+    // The CODE, not the digits. A raw substring match also fires on a 'from' of 1710100900000, a
+    // log key or a request id echoed back in some unrelated error, and the request is then retried
+    // with its pagination stripped for no reason.
+    val code = try {
+        (JsonCodec.compact.parseToJsonElement(body) as? JsonObject)?.get("code")?.jsonPrimitive?.contentOrNull
+    } catch (_: StackOverflowError) {
+        null
+    } catch (_: Exception) {
+        null
+    }
+    return code == STATISTIC_PAGINATION_CODE
+}
+
+private const val STATISTIC_PAGINATION_CODE = "101009"
 
 /** Drop only the pagination query keys, leaving the LEQL body, time window, labels, etc. untouched. */
 internal fun Map<String, List<String>>.withoutPagination(): Map<String, List<String>> =
@@ -160,6 +178,8 @@ internal fun Map<String, List<String>>.withoutPagination(): Map<String, List<Str
  * It says what the spec says and stops there. That the labels CAUSED the rejection is a plausible
  * guess, not something anyone has observed, so the note does not claim it.
  */
+private const val HTTP_BAD_REQUEST = 400
+
 internal const val STATISTIC_LABELS_NOTE =
     "This is a statistic (calculate/groupby) query. It was retried without per_page and " +
         "sequence_number, which statistic queries do not accept, and was rejected again. It was sent " +
@@ -195,7 +215,10 @@ internal suspend fun Rapid7Client.submitLogSearchQuery(
     var response = request(method, path, query = query, jsonBody = jsonBody, base = ApiBase.LOG_SEARCH)
     if (response.isStatisticPaginationRejection()) {
         response = request(method, path, query = query.withoutPagination(), jsonBody = jsonBody, base = ApiBase.LOG_SEARCH)
-        if (!response.ok && ("label" in query || "labels" in query)) {
+        // Only a 400: the API saying this request is still not valid. A 429 or a 5xx on the retry is
+        // the API being busy, and "rejected again, try without the label filter" beside it would send
+        // the model off to count a different set of events when retrying was the right answer.
+        if (response.status == HTTP_BAD_REQUEST && ("label" in query || "labels" in query)) {
             return response.copy(serverNote = STATISTIC_LABELS_NOTE)
         }
     }

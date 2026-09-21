@@ -147,6 +147,40 @@ class LogSearchQueryToolsTest {
     }
 
     @Test
+    fun `a retry that fails for a transient reason is not blamed on the labels`() = runBlocking {
+        // "Rejected again ... run it again without the label filter" next to an HTTP 429 sends the
+        // model off to count a different set of events, when simply retrying was the right answer.
+        for (transient in listOf(HttpStatusCode.TooManyRequests, HttpStatusCode.ServiceUnavailable, HttpStatusCode.Unauthorized)) {
+            val h = harness(
+                responses = listOf(
+                    HttpStatusCode.BadRequest to """{"id":"IDR","code":101009,"message":"Pagination is not supported with statistic queries"}""",
+                    transient to """{"message":"try later"}""",
+                ),
+            )
+            val result = h.call(
+                "logsearch_query_log",
+                mapOf("log_key" to "lk1", "query" to "calculate(count)", "time_range" to "today", "labels" to "aaa"),
+            )
+            assertFalse("NOT removed automatically" in (result.content.first() as TextContent).text, "after HTTP ${transient.value}")
+        }
+    }
+
+    @Test
+    fun `an error that merely contains the digits 101009 is not mistaken for the statistic rejection`() = runBlocking {
+        // A 'from' of 1710100900000, a log key, a request id: any of them can carry those six digits.
+        val h = harness(
+            responses = listOf(
+                HttpStatusCode.BadRequest to """{"code":100001,"message":"Invalid time range: from=1710100900000"}""",
+                HttpStatusCode.OK to """{"events":[]}""",
+            ),
+        )
+        val result = h.call("logsearch_query_log", mapOf("log_key" to "lk1", "query" to "where(x)", "from" to 1710100900000, "to" to 1710100999999))
+
+        assertEquals(1, h.requests.size, "an unrelated 400 must not be retried with its pagination stripped")
+        assertTrue(result.isError == true)
+    }
+
+    @Test
     fun `the labels note is not attached when it would be beside the point`() = runBlocking {
         // Rejected twice, but no label filter was sent: there is nothing to say about labels.
         val noLabels = harness(

@@ -374,6 +374,9 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
             )
         },
     ) { args ->
+        // Read FIRST, and strictly: see strictIntOrNull. This is what stands between "close these 25"
+        // and "close every investigation in the window".
+        val limit = args.strictIntOrNull("max_investigations_to_close", min = 0)
         val body = buildJsonObject {
             put("source", args.requireString("source"))
             put("from", args.requireString("from"))
@@ -381,7 +384,7 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
             putOpt("alert_type", args.stringOrNull("alert_type"))
             putOpt("disposition", args.stringOrNull("disposition"))
             putOpt("detection_rule_rrn", args.stringOrNull("detection_rule_rrn"))
-            putOpt("max_investigations_to_close", args.intOrNull("max_investigations_to_close"))
+            putOpt("max_investigations_to_close", limit)
         }
         // Note: the bulk_close operation does not define a multi-customer query parameter in the spec.
         client.request(HttpMethod.Post, "/idr/v2/investigations/bulk_close", jsonBody = body).toToolResult()
