@@ -147,6 +147,46 @@ class Rapid7ClientTest {
     }
 
     @Test
+    fun `a response larger than the limit is cut off while it streams, and says so`() = runBlocking {
+        // No Content-Length: nothing announces the size, as with a chunked log download.
+        val endless = ByteArray(5_000_000) { 'x'.code.toByte() }
+        val engine = MockEngine { respond(io.ktor.utils.io.ByteReadChannel(endless), HttpStatusCode.OK) }
+        val client = Rapid7Client(config, engine, maxResponseBytes = 100_000)
+
+        val response = client.request(HttpMethod.Get, "/download/logs/lk1", base = Rapid7Client.ApiBase.LOG_SEARCH)
+
+        assertTrue(response.ok)
+        assertEquals(100_000, response.body.length, "exactly the limit, not the 5 MB that was on offer")
+        assertTrue("cut off" in response.serverNote.orEmpty(), "and the model is told: ${response.serverNote}")
+        client.close()
+    }
+
+    @Test
+    fun `a response within the limit is returned whole, with nothing to say about it`() = runBlocking {
+        val client = Rapid7Client(config, jsonEngine(HttpStatusCode.OK, """{"ok":true}"""), maxResponseBytes = 100_000)
+        val response = client.request(HttpMethod.Get, "/idr/v2/investigations")
+        assertEquals("""{"ok":true}""", response.body)
+        assertEquals(null, response.serverNote)
+
+        // Exactly at the limit is not over it.
+        val exact = Rapid7Client(config, jsonEngine(HttpStatusCode.OK, "y".repeat(100_000)), maxResponseBytes = 100_000)
+        val atLimit = exact.request(HttpMethod.Get, "/x")
+        assertEquals(100_000, atLimit.body.length)
+        assertEquals(null, atLimit.serverNote)
+        client.close()
+        exact.close()
+    }
+
+    @Test
+    fun `a client cannot be built around an api key that would be quoted in an error`() {
+        // Ktor and OkHttp both reject such a header with an exception that repeats its value.
+        for (bad in listOf("s3cr3t-0123456789\n", "s3cr3t 0123456789", "s3cr3t-0123456789\u00E9", "")) {
+            val refusal = kotlin.test.assertFailsWith<IllegalArgumentException> { Rapid7Client(config.copy(apiKey = bad)) }
+            assertFalse("s3cr3t" in refusal.message.orEmpty() || "0123456789" in refusal.message.orEmpty(), "the key must not be repeated")
+        }
+    }
+
+    @Test
     fun `a malformed Content-Type header does not cost the caller the response`() = runBlocking {
         // Ktor throws BadContentTypeFormatException for this, quoting the header in its message.
         val client = Rapid7Client(config, jsonEngine(HttpStatusCode.OK, """{"ok":true}""", contentType = "not a media type"))

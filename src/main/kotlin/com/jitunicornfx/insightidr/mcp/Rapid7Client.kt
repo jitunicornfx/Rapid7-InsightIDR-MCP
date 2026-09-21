@@ -8,7 +8,10 @@ import io.ktor.client.request.*
 import io.ktor.client.request.forms.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
+import io.ktor.utils.io.cancel
+import io.ktor.utils.io.readAvailable
 import kotlinx.serialization.json.JsonElement
+import java.io.ByteArrayOutputStream
 
 /**
  * Thin HTTP wrapper around the InsightIDR REST API.
@@ -22,7 +25,28 @@ import kotlinx.serialization.json.JsonElement
 class Rapid7Client(
     private val config: Config,
     engine: HttpClientEngine? = null,
+    /**
+     * Most bytes of any one response that are read. The rest is abandoned, and the result says so.
+     *
+     * A response used to be buffered whole. `logsearch_download_log_data` with no `limit` asks for up
+     * to 500,000,000 entries, it is a read-only tool that many clients approve without asking, and a
+     * prompt injection can ask for it: hundreds of megabytes arrive inside the timeout, and the
+     * OutOfMemoryError takes down every session of an `--http` server, not just the one that asked.
+     * A tool result is cut to the response budget (200,000 characters by default) anyway, so nothing
+     * a model could ever be shown is lost by stopping at 64 MiB.
+     */
+    private val maxResponseBytes: Long = DEFAULT_MAX_RESPONSE_BYTES,
 ) : AutoCloseable {
+
+    init {
+        // Config.fromEnv already refuses this. Checked again here because a Config can be built
+        // directly, and what happens otherwise is that Ktor or OkHttp rejects the header at the first
+        // request with an exception that QUOTES the key. Fixed text; the key is never repeated.
+        require(config.apiKey.isNotEmpty() && config.apiKey.all { it.code in 0x21..0x7E }) {
+            "The configured InsightIDR API key cannot be sent as an HTTP header (it is empty, or contains a " +
+                "space, a line break or a non-ASCII character)."
+        }
+    }
 
     // Production uses the CIO engine; tests inject a MockEngine to avoid real network calls.
     private val http: HttpClient = if (engine != null) {
@@ -140,7 +164,7 @@ class Rapid7Client(
         rawContentType: ContentType = ContentType.Application.Json,
         base: ApiBase = ApiBase.IDR_V2,
     ): ApiResponse {
-        val response = http.request(baseUrlFor(base) + path) {
+        return http.prepareRequest(baseUrlFor(base) + path) {
             this.method = method
             header("X-Api-Key", config.apiKey)
             header(HttpHeaders.Accept, ContentType.Application.Json.toString())
@@ -160,8 +184,7 @@ class Rapid7Client(
                     setBody(rawBody)
                 }
             }
-        }
-        return response.toApiResponse()
+        }.execute { it.toApiResponse() }
     }
 
     /** [request] against the v1 API base (`https://<region>.api.insight.rapid7.com`, same host as v2). */
@@ -187,12 +210,11 @@ class Rapid7Client(
         // text, outside the untrusted envelope, and the URL is often API-provided.
         require(isAllowedFollowUrl(url)) { REFUSED_FOLLOW_URL }
 
-        val response = http.request(url) {
+        return http.prepareRequest(url) {
             method = HttpMethod.Get
             header("X-Api-Key", config.apiKey)
             header(HttpHeaders.Accept, ContentType.Application.Json.toString())
-        }
-        return response.toApiResponse()
+        }.execute { it.toApiResponse() }
     }
 
     /**
@@ -206,7 +228,7 @@ class Rapid7Client(
         query: Map<String, List<String>> = emptyMap(),
         base: ApiBase = ApiBase.IDR_V2,
     ): ApiResponse {
-        val response = http.request(baseUrlFor(base) + path) {
+        return http.prepareRequest(baseUrlFor(base) + path) {
             this.method = HttpMethod.Post
             header("X-Api-Key", config.apiKey)
             header(HttpHeaders.Accept, ContentType.Application.Json.toString())
@@ -230,27 +252,45 @@ class Rapid7Client(
                     },
                 ),
             )
-        }
-        return response.toApiResponse()
+        }.execute { it.toApiResponse() }
     }
 
-    // 2xx responses are valid
+    /**
+     * Read this response, up to [maxResponseBytes] of it. Called inside `execute { }`, so the body is
+     * streamed from the socket rather than buffered first - which is what makes the limit a limit.
+     */
     private suspend fun HttpResponse.toApiResponse(): ApiResponse {
-        // bodyAsText() parses the Content-Type to find a charset, and throws on one it cannot parse
-        // before reading a byte — so the body is still there to be read as UTF-8.
-        val text = try {
-            bodyAsText()
-        } catch (e: BadContentTypeFormatException) {
-            readRawBytes().decodeToString()
+        val channel = bodyAsChannel()
+        val collected = ByteArrayOutputStream()
+        val buffer = ByteArray(64 * 1024)
+        var cutOff = false
+        while (true) {
+            val read = channel.readAvailable(buffer, 0, buffer.size)
+            if (read == -1) break
+            if (read == 0) continue
+            val room = maxResponseBytes - collected.size()
+            if (read > room) {
+                collected.write(buffer, 0, room.toInt())
+                cutOff = true
+                break
+            }
+            collected.write(buffer, 0, read)
         }
+        if (cutOff) channel.cancel()
+
+        // Ktor throws on a Content-Type it cannot parse, quoting the header in the message. A
+        // malformed header must not cost the caller the response - nor put API-chosen text into an
+        // error message - so both uses of it are guarded, and the fallback is UTF-8.
+        val charset = runCatching { charset() }.getOrNull() ?: Charsets.UTF_8
         return ApiResponse(
             status = status.value,
             ok = status.value in 200..299,
-            body = text,
-            // Ktor throws on a Content-Type it cannot parse, quoting the header in the message. A
-            // malformed header must not cost the caller the response — nor put API-chosen text into
-            // an error message.
+            body = String(collected.toByteArray(), charset),
             contentType = runCatching { contentType()?.toString() }.getOrNull(),
+            serverNote = if (!cutOff) null else
+                "The API's response was larger than ${maxResponseBytes / (1024 * 1024)} MiB and was cut off " +
+                    "there, before rendering; what is shown is only its beginning, and is not complete " +
+                    "JSON. Ask for less: a shorter time window, a smaller 'limit' or page size, or a filter.",
         )
     }
 
@@ -258,6 +298,9 @@ class Rapid7Client(
 
     companion object {
         private const val HTTPS_PORT = 443
+
+        /** 64 MiB. See [maxResponseBytes]. */
+        const val DEFAULT_MAX_RESPONSE_BYTES = 64L * 1024 * 1024
 
         /** Fixed text: see [requestAbsolute]. */
         const val REFUSED_FOLLOW_URL =
