@@ -431,6 +431,23 @@ fun textResult(message: String): CallToolResult =
 // Tool registration
 // ---------------------------------------------------------------------------
 
+private const val OWN_PACKAGE = "com.jitunicornfx.insightidr.mcp"
+
+/**
+ * Whether this exception was raised by this server's own code rather than by a library it called.
+ *
+ * An [IllegalArgumentException] is how this server's `require(...)` calls report a bad argument, and
+ * those messages are server-authored, so they are shown to the model as written. But libraries throw
+ * the same class and QUOTE what they choked on: Ktor's header validation quotes the header value (an
+ * API key with a stray line break), OkHttp does the same, URL parsing quotes the URL, and
+ * kotlinx.serialization's exception - a subclass - quotes the JSON. Those are not ours to speak.
+ *
+ * `require` is inline, so an exception it raises is constructed inside the calling function: the
+ * top stack frame is in this package exactly when the message is one this server wrote.
+ */
+private fun Throwable.thrownByThisServer(): Boolean =
+    stackTrace.firstOrNull()?.className?.startsWith(OWN_PACKAGE) == true
+
 /** Longest exception message repeated to the model. Enough for any real diagnostic. */
 private const val MAX_FAILURE_DETAIL_CHARS = 1_000
 
@@ -479,10 +496,14 @@ fun Server.apiTool(
         } catch (e: CancellationException) {
             throw e
         } catch (e: IllegalArgumentException) {
-            errorResult(
-                "Invalid arguments for '$name': ${e.message ?: e::class.simpleName} " +
-                    "— fix the parameter values to match the tool's input schema, then retry.",
-            )
+            if (e.thrownByThisServer()) {
+                errorResult(
+                    "Invalid arguments for '$name': ${e.message ?: e::class.simpleName} " +
+                        "— fix the parameter values to match the tool's input schema, then retry.",
+                )
+            } else {
+                errorResult(unexpectedFailureText(name, e))
+            }
         } catch (e: Exception) {
             errorResult(unexpectedFailureText(name, e))
         }

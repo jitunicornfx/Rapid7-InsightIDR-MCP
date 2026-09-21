@@ -238,11 +238,105 @@ class ConfigTest {
     fun `a number that is not a number stops the server instead of meaning the default`() {
         // This one is data loss: "never" used to mean 24 hours, and the evidence was swept.
         assertTrue(Config.ENV_SPOOL_RETENTION_HOURS in rejected(Config.ENV_SPOOL_RETENTION_HOURS to "never"))
-        assertTrue(Config.ENV_SPOOL_RETENTION_HOURS in rejected(Config.ENV_SPOOL_RETENTION_HOURS to "-1"))
         assertTrue(Config.ENV_TIMEOUT_MS in rejected(Config.ENV_TIMEOUT_MS to "60s"))
-        assertTrue(Config.ENV_TIMEOUT_MS in rejected(Config.ENV_TIMEOUT_MS to "0"))
         assertTrue(Config.ENV_MAX_RESULT_CHARS in rejected(Config.ENV_MAX_RESULT_CHARS to "200k"))
-        assertTrue(Config.ENV_MAX_RESULT_CHARS in rejected(Config.ENV_MAX_RESULT_CHARS to "99999999999"))
+        assertTrue(Config.ENV_MAX_RESULT_CHARS in rejected(Config.ENV_MAX_RESULT_CHARS to "2e5"))
+        // A negative retention is refused rather than adjusted: whoever wrote -1 plausibly meant
+        // "never sweep", and guessing 24 hours instead is how preserved evidence gets deleted.
+        assertTrue(Config.ENV_SPOOL_RETENTION_HOURS in rejected(Config.ENV_SPOOL_RETENTION_HOURS to "-1"))
+    }
+
+    @Test
+    fun `a number that parses but is out of range is adjusted, and the operator is told`() {
+        // These all ran on 0.3.1. A server that updates itself must not turn a working configuration
+        // into an outage, so they keep working; what changes is that it is no longer silent.
+        val zeroTimeout = configWith(Config.ENV_TIMEOUT_MS to "0")
+        assertEquals(Config.DEFAULT_TIMEOUT_MS, zeroTimeout.requestTimeoutMillis, "0 meant the default before, and still does")
+        assertTrue(zeroTimeout.startupWarnings().any { Config.ENV_TIMEOUT_MS in it }, "${zeroTimeout.startupWarnings()}")
+
+        val hugeTimeout = configWith(Config.ENV_TIMEOUT_MS to "7200000")
+        assertEquals(Config.MAX_TIMEOUT_MS, hugeTimeout.requestTimeoutMillis)
+        assertTrue(hugeTimeout.startupWarnings().any { Config.ENV_TIMEOUT_MS in it })
+
+        for (unlimited in listOf("0", "-1")) {
+            val config = configWith(Config.ENV_MAX_RESULT_CHARS to unlimited)
+            assertEquals(Config.DEFAULT_MAX_RESULT_CHARS, config.maxResultChars, "there is no unlimited; $unlimited means the default")
+            assertTrue(config.startupWarnings().any { Config.ENV_MAX_RESULT_CHARS in it })
+        }
+        assertEquals(Int.MAX_VALUE, configWith(Config.ENV_MAX_RESULT_CHARS to "99999999999").maxResultChars)
+        assertEquals(Config.MIN_MAX_RESULT_CHARS, configWith(Config.ENV_MAX_RESULT_CHARS to "5").maxResultChars)
+
+        assertTrue(configWith(Config.ENV_TIMEOUT_MS to "30000").startupWarnings().isEmpty(), "nothing to say about a good value")
+    }
+
+    @Test
+    fun `an api key is trimmed, and one that cannot be an http header value is refused without being quoted`() {
+        // A Kubernetes secret made from a file, or a CRLF .env, ends in a line break.
+        assertEquals("abc123", Config.fromEnv(mapOf(Config.ENV_API_KEY to "abc123\r\n")).apiKey)
+
+        // Left in, Ktor refuses the header with an IllegalArgumentException whose message QUOTES the
+        // value - and the tool layer reports that class of message to the model.
+        for (bad in listOf("abc\n123", "abc 123", "abc\u00A0123", "\uFEFFabc123", "abc\u201C123")) {
+            val message = assertFailsWith<IllegalStateException> { Config.fromEnv(mapOf(Config.ENV_API_KEY to bad)) }.message.orEmpty()
+            assertTrue(Config.ENV_API_KEY in message)
+            assertFalse("abc" in message || "123" in message, "the key must not be echoed: $message")
+        }
+    }
+
+    @Test
+    fun `an unknown region is refused without repeating what was typed`() {
+        // Someone will paste the API key into the wrong variable one day.
+        val message = assertFailsWith<IllegalArgumentException> {
+            Config.fromEnv(mapOf(Config.ENV_API_KEY to "key", Config.ENV_REGION to "sk-live-0123456789"))
+        }.message.orEmpty()
+        assertFalse("0123456789" in message, message)
+        assertTrue("us2" in message, "but do list the valid ones")
+    }
+
+    @Test
+    fun `a base url port has to be a real port, and Ktor has to agree on the host`() {
+        assertTrue(Config.ENV_BASE_URL in rejected(Config.ENV_BASE_URL to "https://proxy.corp.example:84430"))
+        assertTrue(Config.ENV_BASE_URL in rejected(Config.ENV_BASE_URL to "https://proxy.corp.example:0"))
+        assertEquals("https://proxy.corp.example:8443", configWith(Config.ENV_BASE_URL to "https://proxy.corp.example:8443").baseUrl)
+        assertEquals("http://[::1]:8080", configWith(Config.ENV_BASE_URL to "http://[::1]:8080").baseUrl, "IPv6 loopback is local too")
+    }
+
+    @Test
+    fun `a safety switch set to something unrecognised stops the server rather than staying off`() {
+        // INSIGHTIDR_DISABLE_AUTO_UPDATE=y was read as "not set", and the server went on installing
+        // updates for an operator who had asked it not to.
+        for (variable in listOf(Config.ENV_DISABLE_AUTO_UPDATE, Config.ENV_DISABLE_UPDATE_CHECK)) {
+            for (unclear in listOf("y", "enabled", "disable", "2", "tru")) {
+                val message = rejected(variable to unclear)
+                assertTrue(variable in message, message)
+            }
+        }
+        assertTrue(configWith(Config.ENV_DISABLE_AUTO_UPDATE to "ON").autoUpdateDisabled)
+        assertFalse(configWith(Config.ENV_DISABLE_AUTO_UPDATE to "No").autoUpdateDisabled)
+    }
+
+    @Test
+    fun `allowed origins are normalised once, and one that cannot be an origin stops the server`() {
+        // Dropped in silence, an unusable entry left the operator believing a browser client was
+        // allowed while every request from it got 403 - and server_info still counted it.
+        val config = configWith(Config.ENV_HTTP_ALLOWED_ORIGINS to " HTTPS://App.Example.com:443/ , app2.example.com , http://localhost:5173 ")
+        assertEquals(
+            listOf("https://app.example.com", "https://app2.example.com", "http://localhost:5173"),
+            config.httpAllowedOrigins,
+            "a bare host still means https, as it did in 0.3.1",
+        )
+        assertEquals(3, ServerFacts.from(config).httpAllowedOriginCount, "the count is of origins that will actually work")
+
+        for (bad in listOf("https://app.example.com/ui", "https://user@app.example.com", "ftp://app.example.com", "https://")) {
+            val message = rejected(Config.ENV_HTTP_ALLOWED_ORIGINS to "https://ok.example,$bad")
+            assertTrue(Config.ENV_HTTP_ALLOWED_ORIGINS in message, message)
+            assertTrue("entry 2" in message, "say which one: $message")
+        }
+
+        // "*" is documented as ignored, so it still is - but no longer without a word.
+        val wildcard = configWith(Config.ENV_HTTP_ALLOWED_ORIGINS to "*,https://ok.example")
+        assertEquals(listOf("https://ok.example"), wildcard.httpAllowedOrigins)
+        assertTrue(wildcard.startupWarnings().any { "*" in it && Config.ENV_HTTP_ALLOWED_ORIGINS in it })
     }
 
     @Test

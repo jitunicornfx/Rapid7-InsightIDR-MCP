@@ -190,6 +190,29 @@ class ToolSupportExtraTest {
     }
 
     @Test
+    fun `an IllegalArgumentException thrown by a library is fenced, one thrown by this server is not`() = runBlocking {
+        // The IllegalArgumentException branch prints the message as it stands, because that is how this
+        // server's own require() calls report a bad argument. But libraries throw that class too, and
+        // quote what they choked on: this is exactly what Ktor says about a header value it rejects.
+        val h = mcpHarness {
+            apiTool("library", "throws from ktor") {
+                io.ktor.http.HeadersBuilder().append("X-Api-Key", "leaked-secret-value\n")
+                textResult("unreachable")
+            }
+            apiTool("ours", "throws from this server") { require(false) { "'from' must not be later than 'to'." }; textResult("unreachable") }
+        }
+
+        val library = textOf(h.call("library"))
+        val envelope = parseEnvelope(library)
+        assertFalse("leaked-secret-value" in envelope.before + envelope.after, "a library's message is not ours to speak: $library")
+
+        val ours = textOf(h.call("ours"))
+        assertTrue("'from' must not be later than 'to'." in ours)
+        assertFalse("UNTRUSTED" in ours, "our own argument errors stay plain and direct")
+        assertTrue("input schema" in ours)
+    }
+
+    @Test
     fun `a fenced exception message is bounded`() {
         val text = unexpectedFailureText("t", RuntimeException("x".repeat(50_000)))
         assertTrue(text.length < 3_000, "was ${text.length}")

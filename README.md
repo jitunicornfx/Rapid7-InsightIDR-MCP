@@ -38,7 +38,7 @@ Configuration is read from environment variables:
 | `INSIGHTIDR_HTTP_ALLOWED_ORIGINS` |  | *(empty — deny cross-origin)*    | `--http` mode only: comma-separated browser origins allowed via CORS (e.g. `https://app.example.com`). Empty denies all cross-origin browser access; non-browser MCP clients are unaffected. Never use `*`. |
 | `INSIGHTIDR_DISABLE_UPDATE_CHECK` |  | *(unset — check enabled)*        | Set to `1`/`true`/`yes` to skip the startup check for a newer GitHub release (see [Update notifications](#update-notifications)). Implies no automatic installation. |
 | `INSIGHTIDR_DISABLE_AUTO_UPDATE` |  | *(unset — installing enabled)*   | Set to `1`/`true`/`yes` to report new releases but never download or install them (see [Automatic installation](#automatic-installation)). |
-| `INSIGHTIDR_MAX_RESULT_CHARS` |  | `200000`                             | Maximum characters of API data in a single tool result (~4 chars per token, so ~50k tokens). Larger results are compacted, then trimmed, with a notice — see [Large results](#large-results). Values below `2000` are clamped up; there is no "unlimited" setting. |
+| `INSIGHTIDR_MAX_RESULT_CHARS` |  | `200000`                             | Maximum characters of API data in a single tool result (~4 chars per token, so ~50k tokens). Larger results are compacted, then trimmed, with a notice — see [Large results](#large-results). Values from 1 to 1999 are raised to `2000`, and `0` or less means the default: there is no "unlimited" setting. |
 | `INSIGHTIDR_SPOOL_DIR`   |          | `~/.rapid7-insightidr-mcp/spool`          | Directory for results written by `logsearch_spool_query_to_file`. |
 | `INSIGHTIDR_SPOOL_RETENTION_HOURS` | | `24`                             | Hours a spooled result survives before it is swept at startup. `0` never sweeps (for preserving files as evidence). |
 | `INSIGHTIDR_UPLOAD_DIR`  |          | *(unset — uploads disabled)*              | The one directory `upload_attachment` may read files from. See [Uploading attachments](#uploading-attachments). |
@@ -48,9 +48,24 @@ See [`.env.example`](.env.example).
 Configuration is checked at startup, and a value that cannot be used stops the server with a message
 naming the variable — it is never silently replaced by the default:
 
-- **Numbers** (`INSIGHTIDR_TIMEOUT_MS`, `INSIGHTIDR_MAX_RESULT_CHARS`,
-  `INSIGHTIDR_SPOOL_RETENTION_HOURS`) must be whole numbers in range. A typo in the retention setting
-  used to mean "24 hours", which is how preserved evidence gets swept.
+- **Numbers** must be whole numbers. Something that is not a number at all (`60s`, `never`) stops
+  the server: a typo in the retention setting used to mean "24 hours", which is how preserved
+  evidence gets swept. A number that is merely out of range is put right and *reported* at startup,
+  so that a configuration which ran yesterday still runs today:
+
+  | Variable | Accepted | Out of range |
+  |---|---|---|
+  | `INSIGHTIDR_TIMEOUT_MS` | 1 - 3,600,000 | 0 or less -> the default; above -> 3,600,000 |
+  | `INSIGHTIDR_MAX_RESULT_CHARS` | 2,000 and up | 0 or less -> the default (there is no "unlimited"); 1 - 1,999 -> 2,000 |
+  | `INSIGHTIDR_SPOOL_RETENTION_HOURS` | 0 - 87,600 (`0` never sweeps) | **negative is refused**, never guessed at; above -> 87,600 |
+- **On/off switches** (`INSIGHTIDR_DISABLE_UPDATE_CHECK`, `INSIGHTIDR_DISABLE_AUTO_UPDATE`) accept
+  `1/true/yes/on` and `0/false/no/off`. Anything else stops the server: read leniently, `=y` counted
+  as "not set", and the thing you asked to be switched off stayed on.
+- **`INSIGHTIDR_API_KEY`** is trimmed (a key read from a file ends in a line break) and must then be
+  plain printable ASCII.
+- **`INSIGHTIDR_HTTP_ALLOWED_ORIGINS`** entries must each be `scheme://host[:port]`; a bare host means
+  `https`. An entry with a path, or that is otherwise not an origin, stops the server rather than
+  being dropped in silence. `*` is ignored, with a warning.
 - **Base URL overrides** must be `https://` with a host, and no credentials, query string or
   fragment. Plain `http://` is accepted only for `localhost`, for testing. Every request carries the
   API key, so an override that points outside `rapid7.com` is allowed but logged as a warning.
@@ -150,13 +165,21 @@ The token authenticates; it does not encrypt. **This server speaks plain HTTP**,
 put it behind something that terminates TLS (a reverse proxy, an SSH tunnel, a VPN) or the token and
 everything else travel in clear text.
 
+**Behind a reverse proxy, mind the `Host` header.** The safe arrangement is the proxy on the network
+and this server on `127.0.0.1`. But on a loopback bind the server only answers to a `Host` that names
+it, and most proxies pass the client's `Host` through (`mcp.corp.example`), which earns every request
+a `421`. Either have the proxy send `Host: 127.0.0.1` (nginx: `proxy_set_header Host 127.0.0.1;`), or
+list the public origin in `INSIGHTIDR_HTTP_ALLOWED_ORIGINS` - the hosts named there are accepted as
+`Host` values too. Do not reach for `--host 0.0.0.0` instead: that exposes the plain-HTTP port the
+proxy was there to hide.
+
 What the transport checks, in this order, before any MCP code runs:
 
 | Check | Refused with | Why |
 |---|---|---|
 | `Host` header names this server (loopback binds) | `421` | DNS rebinding: a web page that points its own name at `127.0.0.1` |
 | `Origin`, if present, is allow-listed | `403` | A browser page on another site calling your local server |
-| `Authorization: Bearer <token>` | `401`, then `429` | Everything else |
+| `Authorization: Bearer <token>` | `401`; `429` after 20 *wrong* tokens | Everything else. A request with no token is refused but not counted, so a web page cannot lock you out by firing blind requests at the port. |
 | Declared body size is under 4 MiB | `413` | |
 
 Browsers are denied by default. To let a web client in, list its origin in
