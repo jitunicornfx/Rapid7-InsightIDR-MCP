@@ -40,7 +40,8 @@ class LogSearchSpoolToolsTest {
         responses: List<Pair<HttpStatusCode, String>>,
         contentType: String = "application/json",
         io: SpoolIo = SpoolIo(),
-    ) = mcpHarness(responses = responses, contentType = contentType) {
+        failOnRequest: Int? = null,
+    ) = mcpHarness(responses = responses, contentType = contentType, failOnRequest = failOnRequest) {
         registerLogSearchSpoolTools(it, SpoolStore(tempDir.toPath()), io)
     }
 
@@ -158,17 +159,31 @@ class LogSearchSpoolToolsTest {
     }
 
     @Test
-    fun `the max_events cap stops mid-page`() = runBlocking {
+    fun `the max_events cap stops between pages, so that resuming skips nothing`() = runBlocking {
         val h = harness(
             listOf(
                 HttpStatusCode.OK to page("""{"id":1},{"id":2}""", NEXT_1),
                 HttpStatusCode.OK to page("""{"id":3},{"id":4}""", NEXT_2),
+                HttpStatusCode.OK to page("""{"id":5}"""),
             ),
         )
         val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs("max_events" to 3)))
 
-        assertEquals(3, spooled().single().readLines().filter { it.isNotBlank() }.size)
+        // The cap was reached part-way through page 2. Stopping THERE and offering page 3's link - the
+        // only link the API gives - would drop event 4 from the combined files without a trace.
+        assertEquals(listOf("""{"id":1}""", """{"id":2}""", """{"id":3}""", """{"id":4}"""), linesOnDisk())
         assertTrue("max_events cap" in text)
+        assertTrue("resume_from_next_link = $NEXT_2" in text, "and resuming starts at the first unread page")
+        assertEquals(2, h.requests.size)
+    }
+
+    @Test
+    fun `a cap reached on the very last page is still a complete run`() = runBlocking {
+        val h = harness(listOf(HttpStatusCode.OK to page("""{"id":1},{"id":2}""")))
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs("max_events" to 2, "max_pages" to 1)))
+
+        assertTrue("COMPLETE" in text && "STOPPED" !in text, text)
+        assertTrue(manifest()["complete"]!!.jsonPrimitive.boolean)
     }
 
     @Test
@@ -259,6 +274,63 @@ class LogSearchSpoolToolsTest {
         assertEquals(0, h.requests.size, "it used to run the whole query and then fail on the first write")
         assertTrue(Config.ENV_SPOOL_DIR in textOf(result), "say what to change")
         assertFalse(blocker.name in textOf(result), "and keep the host path out of the message")
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // A run is COMPLETE only when it has shown that it finished.
+    // -----------------------------------------------------------------------------------------
+
+    @Test
+    fun `a page that cannot be fetched keeps the file, says where it is, and is not recorded as complete`() = runBlocking {
+        val h = harness(
+            listOf(HttpStatusCode.OK to page("""{"id":1},{"id":2}""", NEXT_1), HttpStatusCode.OK to page("""{"id":3}""")),
+            failOnRequest = 2,
+        )
+        val result = h.call("logsearch_spool_query_to_file", spoolArgs())
+        val text = textOf(result)
+
+        // It used to propagate: a bare "tool failed" with no path, two events on disk the model was
+        // never told about, and beside them a manifest saying the result set was complete.
+        assertFalse(result.isError == true, "a file was produced; an error result risks the client discarding its path")
+        assertTrue(spooled().single().path in text)
+        assertTrue("INCOMPLETE" in text && "could not be fetched" in text, text)
+        assertTrue("resume_from_next_link = $NEXT_1" in text)
+        assertFalse("secret-path" in text, "the exception's message can quote a URL; only its class is named")
+        assertFalse(manifest()["complete"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test
+    fun `a run ended by something it cannot describe is recorded as interrupted, never as complete`() = runBlocking {
+        // Cancellation at the client's tool timeout is the real case; it cannot be staged through this
+        // harness, so an unexpected failure between pages stands in for it. What matters is what the
+        // manifest says when the loop never got to set a status.
+        var samples = 0
+        val h = harness(
+            listOf(HttpStatusCode.OK to page("""{"id":1}""", NEXT_1), HttpStatusCode.OK to page("""{"id":2}""")),
+            io = SpoolIo(freeSpace = { if (++samples <= 1) Long.MAX_VALUE else throw IllegalStateException("volume went away") }),
+        )
+        val result = h.call("logsearch_spool_query_to_file", spoolArgs())
+
+        assertTrue(result.isError == true)
+        assertFalse(manifest()["complete"]!!.jsonPrimitive.boolean, "the default must be pessimistic")
+        assertTrue("interrupted" in manifest()["status"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `a query still running when its time runs out is not reported as an empty result`() = runBlocking {
+        // The poll budget ends with the body still carrying rel="Self": partial, and saying nothing
+        // about whether more pages exist. Read as a final page this was "No events matched ... COMPLETE",
+        // a confident negative from a search that had not finished searching.
+        val self = "https://us.rest.logs.insight.rapid7.com/query/still-running"
+        val running = """{"events":[],"progress":60,"links":[{"rel":"Self","href":"$self"}]}"""
+        val h = harness(listOf(HttpStatusCode.Accepted to running))
+
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs("max_duration_ms" to 1_000)))
+
+        assertTrue("still running" in text, text)
+        assertFalse("COMPLETE —" in text.replace("INCOMPLETE —", ""), text)
+        assertFalse("No events matched" in text && "COMPLETE" in text.replace("INCOMPLETE", ""), text)
+        assertTrue("resume_from_next_link = $self" in text, "resuming keeps waiting for the same query")
     }
 
     // -----------------------------------------------------------------------------------------
@@ -353,6 +425,27 @@ class LogSearchSpoolToolsTest {
         val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
 
         assertTrue("COMPLETE" in text)
+        assertFalse("resume_from_next_link =" in text)
+        assertTrue(manifest()["complete"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test
+    fun `giving up on empty pages at the very end of the results is still a completion`() = runBlocking {
+        // Three empty pages in a row is where the run gives up - but if the third has no next page,
+        // there was nothing left to give up on.
+        val next3 = "https://us.rest.logs.insight.rapid7.com/query/next-3"
+        val h = harness(
+            listOf(
+                HttpStatusCode.OK to page("""{"id":1}""", NEXT_1),
+                HttpStatusCode.OK to page("", NEXT_2),
+                HttpStatusCode.OK to page("", next3),
+                HttpStatusCode.OK to page(""),
+            ),
+        )
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
+
+        assertEquals(4, h.requests.size)
+        assertTrue("COMPLETE" in text.replace("INCOMPLETE", ""), text)
         assertFalse("resume_from_next_link =" in text)
         assertTrue(manifest()["complete"]!!.jsonPrimitive.boolean)
     }

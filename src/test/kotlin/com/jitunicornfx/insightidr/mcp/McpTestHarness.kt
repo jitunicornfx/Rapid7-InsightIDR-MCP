@@ -55,12 +55,18 @@ suspend fun mcpHarness(
     responseBody: String = "{}",
     responses: List<Pair<HttpStatusCode, String>>? = null,
     contentType: String = "application/json",
+    /** 1-based number of the request that fails at the network level instead of being answered. */
+    failOnRequest: Int? = null,
     register: Server.(Rapid7Client) -> Unit,
 ): McpTestHarness {
     val bodies = mutableListOf<String?>()
     var requestIndex = 0
     val engine = MockEngine { request ->
         bodies += (request.body as? TextContent)?.text
+        if (failOnRequest != null && requestIndex + 1 == failOnRequest) {
+            requestIndex++
+            throw java.io.IOException("connection reset while reading https://us.rest.logs.insight.rapid7.com/secret-path")
+        }
         val (st, body) = responses?.let { it[minOf(requestIndex++, it.size - 1)] } ?: (status to responseBody)
         respond(
             content = body,

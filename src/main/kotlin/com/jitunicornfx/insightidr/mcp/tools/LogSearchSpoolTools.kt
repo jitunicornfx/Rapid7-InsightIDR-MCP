@@ -153,7 +153,16 @@ internal fun Server.registerLogSearchSpoolTools(client: Rapid7Client, spool: Spo
                 default = LS_MAX_PER_PAGE.toLong(),
             )
             integerParam("max_pages", "Stop after this many pages. Default $SPOOL_DEFAULT_MAX_PAGES, max $SPOOL_MAX_PAGES_CEILING.", min = 1, max = SPOOL_MAX_PAGES_CEILING.toLong(), default = SPOOL_DEFAULT_MAX_PAGES.toLong())
-            integerParam("max_events", "Stop after this many events. Default $SPOOL_DEFAULT_MAX_EVENTS, max $SPOOL_MAX_EVENTS_CEILING.", min = 1, max = SPOOL_MAX_EVENTS_CEILING, default = SPOOL_DEFAULT_MAX_EVENTS)
+integerParam(
+                "max_events",
+                "Stop once this many events have been written. Checked at the end of each page, so the file " +
+                    "can exceed it by up to one page: stopping part-way through a page would lose the rest " +
+                    "of it, since the API can only resume from the NEXT page. Default " +
+                    "$SPOOL_DEFAULT_MAX_EVENTS, max $SPOOL_MAX_EVENTS_CEILING.",
+                min = 1,
+                max = SPOOL_MAX_EVENTS_CEILING,
+                default = SPOOL_DEFAULT_MAX_EVENTS,
+            )
             integerParam("max_bytes", "Stop once the file reaches this size in bytes. Default ${SPOOL_DEFAULT_MAX_BYTES / (1024 * 1024)} MiB, max ${SPOOL_MAX_BYTES_CEILING / (1024 * 1024 * 1024)} GiB.", min = 1, max = SPOOL_MAX_BYTES_CEILING, default = SPOOL_DEFAULT_MAX_BYTES)
             integerParam(
                 "max_duration_ms",
@@ -243,8 +252,12 @@ internal fun Server.registerLogSearchSpoolTools(client: Rapid7Client, spool: Spo
             )
         }
 
-        var status = "COMPLETE — the API offered no further pages"
-        var complete = true
+        // PESSIMISTIC until proven otherwise. These are what the manifest records if the run is ended
+        // by something this loop does not get to describe - cancellation at the client's tool timeout,
+        // above all. Defaulting to COMPLETE left a partial evidence file beside a manifest vouching
+        // for it. A run is complete only at the two places below that say so.
+        var status = "INCOMPLETE — the run was interrupted before it finished"
+        var complete = false
         // Two different things, kept apart. The link last FOLLOWED exists only to detect the API
         // repeating itself. The link to RESUME from is set only when the run stops early with a page
         // still unread — a run that completes has none.
@@ -264,6 +277,17 @@ internal fun Server.registerLogSearchSpoolTools(client: Rapid7Client, spool: Spo
         var manifestWritten = false
         try {
             loop@ while (true) {
+                // Still RUNNING, not finished: the poll budget ran out while the body still carried a
+                // rel="Self" link. Its events are partial and its lack of a Next link means nothing.
+                // Treated as a final page this reads as "no events matched ... COMPLETE" - an
+                // authoritative false negative from a search that had not finished searching.
+                continuationLink(response.body)?.let { self ->
+                    status = "INCOMPLETE — the query was still running when the time allowed for it ran out; " +
+                        "resume to keep waiting for it"
+                    complete = false
+                    resumeHref = self
+                    break@loop
+                }
                 pages++
                 val events = eventsArray(response.body)
                 if (events == null) {
@@ -277,11 +301,15 @@ internal fun Server.registerLogSearchSpoolTools(client: Rapid7Client, spool: Spo
                     if (emptyPages >= SPOOL_MAX_EMPTY_PAGES) {
                         // Giving up is not the same as finishing. If the API is still offering a next
                         // page, there may be events behind it, and saying COMPLETE would be a guess.
-                        nextPageLink(response.body)?.let { next ->
+                        val next = nextPageLink(response.body)
+                        if (next != null) {
                             status = "STOPPED — the API returned $emptyPages consecutive empty pages but " +
                                 "still offers a next page, so there may be more events"
                             complete = false
                             resumeHref = next
+                        } else {
+                            status = "COMPLETE — the API offered no further pages"
+                            complete = true
                         }
                         break@loop
                     }
@@ -290,12 +318,6 @@ internal fun Server.registerLogSearchSpoolTools(client: Rapid7Client, spool: Spo
                 }
 
                 for (event in events) {
-                    if (writer.events >= maxEvents) {
-                        status = "STOPPED at the max_events cap ($maxEvents)"
-                        complete = false
-                        resumeHref = nextPageLink(response.body)
-                        break@loop
-                    }
                     if (samples.size < sampleCount) {
                         // Escaped BEFORE it is shortened: an escape is six times what it replaces, so
                         // 2,000 zero-width characters cut first would still come out as 12,000.
@@ -323,10 +345,28 @@ internal fun Server.registerLogSearchSpoolTools(client: Rapid7Client, spool: Spo
                     complete = false
                     break@loop
                 }
+                // Nothing further to fetch: that, and only that, is completion. Checked BEFORE the caps,
+                // so a run that reaches a cap on its very last page is still a complete run.
+                val href = nextPageLink(response.body)
+                if (href == null) {
+                    status = "COMPLETE — the API offered no further pages"
+                    complete = true
+                    break@loop
+                }
+
+                // Every cap is applied HERE, between pages, and resumes from the next one. A cap applied
+                // part-way through a page cannot: the API resumes from the next page only, so whatever
+                // was left of this one would be silently missing from the combined files.
+                if (writer.events >= maxEvents) {
+                    status = "STOPPED at the max_events cap ($maxEvents)"
+                    complete = false
+                    resumeHref = href
+                    break@loop
+                }
                 if (writer.sizeOnDisk() >= maxBytes) {
                     status = "STOPPED at the max_bytes cap (${mib(maxBytes)})"
                     complete = false
-                    resumeHref = nextPageLink(response.body)
+                    resumeHref = href
                     break@loop
                 }
                 // Re-sampled every page: the check before the run says nothing about a run that writes
@@ -336,23 +376,22 @@ internal fun Server.registerLogSearchSpoolTools(client: Rapid7Client, spool: Spo
                     status = "STOPPED — the spool volume is down to ${mib(freeNow)} free, and this server " +
                         "keeps ${mib(SpoolStore.MIN_FREE_BYTES)} in reserve"
                     complete = false
-                    resumeHref = nextPageLink(response.body)
+                    resumeHref = href
                     break@loop
                 }
                 if (pages >= maxPages) {
                     status = "STOPPED at the max_pages cap ($maxPages)"
                     complete = false
-                    resumeHref = nextPageLink(response.body)
+                    resumeHref = href
                     break@loop
                 }
                 if (elapsed() >= budgetMs) {
                     status = "STOPPED at the max_duration_ms budget (${budgetMs}ms)"
                     complete = false
-                    resumeHref = nextPageLink(response.body)
+                    resumeHref = href
                     break@loop
                 }
 
-                val href = nextPageLink(response.body) ?: break@loop
                 if (href == lastFollowedHref) {
                     status = "INCOMPLETE — the API repeated the same next-page link, so the run was stopped"
                     complete = false
@@ -368,6 +407,18 @@ internal fun Server.registerLogSearchSpoolTools(client: Rapid7Client, spool: Spo
                     // The href itself is never repeated: it is API-provided, and this is our voice.
                     status = "INCOMPLETE — refused to follow a next-page link that is not on a Rapid7 API host"
                     complete = false
+                    break@loop
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // A timeout or a dropped connection on page N. Left to propagate, apiTool would
+                    // answer with a bare error and NO file path - leaving pages 1..N-1 on disk that the
+                    // model was never told about. Caught here, the summary still goes back, with the
+                    // file, the count, and the link to pick up from. Only the class is named: an
+                    // exception's message can quote the URL or the response.
+                    status = "INCOMPLETE — page ${pages + 1} could not be fetched (${e::class.simpleName})"
+                    complete = false
+                    resumeHref = href
                     break@loop
                 }
                 if (!response.ok) {
