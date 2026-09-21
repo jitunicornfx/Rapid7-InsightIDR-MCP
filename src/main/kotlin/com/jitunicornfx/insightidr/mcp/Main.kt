@@ -379,6 +379,8 @@ private fun runStdio(client: Rapid7Client, config: Config, protocolOut: PrintStr
 /** Everything [runHttp] needs to start and later tear down; returned unstarted so tests can drive it. */
 internal class HttpRuntime(
     val engine: EmbeddedServer<*, *>,
+    /** The grace period this runtime actually uses; see [HTTP_NOTIFY_GRACE_MILLIS]. */
+    val notifyGraceMillis: Long,
     private val checkScope: CoroutineScope,
     private val updateCheck: Deferred<UpdateChecker.Result>?,
     private val client: Rapid7Client,
@@ -463,7 +465,7 @@ internal fun buildHttpRuntime(
             legacySseTransport(DEPRECATED_ROOT_SSE_PATH, newServer = newServer)
         }
     }
-    return HttpRuntime(engine, checkScope, updateCheck, client)
+    return HttpRuntime(engine, notifyGraceMillis, checkScope, updateCheck, client)
 }
 
 private fun runHttp(client: Rapid7Client, config: Config, host: String, port: Int) {

@@ -234,8 +234,8 @@ class SpoolStore internal constructor(
      * this LOOKS at what came out ([verify]) and tells the operator, once, if it is not private.
      */
     internal class Privacy(
-        private val directoryAttributes: Array<FileAttribute<*>>,
-        private val fileAttributes: Array<FileAttribute<*>>,
+        internal val directoryAttributes: Array<FileAttribute<*>>,
+        internal val fileAttributes: Array<FileAttribute<*>>,
         /** The principal files are private to. Null on POSIX, where the mode bits say "owner". */
         private val owner: UserPrincipal?,
         private val warn: (String) -> Unit,
@@ -346,8 +346,14 @@ class SpoolStore internal constructor(
             /** No restriction at all: what a volume that ignores permissions amounts to. */
             internal fun none(warn: (String) -> Unit) = Privacy(emptyArray(), emptyArray(), owner = null, warn = warn)
 
-            fun of(directory: Path, warn: (String) -> Unit): Privacy {
-                val views = directory.fileSystem.supportedFileAttributeViews()
+            fun of(directory: Path, warn: (String) -> Unit): Privacy =
+                of(directory.fileSystem.supportedFileAttributeViews(), warn)
+
+            /**
+             * The decision itself, from the attribute views a filesystem offers. Separate so the POSIX
+             * answer can be checked on Windows: building the attributes touches no file.
+             */
+            internal fun of(views: Set<String>, warn: (String) -> Unit): Privacy {
                 if ("posix" in views) {
                     return Privacy(
                         arrayOf(PosixFilePermissions.asFileAttribute(OWNER_ONLY_DIRECTORY)),

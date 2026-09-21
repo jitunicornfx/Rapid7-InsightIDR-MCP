@@ -87,6 +87,45 @@ class UpdateInstallerTest {
     }
 
     @Test
+    fun `an over-long download is cut off as it streams, not after it has all been written`() = runBlocking {
+        // No Content-Length, so the declared-size check cannot help, and a body whose digest would be
+        // wrong anyway - which is why "the install failed" proves nothing about the cut-off. What
+        // shows it is how much reached the disk: a full disk is the harm being prevented.
+        val source = serverJar(File(tempDir, "source.jar"))
+        val asset = assetFor(source).copy(sizeBytes = 10)
+        val endless = ByteArray(8 * 1024 * 1024) { 'A'.code.toByte() }
+        val engine = MockEngine { respond(io.ktor.utils.io.ByteReadChannel(endless), HttpStatusCode.OK) }
+        val destination = File(tempDir, "staged.new")
+
+        val digest = UpdateInstaller.downloadTo(asset, destination, engine)
+
+        assertNull(digest, "an over-long body has no acceptable digest")
+        assertTrue(destination.length() < 1024 * 1024, "wrote ${destination.length()} bytes of an 8 MiB body advertised as 10")
+    }
+
+    @Test
+    fun `cancelling a download stops it, rather than turning into a failed download`() = runBlocking {
+        // install() wraps this in withContext, which rethrows cancellation on its own account - so a
+        // test of install() passes even if downloadTo swallows it. This is the function itself.
+        val source = serverJar(File(tempDir, "source.jar"))
+        val started = CompletableDeferred<Unit>()
+        val hanging = MockEngine {
+            started.complete(Unit)
+            awaitCancellation()
+        }
+        val ranPastTheDownload = AtomicBoolean(false)
+
+        val job = launch(Dispatchers.Default) {
+            UpdateInstaller.downloadTo(assetFor(source), File(tempDir, "staged.new"), hanging)
+            ranPastTheDownload.set(true)
+        }
+        started.await()
+        job.cancelAndJoin()
+
+        assertFalse(ranPastTheDownload.get(), "a cancelled download must not return null as if it had merely failed")
+    }
+
+    @Test
     fun `a digest mismatch refuses to install and leaves the original intact`() = runBlocking {
         val source = serverJar(File(tempDir, "source.jar"), marker = "NEW")
         val target = serverJar(File(tempDir, "installed.jar"), marker = "OLD")
@@ -573,6 +612,40 @@ class UpdateInstallerTest {
     }
 
     @Test
+    fun `close waits for a heartbeat tick that is already running`() {
+        // What follows close() in production is the shutdown swap, which overwrites and then deletes
+        // the staged file. A tick still in flight would re-stamp it underneath that. Left to chance
+        // the overlap shows up about one run in a hundred, so here a tick is HELD open with a latch.
+        val tickEntered = java.util.concurrent.CountDownLatch(1)
+        val letTickFinish = java.util.concurrent.CountDownLatch(1)
+        val staged = object : File(tempDir, "app.jar.1.new") {
+            override fun isFile(): Boolean {
+                tickEntered.countDown()
+                // shutdownNow() interrupts the worker; a real tick is a syscall and cannot be cut short.
+                while (letTickFinish.count > 0) {
+                    try {
+                        letTickFinish.await()
+                    } catch (_: InterruptedException) {
+                    }
+                }
+                return super.isFile()
+            }
+        }.apply { writeText("x") }
+
+        val keepAlive = UpdateInstaller.keepStagedFresh(staged, intervalMillis = 10, pin = false) { }
+        assertTrue(tickEntered.await(5, java.util.concurrent.TimeUnit.SECONDS), "the heartbeat never ticked")
+
+        val closed = AtomicBoolean(false)
+        val closer = Thread { keepAlive.close(); closed.set(true) }.apply { start() }
+        Thread.sleep(300)
+        assertFalse(closed.get(), "close() returned while a tick was still running")
+
+        letTickFinish.countDown()
+        closer.join(5_000)
+        assertTrue(closed.get(), "and it must return once the tick is done")
+    }
+
+    @Test
     fun `a shutdown swap that finds its staged file gone says so`() {
         val target = serverJar(File(tempDir, "app.jar"))
         val realErr = System.err
@@ -609,7 +682,7 @@ class UpdateInstallerTest {
         val target = serverJar(File(tempDir, "app.jar"))
         var existedWhileHeld = false
 
-        UpdateInstaller.withInstallLock(target, deleteOnRelease = true) {
+        UpdateInstaller.withInstallLock(target, osName = "Windows 11") {
             existedWhileHeld = lockFileFor(target).exists()
         }
 
@@ -623,11 +696,31 @@ class UpdateInstallerTest {
         // could remove a newcomer's live lock. See withInstallLock.
         val target = serverJar(File(tempDir, "app.jar"))
 
-        UpdateInstaller.withInstallLock(target, deleteOnRelease = false) { }
+        UpdateInstaller.withInstallLock(target, osName = "Linux") { }
         assertTrue(lockFileFor(target).exists(), "released, but deliberately left in place")
 
         // A leftover lock file is inert: it never blocks the next acquisition.
-        assertEquals(UpdateInstaller.LockResult.Acquired(2), UpdateInstaller.withInstallLock(target, deleteOnRelease = false) { 2 })
+        assertEquals(UpdateInstaller.LockResult.Acquired(2), UpdateInstaller.withInstallLock(target, osName = "Linux") { 2 })
+    }
+
+    @Test
+    fun `which platform deletes its lock is decided by the OS name, and only Windows does`() {
+        // There is no CI and the suite runs on Windows alone, where deleting is correct. So the
+        // POSIX answer is pinned here as a pure function, and below by passing the name in.
+        for (windows in listOf("Windows 11", "Windows Server 2022", "windows 10")) assertTrue(UpdateInstaller.isWindows(windows), windows)
+        for (posix in listOf("Linux", "Mac OS X", "FreeBSD", "SunOS", "", null)) assertFalse(UpdateInstaller.isWindows(posix), "$posix")
+        assertEquals(UpdateInstaller.isWindows(System.getProperty("os.name")), UpdateInstaller.IS_WINDOWS)
+    }
+
+    @Test
+    fun `on Linux and macOS the lock file is left in place, whatever machine runs this test`() {
+        // unlink() succeeds against a file a newcomer has already opened and locked, so a delete here
+        // could remove a live lock and let two installs run at once.
+        val target = serverJar(File(tempDir, "app.jar"))
+        for (posix in listOf("Linux", "Mac OS X")) {
+            UpdateInstaller.withInstallLock(target, osName = posix) { }
+            assertTrue(lockFileFor(target).exists(), "under $posix the lock file must never be deleted")
+        }
     }
 
     @Test
@@ -644,7 +737,7 @@ class UpdateInstallerTest {
         val target = serverJar(File(tempDir, "app.jar"))
 
         assertFailsWith<IllegalStateException> {
-            UpdateInstaller.withInstallLock<Unit>(target, deleteOnRelease = true) { error("install blew up") }
+            UpdateInstaller.withInstallLock<Unit>(target, osName = "Windows 11") { error("install blew up") }
         }
 
         assertFalse(lockFileFor(target).exists(), "cleanup runs on the failure path too")
@@ -660,12 +753,12 @@ class UpdateInstallerTest {
         var innerRan = false
         var lockExistedAfterContention = false
 
-        UpdateInstaller.withInstallLock(target, deleteOnRelease = true) {
+        UpdateInstaller.withInstallLock(target, osName = "Windows 11") {
             // Note the file-survival assertion cannot fail on Windows however the code is written:
             // deleting a file another handle holds open is refused there. The `acquired` guard it
             // pins is only load-bearing where a delete could succeed. Asserted anyway so the intent
             // is recorded for the platform that can violate it.
-            val inner = UpdateInstaller.withInstallLock(target, deleteOnRelease = true) { innerRan = true }
+            val inner = UpdateInstaller.withInstallLock(target, osName = "Windows 11") { innerRan = true }
             assertEquals(UpdateInstaller.LockResult.Contended, inner)
             lockExistedAfterContention = lockFileFor(target).exists()
         }

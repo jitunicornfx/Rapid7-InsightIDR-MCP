@@ -114,9 +114,15 @@ object UpdateInstaller {
         digest.digest().toHex()
     }.getOrNull()
 
-    /** Whether this JVM is running on Windows, which decides how the install lock file is cleaned up. */
-    internal val IS_WINDOWS: Boolean =
-        System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)
+    /**
+     * Whether [osName] (the `os.name` system property) is Windows, which decides how the install lock
+     * file is cleaned up. A pure function of its argument, so the POSIX answer can be tested on the
+     * Windows machine that is the only place this project's tests ever run.
+     */
+    internal fun isWindows(osName: String?): Boolean = osName.orEmpty().startsWith("Windows", ignoreCase = true)
+
+    /** Whether this JVM is running on Windows. */
+    internal val IS_WINDOWS: Boolean = isWindows(System.getProperty("os.name"))
 
     /**
      * The outcome of [withInstallLock]. The three cases are kept apart because they mean different
@@ -166,13 +172,16 @@ object UpdateInstaller {
      *    needs `fstat` on the descriptor, and the JDK only reads attributes by path — which races
      *    with exactly the unlink it is meant to detect.
      *
-     * [deleteOnRelease] exists so both behaviours can be tested on either platform.
+     * The platform is passed as [osName] rather than as a ready-made boolean, so that the decision
+     * itself - not just each of its outcomes - runs under test: a default of "delete" could
+     * otherwise be reintroduced and pass every test on Windows, where deleting is correct.
      */
     internal inline fun <T> withInstallLock(
         target: File,
-        deleteOnRelease: Boolean = IS_WINDOWS,
+        osName: String? = System.getProperty("os.name"),
         block: () -> T,
     ): LockResult<T> {
+        val deleteOnRelease = isWindows(osName)
         val lockFile = File(target.parentFile, target.name + LOCK_SUFFIX)
         val raf = try {
             RandomAccessFile(lockFile, "rw")
@@ -244,6 +253,9 @@ object UpdateInstaller {
         sweepOlderThan(dir, olderThanMillis, now) { name -> name.startsWith(prefix) && name.endsWith(STAGED_SUFFIX) }
     }
 
+    /** Longest close() waits for a heartbeat tick already in progress. A tick is one setLastModified call. */
+    private const val HEARTBEAT_STOP_WAIT_MILLIS = 2_000L
+
     /** Name of the daemon thread that keeps a staged download alive; see [keepStagedFresh]. */
     internal const val HEARTBEAT_THREAD_NAME = "insightidr-mcp-stage-heartbeat"
 
@@ -304,6 +316,10 @@ object UpdateInstaller {
         )
         return AutoCloseable {
             scheduler.shutdownNow()
+            // Wait for a tick that is already running. Without this, close() can return while the
+            // heartbeat is still about to re-stamp the file - and what follows close() is the
+            // shutdown swap, which overwrites and deletes it.
+            runCatching { scheduler.awaitTermination(HEARTBEAT_STOP_WAIT_MILLIS, TimeUnit.MILLISECONDS) }
             runCatching { pinned?.close() }
         }
     }

@@ -73,6 +73,46 @@ class SpoolStorePrivacyTest {
     }
 
     @Test
+    fun `on a POSIX filesystem the attributes asked for are owner-only, whatever machine runs this test`() {
+        // Building the attributes touches no file, so the Linux and macOS answer can be checked here.
+        // Without this, returning "no attributes" from the POSIX branch passes every test on Windows.
+        val posixPrivacy = SpoolStore.Privacy.of(setOf("basic", "posix", "owner", "unix"), warn = { warnings += it })
+
+        val directory = posixPrivacy.directoryAttributes.single()
+        val file = posixPrivacy.fileAttributes.single()
+        assertEquals("posix:permissions", directory.name())
+        assertEquals("posix:permissions", file.name())
+        assertEquals(PosixFilePermissions.fromString("rwx------"), directory.value())
+        assertEquals(PosixFilePermissions.fromString("rw-------"), file.value())
+        assertTrue(warnings.isEmpty())
+    }
+
+    @Test
+    fun `a filesystem offering neither permissions nor ACLs is said to be unprotected`() {
+        val none = SpoolStore.Privacy.of(setOf("basic"), warn = { warnings += it })
+        assertTrue(none.fileAttributes.isEmpty() && none.directoryAttributes.isEmpty())
+        assertEquals(1, warnings.count { "default permissions" in it }, "$warnings")
+    }
+
+    @Test
+    fun `the default location, when it already exists, is kept private on POSIX and left alone on Windows`() {
+        // ~/.rapid7-insightidr-mcp/spool is this server's by convention, so on POSIX it is held at 700
+        // even if something loosened it. On Windows its inherited profile ACL is already right, and
+        // rewriting an existing directory's ACL does not reach the files inside it anyway.
+        val existing = File(root, "default-spool").apply { mkdirs() }
+        if (posix) Files.setPosixFilePermissions(existing.toPath(), PosixFilePermissions.fromString("rwxr-xr-x"))
+        val before = if (posix) "" else acl(existing.toPath()).toString()
+
+        SpoolStore(existing.toPath(), isDefaultLocation = true, warn = { warnings += it }).prepare()
+
+        if (posix) {
+            assertEquals("rwx------", PosixFilePermissions.toString(Files.getPosixFilePermissions(existing.toPath())))
+        } else {
+            assertEquals(before, acl(existing.toPath()).toString(), "an existing directory's ACL is not rewritten")
+        }
+    }
+
+    @Test
     fun `a spool directory this server creates is private to its owner`() {
         val dir = File(root, "made/by/us")
 

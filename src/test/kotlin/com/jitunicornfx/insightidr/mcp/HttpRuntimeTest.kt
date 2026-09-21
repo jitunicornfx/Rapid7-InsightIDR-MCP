@@ -256,7 +256,7 @@ class HttpRuntimeTest {
      * test's control: initialize, say `initialized`, wait [openStreamAfterMillis], THEN open the GET
      * stream and report whether the update notice turns up on it.
      */
-    private suspend fun noticeArrives(base: String, openStreamAfterMillis: Long): Boolean {
+    private suspend fun noticeArrives(base: String, openStreamAfterMillis: Long, waitMillis: Long = 4_000): Boolean {
         fun io.ktor.client.request.HttpRequestBuilder.mcpHeaders(session: String? = null) {
             header(HttpHeaders.Authorization, "Bearer $token")
             header(HttpHeaders.Accept, "application/json, text/event-stream")
@@ -277,7 +277,7 @@ class HttpRuntimeTest {
 
         delay(openStreamAfterMillis)
 
-        return withTimeoutOrNull(4_000) {
+        return withTimeoutOrNull(waitMillis) {
             http.prepareGet("$base$STREAMABLE_HTTP_PATH") { mcpHeaders(session) }.execute { response ->
                 val channel = response.bodyAsChannel()
                 var found = false
@@ -306,13 +306,33 @@ class HttpRuntimeTest {
 
     @Test
     fun `within the grace period a client that opens its stream late still gets the notice`() = runBlocking {
-        val base = start(tokenConfig.copy(autoUpdateDisabled = true), notifyGraceMillis = 1_500, update = available)
-        assertTrue(noticeArrives(base, openStreamAfterMillis = 700))
+        // 3 s of grace against a client that takes 500 ms: 2.5 s of slack for a loaded machine.
+        val base = start(tokenConfig.copy(autoUpdateDisabled = true), notifyGraceMillis = 3_000, update = available)
+        assertTrue(noticeArrives(base, openStreamAfterMillis = 500, waitMillis = 8_000))
     }
 
     @Test
     fun `the production grace period is long enough to matter and short enough not to be noticed`() {
         assertTrue(HTTP_NOTIFY_GRACE_MILLIS in 1_000L..5_000L, "was $HTTP_NOTIFY_GRACE_MILLIS")
+    }
+
+    @Test
+    fun `a runtime built without naming a grace period uses the production one`() {
+        // Every other test here passes its own value, so a default of 0 - the very bug the grace
+        // period fixes - would go unnoticed without this.
+        val client = Rapid7Client(config, MockEngine { respond("{}", HttpStatusCode.OK) })
+        val realErr = System.err
+        System.setErr(PrintStream(ByteArrayOutputStream(), true, "UTF-8"))
+        val built = try {
+            buildHttpRuntime(client, config, "127.0.0.1", 0, startCheck = { null })
+        } finally {
+            System.setErr(realErr)
+        }
+        try {
+            assertEquals(HTTP_NOTIFY_GRACE_MILLIS, built.notifyGraceMillis)
+        } finally {
+            built.shutdown()
+        }
     }
 
     @Test
