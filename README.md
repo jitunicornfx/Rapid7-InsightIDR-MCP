@@ -34,6 +34,7 @@ Configuration is read from environment variables:
 | `INSIGHTIDR_V1_BASE_URL` |          | `https://<region>.api.insight.rapid7.com` | v1 API base URL override. The `/idr/v1/` routes are served from `api.insight`, the same host as v2 (see [Design notes](#design-notes)). |
 | `INSIGHTIDR_LOG_SEARCH_BASE_URL` |  | `https://<region>.rest.logs.insight.rapid7.com` | Log Search API base override (default follows the Log Search spec servers; set to `https://<region>.api.insight.rapid7.com/log_search` for the unified platform route). |
 | `INSIGHTIDR_TIMEOUT_MS`  |          | `60000`                                   | Per-request timeout in milliseconds.                           |
+| `INSIGHTIDR_HTTP_TOKEN`  | when `--host` is not loopback | *(unset)*              | `--http` mode only: bearer token every request must present, at least 16 characters. The server refuses to start on a non-loopback address without it. See [Reaching it from another machine](#reaching-it-from-another-machine). |
 | `INSIGHTIDR_HTTP_ALLOWED_ORIGINS` |  | *(empty — deny cross-origin)*    | `--http` mode only: comma-separated browser origins allowed via CORS (e.g. `https://app.example.com`). Empty denies all cross-origin browser access; non-browser MCP clients are unaffected. Never use `*`. |
 | `INSIGHTIDR_DISABLE_UPDATE_CHECK` |  | *(unset — check enabled)*        | Set to `1`/`true`/`yes` to skip the startup check for a newer GitHub release (see [Update notifications](#update-notifications)). Implies no automatic installation. |
 | `INSIGHTIDR_DISABLE_AUTO_UPDATE` |  | *(unset — installing enabled)*   | Set to `1`/`true`/`yes` to report new releases but never download or install them (see [Automatic installation](#automatic-installation)). |
@@ -93,24 +94,64 @@ INSIGHTIDR_API_KEY=xxxx INSIGHTIDR_REGION=us \
   java -jar build/libs/rapid7-insightidr-mcp-0.3.1-all.jar --stdio
 ```
 
-### HTTP (Streamable HTTP / SSE)
+### HTTP
 
-Binds to `127.0.0.1:3001` by default. Override the listen address with `--host` (alias `--ip`) and the
+Binds to `127.0.0.1:3001` by default, which only programs on the same machine can reach. Override the
 port with `--port`:
 
 ```PowerShell
 # PowerShell 5.1
-powershell.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.3.1-all.jar --http --host 0.0.0.0 --port 3001 }
+powershell.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.3.1-all.jar --http --port 3001 }
 
 # PowerShell 7
-pwsh.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.3.1-all.jar --http --host 0.0.0.0 --port 3001 }
+pwsh.exe -Command { $env:INSIGHTIDR_API_KEY="xxxxx"; $env:INSIGHTIDR_REGION="us"; java -jar .\rapid7-insightidr-mcp-0.3.1-all.jar --http --port 3001 }
 ```
 
 ```bash
 # macOS / Linux
 INSIGHTIDR_API_KEY=xxxx INSIGHTIDR_REGION=us \
+  java -jar build/libs/rapid7-insightidr-mcp-0.3.1-all.jar --http --port 3001
+```
+
+Set `INSIGHTIDR_HTTP_TOKEN` even here. Without it the server starts, with a warning: any program
+running on the machine can call it, and it holds your InsightIDR API key.
+
+#### Reaching it from another machine
+
+`--host` (alias `--ip`) chooses the listen address. **Anything other than a loopback address requires
+a bearer token, and the server refuses to start without one** (exit code 2). A server that holds
+your API key, listening on the network with no authentication, hands every tool — including the ones
+that close investigations and delete data — to anyone who can reach the port. There is no setup in
+which that is what you meant, so it is refused rather than warned about.
+
+```bash
+# Generate a token once, and give the same value to your MCP client.
+export INSIGHTIDR_HTTP_TOKEN="$(openssl rand -hex 32)"
+
+INSIGHTIDR_API_KEY=xxxx INSIGHTIDR_REGION=us \
   java -jar build/libs/rapid7-insightidr-mcp-0.3.1-all.jar --http --host 0.0.0.0 --port 3001
 ```
+
+Clients send it on every request as `Authorization: Bearer <token>`. The token must be at least 16
+characters; it is compared in constant time, never logged, and never reported by any tool. Twenty
+wrong tokens from one address within a minute earn that address `429` until the minute passes.
+
+The token authenticates; it does not encrypt. **This server speaks plain HTTP**, so across a network
+put it behind something that terminates TLS (a reverse proxy, an SSH tunnel, a VPN) or the token and
+everything else travel in clear text.
+
+What the transport checks, in this order, before any MCP code runs:
+
+| Check | Refused with | Why |
+|---|---|---|
+| `Host` header names this server (loopback binds) | `421` | DNS rebinding: a web page that points its own name at `127.0.0.1` |
+| `Origin`, if present, is allow-listed | `403` | A browser page on another site calling your local server |
+| `Authorization: Bearer <token>` | `401`, then `429` | Everything else |
+| Declared body size is under 4 MiB | `413` | |
+
+Browsers are denied by default. To let a web client in, list its origin in
+`INSIGHTIDR_HTTP_ALLOWED_ORIGINS`; it still needs the token. Only a CORS *preflight* is answered
+without one, because a browser cannot attach credentials to a preflight.
 
 Run `--help` to see all options. You can also run during development with
 `./gradlew run --args="--stdio"`.

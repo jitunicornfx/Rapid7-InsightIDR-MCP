@@ -36,6 +36,15 @@ data class ServerFacts(
      * themselves name internal hostnames.
      */
     val httpAllowedOriginCount: Int,
+    /** Whether a bearer token is configured — never the token, and never anything derived from it. */
+    val httpAuthTokenConfigured: Boolean,
+    /** `stdio` or `http`. */
+    val transport: String,
+    /**
+     * For `http`: whether the bind address is loopback. Null under stdio. The address itself is not
+     * reported; whether the server is reachable from the network is the fact that matters.
+     */
+    val httpBindIsLoopback: Boolean?,
     val updateCheckDisabled: Boolean,
     val autoUpdateDisabled: Boolean,
 ) {
@@ -52,12 +61,18 @@ data class ServerFacts(
             spoolRetentionHours = 0,
             uploadDirectoryConfigured = false,
             httpAllowedOriginCount = 0,
+            httpAuthTokenConfigured = false,
+            transport = "stdio",
+            httpBindIsLoopback = null,
             updateCheckDisabled = false,
             autoUpdateDisabled = false,
         )
 
-        /** The one place Config is narrowed. The API key is deliberately not a field of the result. */
-        fun from(config: Config): ServerFacts = ServerFacts(
+        /**
+         * The one place Config is narrowed. Neither the API key nor the HTTP bearer token is a field
+         * of the result. [httpBindHost] is the `--host` value under `--http`, and null under stdio.
+         */
+        fun from(config: Config, httpBindHost: String? = null): ServerFacts = ServerFacts(
             region = config.region.code,
             baseUrl = config.baseUrl,
             v1BaseUrl = config.v1BaseUrl,
@@ -68,6 +83,9 @@ data class ServerFacts(
             spoolRetentionHours = config.spoolRetentionHours,
             uploadDirectoryConfigured = config.uploadDirectory != null,
             httpAllowedOriginCount = config.httpAllowedOrigins.size,
+            httpAuthTokenConfigured = config.httpAuthToken != null,
+            transport = if (httpBindHost == null) "stdio" else "http",
+            httpBindIsLoopback = httpBindHost?.let(::isLoopback),
             updateCheckDisabled = config.updateCheckDisabled,
             autoUpdateDisabled = config.autoUpdateDisabled,
         )

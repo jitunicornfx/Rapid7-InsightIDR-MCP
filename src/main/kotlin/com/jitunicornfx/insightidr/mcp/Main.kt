@@ -10,11 +10,9 @@ import com.github.ajalt.clikt.parameters.options.help
 import com.github.ajalt.clikt.parameters.options.option
 import com.github.ajalt.clikt.parameters.options.switch
 import com.github.ajalt.clikt.parameters.types.int
-import io.ktor.http.*
-import io.ktor.server.application.install
 import io.ktor.server.cio.*
 import io.ktor.server.engine.*
-import io.ktor.server.plugins.cors.routing.*
+import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.StdioServerTransport
 import io.modelcontextprotocol.kotlin.sdk.server.mcp
 import kotlinx.coroutines.CoroutineScope
@@ -83,6 +81,10 @@ class Rapid7InsightIdrCommand internal constructor(
         |${Config.ENV_SPOOL_RETENTION_HOURS} (optional): hours before a spooled result is swept at startup, default ${Config.DEFAULT_SPOOL_RETENTION_HOURS}. 0 never sweeps.
         |
         |${Config.ENV_UPLOAD_DIR} (optional): the one directory upload_attachment may read files from. Unset, that tool is disabled.
+        |
+        |${Config.ENV_HTTP_TOKEN}: bearer token every --http request must present (at least ${Config.MIN_HTTP_TOKEN_CHARS} characters). REQUIRED when --host is not a loopback address; the server refuses to start without it.
+        |
+        |${Config.ENV_HTTP_ALLOWED_ORIGINS} (optional): comma-separated browser origins allowed to call --http. Default: none.
         """.trimMargin()
 
     private val transport: Transport by option()
@@ -126,8 +128,33 @@ class Rapid7InsightIdrCommand internal constructor(
             updateCheckDisabled = fromEnv.updateCheckDisabled || noUpdateCheck,
             autoUpdateDisabled = fromEnv.autoUpdateDisabled || noAutoUpdate || noUpdateCheck,
         )
+        unauthenticatedExposure(transport, host, config)?.let { refusal ->
+            echo(refusal, err = true)
+            // Distinct from a configuration ERROR (1): the configuration is valid, and unsafe.
+            throw ProgramResult(EXIT_REFUSED_UNSAFE)
+        }
         serve(transport, host, port, config)
     }
+}
+
+/** Exit code when the server declines to start because doing so would be unsafe. */
+internal const val EXIT_REFUSED_UNSAFE = 2
+
+/**
+ * Why this combination must not be served, or null if it may be.
+ *
+ * `--http` on anything but loopback, with no bearer token, puts a server holding the InsightIDR API
+ * key on the network for anyone who can reach the port: every tool, including the ones that close
+ * investigations and delete data. There is no configuration in which that is what the operator
+ * meant, so it is refused rather than warned about. Loopback without a token is still allowed —
+ * it is the existing local setup — and warned about, because any local process can then call it.
+ */
+internal fun unauthenticatedExposure(transport: Transport, host: String, config: Config): String? {
+    if (transport != Transport.HTTP || config.httpAuthToken != null || isLoopback(host)) return null
+    return "Refusing to listen on '$host' without authentication. This server holds your InsightIDR API key, " +
+        "and --host $host makes it reachable from the network. Set ${Config.ENV_HTTP_TOKEN} to a secret of at " +
+        "least ${Config.MIN_HTTP_TOKEN_CHARS} characters (clients send it as 'Authorization: Bearer <token>'), " +
+        "or bind to 127.0.0.1."
 }
 
 fun main(args: Array<String>) = Rapid7InsightIdrCommand().main(args)
@@ -144,7 +171,7 @@ private fun runServer(transport: Transport, host: String, port: Int, config: Con
     UploadPolicy.install(UploadPolicy.resolve(config.uploadDirectory))
     // Narrowed from the post-flag-merge config, so the update flags reported by
     // insightidr_server_info reflect --no-update-check / --no-auto-update, not just the environment.
-    ServerFacts.install(ServerFacts.from(config))
+    ServerFacts.install(ServerFacts.from(config, httpBindHost = host.takeIf { transport == Transport.HTTP }))
 
     val client = Rapid7Client(config)
     Runtime.getRuntime().addShutdownHook(Thread { runCatching { client.close() } })
@@ -321,30 +348,49 @@ private fun runStdio(client: Rapid7Client, config: Config, protocolOut: PrintStr
     }
 }
 
-private fun runHttp(client: Rapid7Client, config: Config, host: String, port: Int) {
+/** Everything [runHttp] needs to start and later tear down; returned unstarted so tests can drive it. */
+internal class HttpRuntime(
+    val engine: EmbeddedServer<*, *>,
+    private val checkScope: CoroutineScope,
+    private val updateCheck: Deferred<UpdateChecker.Result>?,
+    private val client: Rapid7Client,
+) {
+    fun shutdown() {
+        updateCheck?.cancel()
+        checkScope.cancel()
+        client.close()
+    }
+}
+
+/** Build the HTTP transport — the request guard, then the MCP routes — without starting it. */
+internal fun buildHttpRuntime(client: Rapid7Client, config: Config, host: String, port: Int): HttpRuntime {
+    // The command already refuses this. Checked again here because this is what actually opens the
+    // port, and a second caller must not be able to skip the rule by not going through the command.
+    require(unauthenticatedExposure(Transport.HTTP, host, config) == null) {
+        "Refusing to serve HTTP on a non-loopback address without ${Config.ENV_HTTP_TOKEN}."
+    }
     System.err.println("[insightidr-mcp] Starting over HTTP on $host:$port — region=${config.region.code}, baseUrl=${config.baseUrl}")
-    // One check for the process, shared by every connecting session (mcp { } builds a server per
+    if (config.httpAuthToken == null) {
+        System.err.println(
+            "[insightidr-mcp] WARNING: no ${Config.ENV_HTTP_TOKEN} is set, so ANY local process — and any web " +
+                "page that gets past the Host/Origin checks — can call this server on $host:$port. Set a token.",
+        )
+    }
+    // One check for the process, shared by every connecting session (a server is built per
     // connection); a supervisor scope keeps a failed check from cancelling anything else.
     val checkScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     val updateCheck = checkScope.startUpdateCheck(config)
     val engine = embeddedServer(CIO, host = host, port = port) {
-        install(CORS) {
-            // The server holds a secret API key and has no auth of its own, so arbitrary cross-origin
-            // browser access is NOT allowed (no anyHost()). Non-browser MCP clients send no Origin
-            // header and are unaffected; a browser origin is permitted only if the operator explicitly
-            // allow-lists it via INSIGHTIDR_HTTP_ALLOWED_ORIGINS.
-            config.httpAllowedOrigins.forEach { origin ->
-                val scheme = origin.substringBefore("://", missingDelimiterValue = "https")
-                val hostAndPort = origin.substringAfter("://")
-                if (hostAndPort.isNotBlank()) allowHost(hostAndPort, schemes = listOf(scheme))
-            }
-            allowMethod(HttpMethod.Get)
-            allowMethod(HttpMethod.Post)
-            allowMethod(HttpMethod.Delete)
-            allowMethod(HttpMethod.Options)
-            allowNonSimpleContentTypes = true
-        }
-        mcp {
+        // FIRST, ahead of routing: nothing below may run for a request the guard would refuse.
+        installTransportSecurity(
+            HttpSecurity(
+                bindHost = host,
+                bindPort = port,
+                token = config.httpAuthToken,
+                allowedOrigins = config.httpAllowedOrigins,
+            ),
+        )
+        val newServer: () -> Server = {
             buildInsightIdrServer(client).also { server ->
                 if (updateCheck != null) {
                     server.attachUpdateNotifier(checkScope) { session ->
@@ -362,12 +408,21 @@ private fun runHttp(client: Rapid7Client, config: Config, host: String, port: In
                 }
             }
         }
+        // The SDK's own Host/Origin check is switched off, because it is localhost-only: it knows
+        // nothing of INSIGHTIDR_HTTP_ALLOWED_ORIGINS or of a non-loopback bind, and answers 403 to
+        // both. With it on, an allow-listed browser origin was let through by CORS and then refused
+        // here — the setting had never worked. installTransportSecurity above does the same checks
+        // with that knowledge, and runs first.
+        mcp(enableDnsRebindingProtection = false) { newServer() }
     }
+    return HttpRuntime(engine, checkScope, updateCheck, client)
+}
+
+private fun runHttp(client: Rapid7Client, config: Config, host: String, port: Int) {
+    val runtime = buildHttpRuntime(client, config, host, port)
     try {
-        engine.start(wait = true)
+        runtime.engine.start(wait = true)
     } finally {
-        updateCheck?.cancel()
-        checkScope.cancel()
-        client.close()
+        runtime.shutdown()
     }
 }

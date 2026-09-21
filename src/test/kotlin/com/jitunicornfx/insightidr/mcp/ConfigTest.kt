@@ -203,6 +203,31 @@ class ConfigTest {
     }
 
     @Test
+    fun `the http token is optional, trimmed, and held to a minimum length`() {
+        assertEquals(null, configWith().httpAuthToken)
+        assertEquals(null, configWith(Config.ENV_HTTP_TOKEN to "   ").httpAuthToken, "blank is unset")
+        assertEquals("0123456789abcdef", configWith(Config.ENV_HTTP_TOKEN to "  0123456789abcdef  ").httpAuthToken)
+
+        // A throttle only slows a search; the size of the space is what defeats one.
+        assertTrue(Config.ENV_HTTP_TOKEN in rejected(Config.ENV_HTTP_TOKEN to "hunter2"))
+        assertTrue(Config.ENV_HTTP_TOKEN in rejected(Config.ENV_HTTP_TOKEN to "0123456789abcde"), "15 is one short")
+        assertTrue(Config.ENV_HTTP_TOKEN in rejected(Config.ENV_HTTP_TOKEN to "0123456789 abcdefghij"), "no spaces")
+    }
+
+    @Test
+    fun `the http token is never printed, echoed or described`() {
+        val token = "correct-horse-battery-staple"
+        val printed = configWith(Config.ENV_HTTP_TOKEN to token).toString()
+        assertFalse(token in printed, printed)
+        assertTrue("httpAuthToken=***" in printed)
+        assertTrue("httpAuthToken=unset" in configWith().toString())
+
+        val message = rejected(Config.ENV_HTTP_TOKEN to "tooshort-secret")
+        assertFalse("tooshort-secret" in message, "a rejected token must not be echoed into a log")
+        assertFalse("15" in message, "nor its length")
+    }
+
+    @Test
     fun `the upload directory is unset by default, which leaves upload_attachment disabled`() {
         assertEquals(null, configWith().uploadDirectory)
         assertEquals(null, configWith(Config.ENV_UPLOAD_DIR to "   ").uploadDirectory, "blank is unset")

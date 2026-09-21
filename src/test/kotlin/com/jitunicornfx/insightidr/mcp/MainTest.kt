@@ -66,10 +66,54 @@ class MainTest {
         assertEquals(Transport.STDIO, captured.transport)
     }
 
+    private val withToken = fakeConfig.copy(httpAuthToken = "0123456789abcdef-token")
+
+    @Test
+    fun `http on a network address without a token is refused, and nothing is served`() {
+        for (exposed in listOf("0.0.0.0", "1.2.3.4", "::", "192.168.1.10", "mcp.corp.example")) {
+            val captured = Captured()
+            val result = commandCapturing(captured).test("--http --host $exposed")
+            assertEquals(EXIT_REFUSED_UNSAFE, result.statusCode, exposed)
+            assertNull(captured.transport, "the server must not start on $exposed")
+            assertTrue(Config.ENV_HTTP_TOKEN in result.output, "say what to set: ${result.output}")
+        }
+    }
+
+    @Test
+    fun `a host name that merely sounds local is still refused`() {
+        // isLoopback consults no DNS, so this cannot be talked into looking local.
+        val captured = Captured()
+        assertEquals(EXIT_REFUSED_UNSAFE, commandCapturing(captured).test("--http --host localhost.example.com").statusCode)
+        assertNull(captured.transport)
+    }
+
+    @Test
+    fun `loopback http still starts without a token, and stdio is never affected`() {
+        for (local in listOf("127.0.0.1", "localhost", "::1")) {
+            val captured = Captured()
+            assertEquals(0, commandCapturing(captured).test("--http --host $local").statusCode, local)
+            assertEquals(Transport.HTTP, captured.transport)
+        }
+        // --host is meaningless under stdio; it must not trip the rule.
+        val captured = Captured()
+        assertEquals(0, commandCapturing(captured).test("--stdio --host 0.0.0.0").statusCode)
+        assertEquals(Transport.STDIO, captured.transport)
+    }
+
+    @Test
+    fun `unauthenticatedExposure is the single rule both the command and the runtime apply`() {
+        assertTrue(unauthenticatedExposure(Transport.HTTP, "0.0.0.0", fakeConfig) != null)
+        assertNull(unauthenticatedExposure(Transport.HTTP, "0.0.0.0", withToken))
+        assertNull(unauthenticatedExposure(Transport.HTTP, "127.0.0.1", fakeConfig))
+        assertNull(unauthenticatedExposure(Transport.STDIO, "0.0.0.0", fakeConfig))
+        val refusal = unauthenticatedExposure(Transport.HTTP, "0.0.0.0", fakeConfig)!!
+        assertTrue("127.0.0.1" in refusal, "offer the safe alternative as well as the fix")
+    }
+
     @Test
     fun `http with host and port is parsed and dispatched`() {
         val captured = Captured()
-        val result = commandCapturing(captured).test("--http --host 1.2.3.4 --port 9999")
+        val result = commandCapturing(captured, withToken).test("--http --host 1.2.3.4 --port 9999")
         assertEquals(0, result.statusCode)
         assertEquals(Transport.HTTP, captured.transport)
         assertEquals("1.2.3.4", captured.host)
@@ -79,7 +123,7 @@ class MainTest {
     @Test
     fun `ip is an alias for host`() {
         val captured = Captured()
-        commandCapturing(captured).test("--http --ip 10.0.0.5")
+        commandCapturing(captured, withToken).test("--http --ip 10.0.0.5")
         assertEquals("10.0.0.5", captured.host)
         assertEquals(3001, captured.port)
     }

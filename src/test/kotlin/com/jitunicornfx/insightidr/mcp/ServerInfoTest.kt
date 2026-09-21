@@ -201,6 +201,26 @@ class ServerInfoTest {
     }
 
     @Test
+    fun `the transport and whether it is authenticated are reported, the token and the address are not`() {
+        val config = Config(
+            "api-key-value", Region.US, "https://us.api.insight.rapid7.com", 60_000,
+            httpAuthToken = "correct-horse-battery-staple",
+        )
+        val overHttp = serverInfo(ServerFacts.from(config, httpBindHost = "10.20.30.40"), UpdateStatus.Snapshot(), 146)
+        val runtime = runtime(overHttp.jsonObject)
+
+        assertEquals("http", str(runtime, "transport"))
+        assertTrue(runtime["httpAuthTokenConfigured"]!!.jsonPrimitive.boolean)
+        assertFalse(runtime["httpBindIsLoopback"]!!.jsonPrimitive.boolean, "reachable from the network")
+        assertFalse("correct-horse" in text(overHttp), "the token must never reach a tool result")
+        assertFalse("10.20.30.40" in text(overHttp), "nor the address the server listens on")
+
+        val overStdio = runtime(serverInfo(ServerFacts.from(config), UpdateStatus.Snapshot(), 146).jsonObject)
+        assertEquals("stdio", str(overStdio, "transport"))
+        assertNull(overStdio["httpBindIsLoopback"], "meaningless under stdio, so absent rather than false")
+    }
+
+    @Test
     fun `whether uploads are enabled is reported, the directory is not`() {
         val enabled = ServerFacts.from(
             Config("k", Region.US, "https://us.api.insight.rapid7.com", 60_000, uploadDirectory = "/home/analyst/uploads"),

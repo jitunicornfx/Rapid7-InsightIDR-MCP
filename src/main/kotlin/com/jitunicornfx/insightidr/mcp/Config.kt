@@ -94,6 +94,15 @@ data class Config(
      */
     val httpAllowedOrigins: List<String> = emptyList(),
     /**
+     * Shared secret that every `--http` request must present as `Authorization: Bearer <token>`.
+     *
+     * The HTTP transport fronts a server holding the InsightIDR API key, so without this anything that
+     * can reach the port can read and change the tenant. It is REQUIRED when `--host` is not loopback
+     * (the server refuses to start otherwise) and optional, with a warning, on loopback. A secret:
+     * never in [toString], never in [ServerFacts], never logged.
+     */
+    val httpAuthToken: String? = null,
+    /**
      * Whether the startup check for a newer GitHub release is disabled. The check is best-effort,
      * unauthenticated, and never blocks startup; set [ENV_DISABLE_UPDATE_CHECK] to a truthy value
      * (`1`, `true`, `yes`) in air-gapped or egress-restricted deployments to skip it entirely.
@@ -133,7 +142,8 @@ data class Config(
     /** The API key is a secret; never include it in [toString] output or logs. */
     override fun toString(): String =
         "Config(region=${region.code}, baseUrl=$baseUrl, v1BaseUrl=$v1BaseUrl, logSearchBaseUrl=$logSearchBaseUrl, " +
-            "requestTimeoutMillis=$requestTimeoutMillis, apiKey=***)"
+            "requestTimeoutMillis=$requestTimeoutMillis, apiKey=***, " +
+            "httpAuthToken=${if (httpAuthToken == null) "unset" else "***"})"
 
     companion object {
         const val ENV_API_KEY = "INSIGHTIDR_API_KEY"
@@ -143,6 +153,14 @@ data class Config(
         const val ENV_LOG_SEARCH_BASE_URL = "INSIGHTIDR_LOG_SEARCH_BASE_URL"
         const val ENV_TIMEOUT_MS = "INSIGHTIDR_TIMEOUT_MS"
         const val ENV_HTTP_ALLOWED_ORIGINS = "INSIGHTIDR_HTTP_ALLOWED_ORIGINS"
+        const val ENV_HTTP_TOKEN = "INSIGHTIDR_HTTP_TOKEN"
+
+        /**
+         * Shortest bearer token accepted. Failed attempts are throttled per client address, but a
+         * throttle only slows a search; it is the size of the space that defeats one. 16 characters
+         * of anything reasonable is far beyond reach at 20 guesses a minute.
+         */
+        const val MIN_HTTP_TOKEN_CHARS = 16
         const val ENV_DISABLE_UPDATE_CHECK = "INSIGHTIDR_DISABLE_UPDATE_CHECK"
         const val ENV_DISABLE_AUTO_UPDATE = "INSIGHTIDR_DISABLE_AUTO_UPDATE"
         const val ENV_MAX_RESULT_CHARS = "INSIGHTIDR_MAX_RESULT_CHARS"
@@ -251,6 +269,16 @@ data class Config(
                 ?.filter { it.isNotEmpty() && it != "*" }
                 ?: emptyList()
 
+            // Never echoed, not even its length: this message goes to a log.
+            val httpAuthToken = env[ENV_HTTP_TOKEN]?.trim()?.takeIf { it.isNotEmpty() }?.also { token ->
+                if (token.length < MIN_HTTP_TOKEN_CHARS || token.any { it.isWhitespace() || it.isISOControl() }) {
+                    throw IllegalStateException(
+                        "$ENV_HTTP_TOKEN must be at least $MIN_HTTP_TOKEN_CHARS characters with no spaces. " +
+                            "Generate one with, for example: openssl rand -hex 32",
+                    )
+                }
+            }
+
             val updateCheckDisabled = isTruthy(env[ENV_DISABLE_UPDATE_CHECK])
             val autoUpdateDisabled = isTruthy(env[ENV_DISABLE_AUTO_UPDATE])
 
@@ -280,6 +308,7 @@ data class Config(
                 logSearchBaseUrl = logSearchBaseUrl,
                 v1BaseUrl = v1BaseUrl,
                 httpAllowedOrigins = httpAllowedOrigins,
+                httpAuthToken = httpAuthToken,
                 updateCheckDisabled = updateCheckDisabled,
                 autoUpdateDisabled = autoUpdateDisabled,
             )
