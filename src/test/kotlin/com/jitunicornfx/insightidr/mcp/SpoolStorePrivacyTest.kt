@@ -10,6 +10,7 @@ import java.nio.file.attribute.AclEntryPermission
 import java.nio.file.attribute.AclEntryType
 import java.nio.file.attribute.AclFileAttributeView
 import java.nio.file.attribute.PosixFilePermissions
+import java.nio.file.attribute.UserPrincipal
 import java.util.EnumSet
 import kotlin.io.path.createTempDirectory
 import kotlin.test.AfterTest
@@ -17,12 +18,18 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
+import org.junit.jupiter.api.Assumptions.assumeTrue
+import org.junit.jupiter.api.condition.EnabledOnOs
+import org.junit.jupiter.api.condition.OS
 
 /**
  * Spooled files hold tenant log data. These tests pin WHO can read them — on whichever platform the
  * suite runs on. Each test branches on the platform rather than being skipped on the other one, so
  * the count of executed tests is the same everywhere and a skipped security test can never hide.
+ * The one exception is a case only Windows has at all — an elevated token, whose files belong to a
+ * group — which is marked Windows-only rather than passing vacuously elsewhere.
  */
 class SpoolStorePrivacyTest {
 
@@ -303,5 +310,57 @@ class SpoolStorePrivacyTest {
         share(shared)
         store(shared).newSpoolFile("lk1")
         assertTrue(warnings.none { "could not be made private" in it }, "$warnings")
+    }
+
+    /**
+     * Regression: run elevated, a new file's owner is the Administrators GROUP, so the spool and its
+     * files were born private to that group. The same user's later runs without elevation carry
+     * Administrators only as a deny-only group, so they could no longer write into their own spool:
+     * every run failed until someone repaired the ACL by hand. A group owner now leaves the spool to
+     * inherit its parent's ACL, which is what every spool had before it could be born private.
+     *
+     * The owner probe answers with the real Administrators principal to stand in for an elevated token;
+     * this test process runs without elevation, which is exactly the later run that was locked out.
+     * Windows-only: POSIX has no elevated token whose files belong to a group.
+     */
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    fun `on Windows an elevated first run does not lock later runs out of the spool`() {
+        val admins = runCatching {
+            root.toPath().fileSystem.userPrincipalLookupService.lookupPrincipalByGroupName("Administrators")
+        }.getOrNull()
+        assumeTrue(admins != null, "the Administrators group name is localised on this system")
+        val dir = File(root, "spool").toPath()
+        val elevated = SpoolStore(
+            directory = dir,
+            isDefaultLocation = false,
+            warn = { warnings += it },
+            homeDirectory = null,
+            privacyFor = { d, warn -> SpoolStore.Privacy.of(d.fileSystem.supportedFileAttributeViews(), warn) { admins } },
+        )
+        try {
+            elevated.prepare()
+            val principals = acl(dir).map { it.principal() }.distinct()
+            assertNotEquals(listOf<UserPrincipal>(admins!!), principals, "private to a group a later run holds only as deny-only")
+
+            val fromElevated = elevated.newSpoolFile("lk1")
+            val later = store(dir.toFile()).newSpoolFile("lk2")
+            Files.writeString(later, "x")
+            assertEquals("x", Files.readString(later), "a run without elevation can still use the spool")
+            assertEquals("", Files.readString(fromElevated), "and read what the elevated run spooled")
+
+            assertEquals(1, warnings.count { "elevated" in it }, "$warnings")
+            assertTrue(warnings.none { "could not be made private" in it }, "inheriting was a decision, not a volume ignoring permissions: $warnings")
+        } finally {
+            // Only needed when the regression is present: give the owner the directory back so cleanup works.
+            runCatching {
+                if (Files.exists(dir)) {
+                    Files.getFileAttributeView(dir, AclFileAttributeView::class.java).acl = listOf(
+                        AclEntry.newBuilder().setType(AclEntryType.ALLOW).setPrincipal(Files.getOwner(dir))
+                            .setPermissions(EnumSet.allOf(AclEntryPermission::class.java)).build(),
+                    )
+                }
+            }
+        }
     }
 }

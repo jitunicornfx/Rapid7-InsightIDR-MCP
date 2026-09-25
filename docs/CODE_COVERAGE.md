@@ -102,7 +102,10 @@ for a platform or volume this machine is not - POSIX permissions, and a volume t
 platform rather than being skipped on the other one, so the executed count is the same everywhere and
 a skipped security test cannot hide; and wherever a decision depends on the platform
 (`UpdateInstaller.isWindows`, `SpoolStore.Privacy.of`), the decision is a pure function that is tested
-with the other platform's answer passed in.
+with the other platform's answer passed in. The exceptions are two cases only Windows has at all, and
+which would pass vacuously elsewhere: an elevated token whose files belong to the Administrators group
+(the answer `Privacy.of` is handed in place of a real elevated run), and an existing spool directory
+whose ACL shuts out its own owner. Those two tests are marked Windows-only.
 
 ### How the tests themselves are checked
 

@@ -11,11 +11,15 @@ import java.nio.file.attribute.AclEntryPermission
 import java.nio.file.attribute.AclEntryType
 import java.nio.file.attribute.AclFileAttributeView
 import java.nio.file.attribute.FileAttribute
+import java.nio.file.attribute.GroupPrincipal
 import java.nio.file.attribute.PosixFilePermissions
 import java.nio.file.attribute.UserPrincipal
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+
+/** The spool directory exists, but this account cannot create a file in it. See [SpoolStore.prepareToWrite]. */
+class UnwritableSpoolDirectoryException(message: String, cause: Throwable) : IOException(message, cause)
 
 /**
  * Where `logsearch_spool_query_to_file` writes results.
@@ -38,12 +42,16 @@ import java.time.format.DateTimeFormatter
  *  - POSIX: directories `rwx------`, files `rw-------`.
  *  - Windows: an ACL with one entry, full control for the owner. Measured on Windows 11 / JDK 25: an
  *    `acl:acl` attribute given at creation REPLACES the ACL the file would have inherited rather than
- *    merging with it, so this holds even inside a directory that is shared with `Everyone`.
+ *    merging with it, so this holds even inside a directory that is shared with `Everyone`. The one
+ *    exception is a server run elevated, whose files belong to the Administrators group: they inherit
+ *    their directory's ACL instead, with a warning, because a spool private to that group would shut
+ *    out every later run of the same user without elevation (see [Privacy.of]).
  *
  * The directory is made private only when this server creates it. One that already exists was set up
  * by someone — deliberately, for all this server knows — so its permissions are left alone and it is
  * audited instead: [warn] is told if other users can get into it. The files inside are private
- * either way; what an open directory gives away is their names.
+ * either way; what an open directory gives away is their names. It must still accept a file from this
+ * account, which [prepareToWrite] checks before every run.
  *
  * [warn] defaults to stderr, never stdout, which carries the stdio JSON-RPC stream.
  */
@@ -125,6 +133,34 @@ class SpoolStore internal constructor(
             prepared = true
         }
         return directory
+    }
+
+    /**
+     * [prepare], then prove that this account can create a file in the directory: what a spool run
+     * calls before its first API request.
+     *
+     * A directory that already existed keeps whatever permissions it has, and one this account cannot
+     * write to used to get through [prepare], because the README write swallows the denial: the run
+     * then fetched its first page and only failed on the spool file. On Windows an elevated run of an
+     * earlier version leaves exactly that behind for every later run without elevation, a spool
+     * private to the Administrators group. The probe runs on every call rather than once per store
+     * because it IS the check, and permissions can change between runs.
+     *
+     * @throws UnwritableSpoolDirectoryException when no file can be created in the directory.
+     * @throws IOException when the directory does not exist and cannot be created.
+     */
+    fun prepareToWrite(): Path {
+        val dir = prepare()
+        val probe = try {
+            privacy.createTempFile(dir, PROBE_PREFIX, PROBE_SUFFIX)
+        } catch (e: IOException) {
+            throw UnwritableSpoolDirectoryException(
+                "this account cannot create files in the spool directory $dir (${e::class.simpleName})",
+                e,
+            )
+        }
+        runCatching { Files.deleteIfExists(probe) }
+        return dir
     }
 
     /**
@@ -236,9 +272,14 @@ class SpoolStore internal constructor(
     internal class Privacy(
         internal val directoryAttributes: Array<FileAttribute<*>>,
         internal val fileAttributes: Array<FileAttribute<*>>,
-        /** The principal files are private to. Null on POSIX, where the mode bits say "owner". */
+        /** Who owns the files this process creates, on Windows. Null on POSIX, where the mode bits say "owner". */
         private val owner: UserPrincipal?,
         private val warn: (String) -> Unit,
+        /**
+         * False when files are deliberately left to inherit their directory's ACL (an elevated run),
+         * so there is nothing to [verify]: they are not private, by decision rather than by accident.
+         */
+        private val bornPrivate: Boolean = true,
     ) {
         @Volatile
         private var warnedUnsupported = false
@@ -248,7 +289,7 @@ class SpoolStore internal constructor(
 
         /** Read back what was created. Never throws, and never the reason a spool fails. */
         fun verify(file: Path) {
-            if (warnedNotPrivate) return
+            if (!bornPrivate || warnedNotPrivate) return
             val private = runCatching { isOwnerOnly(file) }.getOrDefault(true)
             if (!private) {
                 warnedNotPrivate = true
@@ -307,11 +348,14 @@ class SpoolStore internal constructor(
         fun auditExistingDirectory(dir: Path) {
             val others = runCatching { if (owner == null) posixOthers(dir) else aclOthers(dir, owner) }.getOrNull() ?: return
             if (others.isEmpty()) return
-            warn(
-                "WARNING: the spool directory is accessible to: ${others.joinToString(", ")}. Spooled files are " +
-                    "created private to the user running this server, but their NAMES (which include a log key " +
-                    "and a timestamp) are visible to anyone who can list the directory.",
-            )
+            val exposed = if (bornPrivate) {
+                "Spooled files are created private to the user running this server, but their NAMES (which " +
+                    "include a log key and a timestamp) are visible to anyone who can list the directory."
+            } else {
+                "This server is running elevated, so spooled files inherit the directory's ACL: they are " +
+                    "open to the same accounts."
+            }
+            warn("WARNING: the spool directory is accessible to: ${others.joinToString(", ")}. $exposed")
         }
 
         private fun posixOthers(dir: Path): List<String> {
@@ -351,9 +395,15 @@ class SpoolStore internal constructor(
 
             /**
              * The decision itself, from the attribute views a filesystem offers. Separate so the POSIX
-             * answer can be checked on Windows: building the attributes touches no file.
+             * answer can be checked on Windows: building the attributes touches no file. [probeOwner]
+             * is a parameter for the same reason, so the elevated answer can be checked without
+             * elevation.
              */
-            internal fun of(views: Set<String>, warn: (String) -> Unit): Privacy {
+            internal fun of(
+                views: Set<String>,
+                warn: (String) -> Unit,
+                probeOwner: () -> UserPrincipal? = ::processOwner,
+            ): Privacy {
                 if ("posix" in views) {
                     return Privacy(
                         arrayOf(PosixFilePermissions.asFileAttribute(OWNER_ONLY_DIRECTORY)),
@@ -362,10 +412,19 @@ class SpoolStore internal constructor(
                         warn = warn,
                     )
                 }
-                val owner = if ("acl" in views) processOwner() else null
+                val owner = if ("acl" in views) probeOwner() else null
                 if (owner == null) {
                     warn("WARNING: could not determine how to make files private on this platform; spooled files use default permissions.")
                     return Privacy(emptyArray(), emptyArray(), owner = null, warn = warn)
+                }
+                if (owner is GroupPrincipal) {
+                    warn(
+                        "WARNING: this server is running elevated, so the files it creates belong to ${owner.name}, " +
+                            "not to a user. The spool is therefore not made private to that group: it and its files " +
+                            "inherit the ACL of the directory above them. A spool private to the group would lock out " +
+                            "every later run without elevation, which holds it only as a deny-only group.",
+                    )
+                    return Privacy(emptyArray(), emptyArray(), owner, warn, bornPrivate = false)
                 }
                 return Privacy(arrayOf(aclAttribute(owner, inheritable = true)), arrayOf(aclAttribute(owner, inheritable = false)), owner, warn)
             }
@@ -374,8 +433,13 @@ class SpoolStore internal constructor(
              * Who Windows makes the owner of a file this process creates. Asked of the OS with a probe
              * file rather than looked up by `user.name`: a name lookup prefers a LOCAL account, so on
              * a domain machine with a same-named local account it would hand the spool to the wrong
-             * one. (Elevated, the answer is the Administrators group. That is still correct: it is who
-             * owns the files, and this process is a member.)
+             * one.
+             *
+             * Elevated, the answer is the Administrators GROUP, not the user. It does own the files,
+             * but an ACL naming only that group shuts out the same user's later runs without
+             * elevation: their UAC-filtered token holds Administrators only as a deny-only group,
+             * which an ALLOW entry grants nothing. So [of] builds no owner-only ACL for a group, and
+             * recognises one by its type rather than its name, since well-known names are localised.
              */
             private fun processOwner(): UserPrincipal? =
                 // The temp directory first; the home directory if that volume keeps no ACLs. Asking a
@@ -415,6 +479,10 @@ class SpoolStore internal constructor(
         const val FILE_SUFFIX = ".ndjson"
         const val MANIFEST_SUFFIX = ".manifest.json"
         const val README_NAME = "README.txt"
+
+        /** The file [prepareToWrite] creates and deletes. Never matches what [sweepStale] removes. */
+        private const val PROBE_PREFIX = "insightidr-mcp-write-probe-"
+        private const val PROBE_SUFFIX = ".tmp"
 
         /** Refuse to start a spool when the volume has less headroom than this. */
         const val MIN_FREE_BYTES = 256L * 1024 * 1024

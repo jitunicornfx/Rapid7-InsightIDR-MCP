@@ -382,7 +382,13 @@ need with ordinary shell tools.
   moment at which it is readable by anyone else, even inside a shared folder. A spool directory the
   server creates is private too. One that already exists is left exactly as you set it up; if other
   users can get into it, the server says so at startup, because the file *names* (a log key and a
-  timestamp) are then visible to them.
+  timestamp) are then visible to them. It must still let the server create files: that is checked
+  before every run, and a directory it cannot write to is refused before any API call is made.
+  Run elevated on Windows ("Run as administrator"), the files the server creates belong to the
+  Administrators *group* rather than to you, and a spool private to that group would lock you out of
+  it on every later run without elevation, where your token holds Administrators only as a deny-only
+  group. So an elevated run makes nothing private: the spool and its files inherit the ACL of the
+  directory above them, as they did before spools were made private, and the server says so on stderr.
   Permissions only mean something on a volume that keeps them: FAT, exFAT and some network shares
   accept the request and ignore it. The server checks what it actually created and warns if a
   spooled file did not come out private.

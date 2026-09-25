@@ -15,12 +15,18 @@ import java.io.File
 import java.io.IOException
 import java.io.Writer
 import java.nio.file.Files
+import java.nio.file.attribute.AclEntry
+import java.nio.file.attribute.AclEntryPermission
+import java.nio.file.attribute.AclEntryType
+import java.nio.file.attribute.AclFileAttributeView
 import kotlin.io.path.createTempDirectory
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.junit.jupiter.api.condition.EnabledOnOs
+import org.junit.jupiter.api.condition.OS
 
 private const val NEXT_1 = "https://us.rest.logs.insight.rapid7.com/query/next-1"
 private const val NEXT_2 = "https://us.rest.logs.insight.rapid7.com/query/next-2"
@@ -274,6 +280,50 @@ class LogSearchSpoolToolsTest {
         assertEquals(0, h.requests.size, "it used to run the whole query and then fail on the first write")
         assertTrue(Config.ENV_SPOOL_DIR in textOf(result), "say what to change")
         assertFalse(blocker.name in textOf(result), "and keep the host path out of the message")
+    }
+
+    /**
+     * The same refusal for a directory that exists. An existing spool keeps its own ACL, which is the
+     * operator's business, but one this account cannot create files in used to be accepted: the README
+     * write swallowed the denial, so the run fetched its first page and only then failed on the spool
+     * file. An elevated run of an earlier version leaves exactly such a directory behind for every later
+     * run without elevation.
+     */
+    @Test
+    @EnabledOnOs(OS.WINDOWS)
+    fun `on Windows an existing spool directory this account cannot write to is refused before any API call`() = runBlocking {
+        val locked = Files.createDirectory(tempDir.toPath().resolve("locked"))
+        val view = Files.getFileAttributeView(locked, AclFileAttributeView::class.java)
+        val original = view.acl
+        // Read-only for its owner. As owner, this account keeps the right to put the ACL back.
+        view.acl = listOf(
+            AclEntry.newBuilder()
+                .setType(AclEntryType.ALLOW)
+                .setPrincipal(Files.getOwner(locked))
+                .setPermissions(
+                    AclEntryPermission.READ_DATA,
+                    AclEntryPermission.READ_ATTRIBUTES,
+                    AclEntryPermission.READ_NAMED_ATTRS,
+                    AclEntryPermission.READ_ACL,
+                    AclEntryPermission.SYNCHRONIZE,
+                )
+                .build(),
+        )
+        try {
+            val h = mcpHarness(responses = listOf(HttpStatusCode.OK to page("""{"id":1}"""))) {
+                registerLogSearchSpoolTools(it, SpoolStore(locked, warn = {}), SpoolIo())
+            }
+            val result = h.call("logsearch_spool_query_to_file", spoolArgs())
+            val text = textOf(result)
+
+            assertTrue(result.isError == true, text)
+            assertTrue("cannot create files" in text, text)
+            assertTrue(Config.ENV_SPOOL_DIR in text, "say what to change: $text")
+            assertEquals(0, h.requests.size, "it used to fetch the first page and only then fail on the spool file")
+            assertFalse(locked.toString() in text, "and keep the host path out of the message")
+        } finally {
+            view.acl = original
+        }
     }
 
     // -----------------------------------------------------------------------------------------

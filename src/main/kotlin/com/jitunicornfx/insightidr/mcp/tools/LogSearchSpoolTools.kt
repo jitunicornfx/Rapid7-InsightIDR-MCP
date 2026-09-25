@@ -192,7 +192,15 @@ integerParam(
 
         // Refuse before spending any API calls if there is nowhere to put the result.
         try {
-            spool.prepare()
+            spool.prepareToWrite()
+        } catch (e: UnwritableSpoolDirectoryException) {
+            System.err.println("[insightidr-mcp] The spool directory is unusable: ${e.message}")
+            return@apiTool errorResult(
+                "Refusing to spool: this server cannot create files in the spool directory. Point " +
+                    "${Config.ENV_SPOOL_DIR} at a directory this server can write to, or give it write access " +
+                    "there. A directory created by an elevated (Run as administrator) run of an earlier version " +
+                    "may admit only the Administrators group.",
+            )
         } catch (e: IOException) {
             System.err.println("[insightidr-mcp] The spool directory is unusable: ${e::class.simpleName}: ${e.message}")
             return@apiTool errorResult(
