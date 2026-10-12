@@ -41,7 +41,7 @@ fun Server.registerLogSearchAuditTools(client: Rapid7Client) {
         readOnly = true,
         inputSchema = toolSchema("log_key") {
             stringParam("log_key", "The key (UUID) of the audit log to query.")
-            stringParam("query", "A valid LEQL query. If omitted, all entries in the time range are returned.")
+            leqlQueryParam("A valid LEQL query. If omitted, all entries in the time range are returned.")
             timeWindowParams()
             stringParam("label", "Only return entries carrying a label with this UUID.")
             stringParam("labels", "':'-separated label UUIDs to filter by.")
@@ -73,7 +73,7 @@ fun Server.registerLogSearchAuditTools(client: Rapid7Client) {
         readOnly = true,
         inputSchema = toolSchema("log_keys") {
             stringArrayParam("log_keys", "The keys (UUIDs) of the audit logs to query.")
-            stringParam("query", "The LEQL statement to run. If omitted, all entries in the time window are returned.")
+            leqlQueryParam("The LEQL statement to run. If omitted, all entries in the time window are returned.")
             timeWindowParams()
             stringParam("labels", "':'-separated label UUIDs; only entries with a matching label are returned.")
             stringParam("export_format", exportFormatDescription("logsearch_audit_get_export_job"), enum = LS_EXPORT_FORMATS)

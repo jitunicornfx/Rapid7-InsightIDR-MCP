@@ -158,8 +158,13 @@ internal suspend fun Rapid7Client.awaitQueryCompletion(
  * and `export_format` is "only for non-statistical search queries". If this stops matching, look at
  * what the API actually returns before looking at the spec.
  *
+ * The body, as observed 2026-10-12:
+ * `{"errorCode": 101009, "message": "Invalid Query Request: Pagination is not supported with statistic queries"}`.
+ * In 0.4.0 and 0.4.1 the code was read from a key named `code`, which the API does not send, and
+ * this worked only because the message matched; [apiErrorCode] reads `errorCode`.
+ *
  * Matched on the raw [ApiResponse.body] (this runs before [toToolResult] pretty-prints and wraps it),
- * on either the numeric code or the message text, and never on a 2xx — a successful result body that
+ * on either the error code or the message text, and never on a 2xx — a successful result body that
  * happens to contain the string `101009` (e.g. a log line) must not trigger a retry.
  */
 internal fun ApiResponse.isStatisticPaginationRejection(): Boolean {
@@ -168,14 +173,7 @@ internal fun ApiResponse.isStatisticPaginationRejection(): Boolean {
     // The CODE, not the digits. A raw substring match also fires on a 'from' of 1710100900000, a
     // log key or a request id echoed back in some unrelated error, and the request is then retried
     // with its pagination stripped for no reason.
-    val code = try {
-        (JsonCodec.compact.parseToJsonElement(body) as? JsonObject)?.get("code")?.jsonPrimitive?.contentOrNull
-    } catch (_: StackOverflowError) {
-        null
-    } catch (_: Exception) {
-        null
-    }
-    return code == STATISTIC_PAGINATION_CODE
+    return apiErrorCode(body) == STATISTIC_PAGINATION_CODE
 }
 
 private const val STATISTIC_PAGINATION_CODE = "101009"
@@ -270,6 +268,14 @@ internal fun requireTimeWindow(args: JsonObject) {
     require(hasRange || hasFromTo) {
         "A time window is required: provide 'time_range' (e.g. 'last 1 hour') or both 'from' and 'to'."
     }
+}
+
+/**
+ * The `query` parameter of a tool that runs LEQL on one of the query endpoints: [lead], which says
+ * what the query does on that tool, then the rules all of them share ([LEQL_QUERY_GUIDANCE]).
+ */
+internal fun JsonObjectBuilder.leqlQueryParam(lead: String) {
+    stringParam("query", "$lead $LEQL_QUERY_GUIDANCE")
 }
 
 /** Pagination / result-shaping parameters shared by the query endpoints. */

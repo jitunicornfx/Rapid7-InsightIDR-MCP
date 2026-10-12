@@ -311,7 +311,10 @@ see `INSIGHTIDR_LOG_SEARCH_BASE_URL` to target the unified route
   `rel: "Next"` link — pass its href to `logsearch_get_next_page` for the next page. Statistic
   queries — those using `calculate()` or `groupby()` — can't be paginated; the server detects the
   API's "pagination not supported" rejection and transparently re-runs them without pagination, so
-  they just work):
+  they just work. LEQL clauses must appear in the order `select() where() groupby() calculate()
+  having() sort() limit() timeslice()`; the API answers any other order — `where(...) select(...)`
+  is the common one — with a bare "Invalid Query Syntax", so the tools state the order in their
+  `query` descriptions and a rejected query comes back with it spelled out):
   `logsearch_query_log`, `logsearch_query_logs`, `logsearch_query_logset`,
   `logsearch_query_logsets_by_name`, `logsearch_poll_query`, `logsearch_get_next_page`,
   `logsearch_get_context_events`, `logsearch_get_search_stats`, `logsearch_list_query_endpoints`

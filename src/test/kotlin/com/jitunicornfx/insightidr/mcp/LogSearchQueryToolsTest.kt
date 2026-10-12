@@ -126,7 +126,7 @@ class LogSearchQueryToolsTest {
     fun `a statistic query still rejected with labels on it is explained, and the labels are not dropped`() = runBlocking {
         val h = harness(
             responses = listOf(
-                HttpStatusCode.BadRequest to """{"id":"IDR","code":101009,"message":"Pagination is not supported with statistic queries"}""",
+                HttpStatusCode.BadRequest to """{"errorCode":101009,"message":"Invalid Query Request: Pagination is not supported with statistic queries"}""",
                 HttpStatusCode.BadRequest to """{"message":"labels are not supported here"}""",
             ),
         )
@@ -153,7 +153,7 @@ class LogSearchQueryToolsTest {
         for (transient in listOf(HttpStatusCode.TooManyRequests, HttpStatusCode.ServiceUnavailable, HttpStatusCode.Unauthorized)) {
             val h = harness(
                 responses = listOf(
-                    HttpStatusCode.BadRequest to """{"id":"IDR","code":101009,"message":"Pagination is not supported with statistic queries"}""",
+                    HttpStatusCode.BadRequest to """{"errorCode":101009,"message":"Invalid Query Request: Pagination is not supported with statistic queries"}""",
                     transient to """{"message":"try later"}""",
                 ),
             )
@@ -170,7 +170,7 @@ class LogSearchQueryToolsTest {
         // A 'from' of 1710100900000, a log key, a request id: any of them can carry those six digits.
         val h = harness(
             responses = listOf(
-                HttpStatusCode.BadRequest to """{"code":100001,"message":"Invalid time range: from=1710100900000"}""",
+                HttpStatusCode.BadRequest to """{"errorCode":100001,"message":"Invalid time range: from=1710100900000"}""",
                 HttpStatusCode.OK to """{"events":[]}""",
             ),
         )
@@ -185,7 +185,7 @@ class LogSearchQueryToolsTest {
         // Rejected twice, but no label filter was sent: there is nothing to say about labels.
         val noLabels = harness(
             responses = listOf(
-                HttpStatusCode.BadRequest to """{"id":"IDR","code":101009,"message":"Pagination is not supported with statistic queries"}""",
+                HttpStatusCode.BadRequest to """{"errorCode":101009,"message":"Invalid Query Request: Pagination is not supported with statistic queries"}""",
                 HttpStatusCode.BadRequest to """{"message":"bad leql"}""",
             ),
         )
@@ -195,7 +195,7 @@ class LogSearchQueryToolsTest {
         // Labels sent, and the retry worked: nothing went wrong, so nothing to explain.
         val worked = harness(
             responses = listOf(
-                HttpStatusCode.BadRequest to """{"id":"IDR","code":101009,"message":"Pagination is not supported with statistic queries"}""",
+                HttpStatusCode.BadRequest to """{"errorCode":101009,"message":"Invalid Query Request: Pagination is not supported with statistic queries"}""",
                 HttpStatusCode.OK to """{"statistics":{"count":5}}""",
             ),
         )
@@ -221,7 +221,7 @@ class LogSearchQueryToolsTest {
         val h = harness(
             responses = listOf(
                 HttpStatusCode.BadRequest to
-                    """{"id":"IDR","code":101009,"message":"Pagination is not supported with statistic queries"}""",
+                    """{"errorCode":101009,"message":"Invalid Query Request: Pagination is not supported with statistic queries"}""",
                 HttpStatusCode.OK to """{"statistics":{"count":5}}""",
             ),
         )
@@ -250,6 +250,23 @@ class LogSearchQueryToolsTest {
     }
 
     @Test
+    fun `the statistic retry does not depend on the wording of the API's message`() = runBlocking {
+        // In 0.4.0 and 0.4.1 the code was read from a key the API does not send, so the message text
+        // was the only thing keeping calculate() queries working. Reword it and they all failed.
+        val h = harness(
+            responses = listOf(
+                HttpStatusCode.BadRequest to """{"errorCode":101009,"message":"Statistic queries cannot be paged"}""",
+                HttpStatusCode.OK to """{"statistics":{"count":5}}""",
+            ),
+        )
+        val result = h.call("logsearch_query_log", mapOf("log_key" to "lk1", "query" to "calculate(count)", "time_range" to "today"))
+
+        assertEquals(2, h.requests.size, "recognised by its error code alone, and retried")
+        assertEquals(null, h.requests[1].url.parameters["per_page"])
+        assertFalse(result.isError == true)
+    }
+
+    @Test
     fun `a successful event query is never retried and keeps pagination`() = runBlocking {
         val h = harness(body = """{"events":[{"message":"ok"}]}""")
         val result = h.call(
@@ -267,7 +284,7 @@ class LogSearchQueryToolsTest {
         // retry is the only mechanism that can rescue a statistic saved query.
         val h = harness(
             responses = listOf(
-                HttpStatusCode.BadRequest to """{"code":101009,"message":"Pagination is not supported with statistic queries"}""",
+                HttpStatusCode.BadRequest to """{"errorCode":101009,"message":"Invalid Query Request: Pagination is not supported with statistic queries"}""",
                 HttpStatusCode.OK to """{"statistics":{"groups":[]}}""",
             ),
         )

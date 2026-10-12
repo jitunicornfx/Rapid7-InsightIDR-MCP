@@ -134,8 +134,7 @@ internal fun Server.registerLogSearchSpoolTools(client: Rapid7Client, spool: Spo
         destructive = false,
         inputSchema = toolSchema("log_keys") {
             stringArrayParam("log_keys", "Keys (UUIDs) of the logs to query. Find them with logsearch_list_logs.")
-            stringParam(
-                "query",
+            leqlQueryParam(
                 "LEQL statement, e.g. where(status=404). Omit to spool every event in the window. Do NOT " +
                     "use calculate()/groupby() here — a statistic query returns one small aggregate with " +
                     "nothing to spool; run it with logsearch_query_logs instead.",

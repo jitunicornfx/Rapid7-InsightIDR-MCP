@@ -431,6 +431,44 @@ private fun statusHint(status: Int): String? = when (status) {
 }
 
 /**
+ * The API's own error code from an error [body], or null when it carries none this server can read.
+ *
+ * The Log Search API answers `{"errorCode": 101011, "message": "…"}` — observed 2026-10-12, and the
+ * same shape for 101009. `code` is where that API puts the HTTP status on a framework-level error
+ * (`{"code": 406, "message": "HTTP 406 Not Acceptable"}`, also observed), and where this server's
+ * fixtures assumed the error code was until then. It is read second, so a body that was recognised
+ * by `code` still is.
+ *
+ * Read from the parsed top-level object, never matched as digits in the raw text: an unrelated
+ * error that echoes a timestamp, a log key or a request id can contain any six digits.
+ */
+internal fun apiErrorCode(body: String): String? {
+    // An error body that names a code is a couple of hundred bytes. Anything large is something else
+    // — a proxy's HTML page, a result cut off mid-stream — and is not worth parsing a second time.
+    if (body.length > MAX_ERROR_CODE_BODY_CHARS) return null
+    val json = try {
+        JsonCodec.compact.parseToJsonElement(body) as? JsonObject
+    } catch (_: StackOverflowError) {
+        null
+    } catch (_: Exception) {
+        null
+    }
+    if (json == null) return null
+    return sequenceOf("errorCode", "code").firstNotNullOfOrNull { (json[it] as? JsonPrimitive)?.contentOrNull }
+}
+
+private const val MAX_ERROR_CODE_BODY_CHARS = 4_096
+
+/**
+ * The hint for an error response: one keyed to the API's own error code where this server knows
+ * that code, which says more than the status can, and otherwise [statusHint].
+ */
+private fun errorHint(status: Int, body: String): String? = when {
+    status == 400 && apiErrorCode(body) == LEQL_SYNTAX_ERROR_CODE -> LEQL_SYNTAX_ERROR_HINT
+    else -> statusHint(status)
+}
+
+/**
  * Build the text a tool result carries for this response: the status line (errors only), the
  * untrusted envelope around the rendered body, and any server-authored budget notice after it.
  *
@@ -442,7 +480,7 @@ internal fun ApiResponse.toToolText(budget: ResultBudget = ResultBudget.active):
     return buildString {
         if (!ok) {
             append("InsightIDR API returned HTTP $status.")
-            statusHint(status)?.let { append(" $it") }
+            errorHint(status, body)?.let { append(" $it") }
             append("\n")
         }
         if (rendered.text.isBlank()) {

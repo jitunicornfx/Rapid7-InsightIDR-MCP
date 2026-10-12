@@ -62,6 +62,27 @@ class ToolSchemaBoundsTest {
     }
 
     @Test
+    fun `every tool that runs LEQL on a query endpoint states the clause order`() {
+        val leqlQueries = declaring("query")
+            .map { (tool, schema) -> tool to schema.getValue("description").jsonPrimitive.content }
+            .filter { (_, description) -> "LEQL" in description }
+            .toMap()
+
+        // The order was measured on the endpoints behind these.
+        val measured = setOf(
+            "logsearch_query_log", "logsearch_query_logs", "logsearch_query_logset", "logsearch_query_logsets_by_name",
+            "logsearch_audit_query_log", "logsearch_audit_query_logs", "logsearch_spool_query_to_file",
+        )
+        // This one answered 406 to every call until now, so nothing could be measured through it.
+        val notMeasured = setOf("logsearch_download_log_data")
+        // A LEQL tool added later is in neither set, and fails here until someone decides which.
+        assertEquals(measured + notMeasured, leqlQueries.keys)
+
+        for (tool in measured) assertTrue(leqlQueries.getValue(tool).endsWith(LEQL_QUERY_GUIDANCE), tool)
+        for (tool in notMeasured) assertTrue(LEQL_CLAUSE_ORDER !in leqlQueries.getValue(tool), "$tool: not measured, so not claimed")
+    }
+
+    @Test
     fun `every page index starts at zero and every page size has a floor`() {
         val indexes = declaring("index")
         assertTrue(indexes.size >= 15, "found ${indexes.size}")

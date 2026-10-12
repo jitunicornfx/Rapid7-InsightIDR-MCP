@@ -252,7 +252,7 @@ class LogSearchSpoolToolsTest {
         val h = harness(
             listOf(
                 HttpStatusCode.BadRequest to
-                    """{"id":"IDR","code":101009,"message":"Pagination is not supported with statistic queries"}""",
+                    """{"errorCode":101009,"message":"Invalid Query Request: Pagination is not supported with statistic queries"}""",
                 HttpStatusCode.OK to """{"statistics":{"count":5}}""",
             ),
         )

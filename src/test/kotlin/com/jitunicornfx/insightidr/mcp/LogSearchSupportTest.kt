@@ -78,11 +78,11 @@ class LogSearchSupportTest {
 
     @Test
     fun `isStatisticPaginationRejection detects 101009 on non-2xx, by code or message, never on 2xx`() {
-        // By numeric error code.
+        // The body the API really sends.
         assertTrue(
             ApiResponse(
                 400, false,
-                """{"id":"IDR","code":101009,"message":"Pagination is not supported with statistic queries"}""",
+                """{"errorCode":101009,"message":"Invalid Query Request: Pagination is not supported with statistic queries"}""",
                 "application/json",
             ).isStatisticPaginationRejection(),
         )
@@ -98,7 +98,7 @@ class LogSearchSupportTest {
         )
         // An unrelated error must NOT trigger.
         assertFalse(
-            ApiResponse(404, false, """{"code":404,"message":"not found"}""", null).isStatisticPaginationRejection(),
+            ApiResponse(404, false, """{"code":404,"message":"HTTP 404 Not Found"}""", null).isStatisticPaginationRejection(),
         )
     }
 
@@ -106,12 +106,14 @@ class LogSearchSupportTest {
     fun `the statistic rejection is recognised by its code or its message, in whatever shape they arrive`() {
         fun rejected(body: String, status: Int = 400) = ApiResponse(status, false, body, "application/json").isStatisticPaginationRejection()
 
-        assertTrue(rejected("""{"code":101009,"message":"x"}"""), "numeric code")
-        assertTrue(rejected("""{"code":"101009"}"""), "the same code as a string")
+        assertTrue(rejected("""{"errorCode":101009,"message":"x"}"""), "the code alone, under the key the API uses")
+        assertTrue(rejected("""{"errorCode":"101009"}"""), "the same code as a string")
+        assertTrue(rejected("""{"code":101009,"message":"x"}"""), "and under the key this server once assumed")
+        assertFalse(rejected("""{"errorCode":101011,"message":"Invalid Query Syntax: the query entered is invalid"}"""), "a syntax error")
         assertTrue(rejected("""{"message":"Pagination is not supported with statistic queries"}"""), "message alone")
         assertTrue(rejected("Pagination is not supported with statistic queries"), "a body that is not JSON at all")
-        assertFalse(rejected("""{"code":100001,"message":"from=1710100900000 is invalid"}"""), "the digits inside another number")
-        assertFalse(rejected("""{"code":1010090}"""))
+        assertFalse(rejected("""{"errorCode":100001,"message":"from=1710100900000 is invalid"}"""), "the digits inside another number")
+        assertFalse(rejected("""{"errorCode":1010090}"""))
     }
 
     @Test
