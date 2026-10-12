@@ -4,6 +4,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -33,6 +34,12 @@ data class ResultBudget(
      * tool, not a bigger heap, is the answer for results this size.
      */
     val parseCeilingChars: Int = DEFAULT_PARSE_CEILING_CHARS,
+    /**
+     * Per-event `Context` links are folded into one template only when that saves at least this
+     * much; see [foldContextLinks]. Below it the links cost little, and a result that is not worth
+     * rewriting is better left exactly as the API sent it.
+     */
+    val minFoldSavingChars: Int = DEFAULT_MIN_FOLD_SAVING_CHARS,
 ) {
     /** The limit that actually applies to a response with this [ok] flag. */
     internal fun limitFor(ok: Boolean): Int =
@@ -43,9 +50,13 @@ data class ResultBudget(
         const val DEFAULT_ERROR_FLOOR_CHARS = 4_000
         const val DEFAULT_SAMPLE_FLOOR_CHARS = 1_000
         const val DEFAULT_PARSE_CEILING_CHARS = 16_000_000
+        const val DEFAULT_MIN_FOLD_SAVING_CHARS = 5_000
 
         /** Key the in-band truncation marker is written under. */
         const val TRUNCATION_KEY = "_mcp_truncated"
+
+        /** Key the in-band template for folded per-event `Context` links is written under. */
+        const val FOLDED_LINKS_KEY = "_mcp_folded_links"
 
         /**
          * Arrays that are never candidates for structural trimming. Dropping `links` would delete
@@ -75,8 +86,8 @@ internal enum class BudgetStrategy { PRETTY, COMPACT, STRUCTURAL, LINE_CUT, HARD
 /**
  * A rendered body plus the server-authored notice that must accompany it.
  *
- * [notice] is null when nothing was compacted or dropped. When present it is emitted OUTSIDE the
- * untrusted envelope, so it can never be confused with — or forged by — API data.
+ * [notice] is null when nothing was compacted, folded or dropped. When present it is emitted OUTSIDE
+ * the untrusted envelope, so it can never be confused with — or forged by — API data.
  */
 internal data class BudgetedBody(
     val text: String,
@@ -99,6 +110,12 @@ internal fun prettyOrRaw(raw: String): String {
  * attacker-controlled JSON can overflow the recursive parser — that is an [Error], not an
  * [Exception], so it would escape `apiTool`'s catch and tear down the session. Every rung swallows
  * it and falls through to the next, and the last rung cannot fail.
+ *
+ * Before the ladder, and whether or not the body is over budget, the `Context` link repeated on
+ * every event of a Log Search result is folded into one template when that saves enough to be worth
+ * a notice; see [foldContextLinks]. A fold is kept only while the result is still a JSON document.
+ * Its template sits at the END of that document, so a cut would say the template is in the data
+ * block and then cut it off: a body that has to be cut is cut as it arrived instead.
  */
 internal fun renderWithinBudget(raw: String, budget: ResultBudget, ok: Boolean): BudgetedBody {
     if (raw.isBlank()) return BudgetedBody(raw, null, BudgetStrategy.PRETTY)
@@ -108,17 +125,46 @@ internal fun renderWithinBudget(raw: String, budget: ResultBudget, ok: Boolean):
         if (raw.length > budget.parseCeilingChars) null else parseOrNull(raw)
 
     // Not JSON at all, or too large to hold as a tree.
-    if (element == null) {
-        // Escaped before it is measured, for the same reason encodeOrNull does it.
-        val text = escapeInvisible(raw)
-        return if (text.length <= limit) BudgetedBody(text, null, BudgetStrategy.PRETTY)
-        else lineAwareCut(text, limit, budget, wasJson = false)
+    if (element == null) return renderAsText(raw, limit, budget)
+
+    // An error body is the diagnostic, and is never rewritten.
+    val fold = if (ok) foldContextLinks(element)?.takeIf { it.savedChars >= budget.minFoldSavingChars } else null
+    if (fold != null) {
+        renderAsDocument(fold.document, raw.length - fold.savedChars, limit, budget)?.let { rendered ->
+            return rendered.copy(notice = listOfNotNull(foldedNotice(fold), rendered.notice).joinToString("\n\n"))
+        }
     }
 
-    // Rung 1 — pretty, the historical behaviour. Skipped when the raw body already exceeds the
-    // limit: pretty >= compact, and for valid JSON compact <= raw (whitespace only adds), so a
-    // pretty render at that size is near-certainly wasted allocation.
-    if (raw.length <= limit) {
+    renderAsDocument(element, raw.length, limit, budget)?.let { return it }
+
+    // Rung 4 — cut. The output is a prefix, not a JSON document; the notice says so.
+    // When the element cannot be encoded at all (nesting deep enough to overflow the encoder), the
+    // fallback is the text as it arrived - escaped first, like every other path, and returned whole
+    // if that already fits.
+    val compact = encodeOrNull(JsonCodec.compact, element) ?: return renderAsText(raw, limit, budget)
+    return lineAwareCut(compact, limit, budget, wasJson = true)
+}
+
+/** A body that is not rendered as JSON: whole if it fits, otherwise cut at a line boundary. */
+private fun renderAsText(raw: String, limit: Int, budget: ResultBudget): BudgetedBody {
+    // Escaped before it is measured, for the same reason encodeOrNull does it.
+    val text = escapeInvisible(raw)
+    return if (text.length <= limit) BudgetedBody(text, null, BudgetStrategy.PRETTY)
+    else lineAwareCut(text, limit, budget, wasJson = false)
+}
+
+/**
+ * Rungs 1 to 3: every rendering of [element] that is still a valid JSON document. Null when none of
+ * them fits, or when [element] cannot be encoded at all.
+ *
+ * [sizeHint] is roughly what [element] takes as compact JSON - the length of the body it was parsed
+ * from, less whatever has been folded out of it since.
+ */
+private fun renderAsDocument(element: JsonElement, sizeHint: Int, limit: Int, budget: ResultBudget): BudgetedBody? {
+    // Rung 1 — pretty, the historical behaviour. Skipped when the body already exceeds the limit:
+    // pretty >= compact, and for valid JSON compact <= raw (whitespace only adds), so a pretty
+    // render at that size is near-certainly wasted allocation.
+    if (sizeHint <= limit) {
         val pretty = encodeOrNull(JsonCodec.pretty, element)
         if (pretty != null && pretty.length <= limit) {
             return BudgetedBody(pretty, null, BudgetStrategy.PRETTY)
@@ -127,23 +173,14 @@ internal fun renderWithinBudget(raw: String, budget: ResultBudget, ok: Boolean):
 
     // Rung 2 — compact. Recovers the whitespace pretty added, which rescues bodies in the
     // [limit, ~2x limit] band. It does not shrink an already-dense API response.
-    // Encoding failed (nesting deep enough to overflow the encoder), so fall back to the text as it
-    // arrived - escaped first, like every other path, and returned whole if that already fits.
-    val compact = encodeOrNull(JsonCodec.compact, element)
-        ?: return escapeInvisible(raw).let { text ->
-            if (text.length <= limit) BudgetedBody(text, null, BudgetStrategy.PRETTY)
-            else lineAwareCut(text, limit, budget, wasJson = false)
-        }
+    val compact = encodeOrNull(JsonCodec.compact, element) ?: return null
     if (compact.length <= limit) {
         return BudgetedBody(compact, compactedNotice(limit), BudgetStrategy.COMPACT)
     }
 
     // Rung 3 — structural: drop entries from the largest trimmable top-level array, keeping the
     // document valid, parseable JSON.
-    trimLargestArray(element, limit, budget)?.let { return it }
-
-    // Rung 4 — cut. The output is a prefix, not a JSON document; the notice says so.
-    return lineAwareCut(compact, limit, budget, wasJson = true)
+    return trimLargestArray(element, limit, budget)
 }
 
 private fun parseOrNull(raw: String): JsonElement? = try {
@@ -282,6 +319,135 @@ private fun lineAwareCut(text: String, limit: Int, budget: ResultBudget, wasJson
 }
 
 // ---------------------------------------------------------------------------
+// Folding the Context link repeated on every event
+// ---------------------------------------------------------------------------
+
+/**
+ * A Log Search result with its per-event `Context` links folded into one template.
+ *
+ * [savedChars] is exact for the compact rendering: what was taken out of the [events] events, less
+ * the marker that replaced it.
+ */
+internal data class FoldedLinks(val document: JsonObject, val events: Int, val savedChars: Int)
+
+private const val EVENTS_KEY = "events"
+private const val EVENT_LINKS_KEY = "links"
+private const val CONTEXT_REL = "Context"
+private const val CONTEXT_PATH = "/query/context/"
+private const val TIMESTAMP_PARAM = "timestamp="
+private const val SEQUENCE_PLACEHOLDER = "{sequence_number_str}"
+private const val TIMESTAMP_PLACEHOLDER = "{timestamp}"
+
+/** `"links":` and the comma that separated the member from its neighbour. */
+private const val EVENT_LINKS_MEMBER_CHARS = EVENT_LINKS_KEY.length + 4
+
+/** The quotes and colon around the marker's key, and the comma in front of it. */
+private const val MARKER_MEMBER_CHARS = ResultBudget.FOLDED_LINKS_KEY.length + 4
+
+private val DIGITS = Regex("^[0-9]{1,32}$")
+
+/**
+ * Fold the `Context` link every event of a Log Search result carries into a single template, or
+ * return null and leave the result exactly as it arrived.
+ *
+ * When a query has a LEQL statement the API gives every event `links: [{rel: "Context", href}]`, and
+ * the href repeats every log key the query covered. Observed 2026-10-12 on all four query endpoints,
+ * on a page reached through a `Next` link and on an audit query: 189 characters for one log, 1,476
+ * for a 34-log log set, 3,972 for a 98-log one. At the default page of 100 that was 43% to 89% of
+ * the result, and it pushed 44 to 56 of the 100 events out of the response budget. The same log set
+ * queried with no statement has no such links and returned all 100.
+ *
+ * The link says nothing the result does not already say. Its path ends in the event's own
+ * `sequence_number_str`, its `timestamp` parameter is the event's `timestamp`, and the rest was the
+ * same on every event of a result - checked on 200 of them. `logsearch_get_context_events` needs a
+ * sequence number, a timestamp and a log key, and all three stay on the event.
+ *
+ * So this is a rewrite that can be undone from its own output, and it is made only when that is
+ * proved for the result in hand: EVERY event must carry exactly one link, of exactly that shape, and
+ * every href must be the same string once its event's sequence number and timestamp are taken out.
+ * One event that differs in any way - a second link, another rel, a member this server has never
+ * seen - and nothing is folded. Spec 3.0.2 types an event's `links` as a bare array of `{rel, href}`
+ * and shows the Context link only in examples, so a link this does not recognise is something to
+ * pass on, not something to tidy away.
+ */
+internal fun foldContextLinks(root: JsonElement): FoldedLinks? {
+    val document = root as? JsonObject ?: return null
+    // Never write over a member the API sent, however unlikely the name.
+    if (ResultBudget.FOLDED_LINKS_KEY in document) return null
+    val events = document[EVENTS_KEY] as? JsonArray ?: return null
+    if (events.size < 2) return null
+
+    var template: String? = null
+    var removed = 0
+    val stripped = ArrayList<JsonElement>(events.size)
+    for (entry in events) {
+        val event = entry as? JsonObject ?: return null
+        val links = event[EVENT_LINKS_KEY] ?: return null
+        val own = contextLinkTemplate(event, links) ?: return null
+        if (template == null) template = own else if (template != own) return null
+        removed += (encodeOrNull(JsonCodec.compact, links) ?: return null).length + EVENT_LINKS_MEMBER_CHARS
+        stripped += JsonObject(event.filterKeys { it != EVENT_LINKS_KEY })
+    }
+
+    val marker = foldedLinksMarker(template ?: return null, events.size)
+    val added = (encodeOrNull(JsonCodec.compact, marker) ?: return null).length + MARKER_MEMBER_CHARS
+    val folded = JsonObject(
+        LinkedHashMap(document).apply {
+            put(EVENTS_KEY, JsonArray(stripped))
+            put(ResultBudget.FOLDED_LINKS_KEY, marker)
+        },
+    )
+    return FoldedLinks(folded, events.size, removed - added)
+}
+
+/**
+ * The href of [event]'s one `Context` link with the event's own sequence number and timestamp
+ * replaced by placeholders, or null if [links] is anything other than that one link.
+ */
+private fun contextLinkTemplate(event: JsonObject, links: JsonElement): String? {
+    val link = (links as? JsonArray)?.singleOrNull() as? JsonObject ?: return null
+    if (link.size != 2 || link.text("rel") != CONTEXT_REL) return null
+    val href = link.text("href") ?: return null
+
+    val sequence = event.text("sequence_number_str")?.takeIf(DIGITS::matches) ?: return null
+    val timestamp = (event["timestamp"] as? JsonPrimitive)?.takeUnless { it.isString }?.content
+        ?.takeIf(DIGITS::matches) ?: return null
+    // What the notice tells the reader to call logsearch_get_context_events with.
+    if (event.text("log_id") == null) return null
+
+    // The shape, and only the shape: <anything>/query/context/<one segment>?<parameters>, exactly
+    // one of them `timestamp=`. What the segment and that parameter hold is not looked at here.
+    val path = href.substringBefore('?', missingDelimiterValue = "")
+    val endpoint = path.substringBeforeLast('/', missingDelimiterValue = "") + "/"
+    if (!endpoint.endsWith(CONTEXT_PATH)) return null
+    val params = href.substring(path.length + 1).split('&')
+    if (params.count { it.startsWith(TIMESTAMP_PARAM) } != 1) return null
+
+    val template = endpoint + SEQUENCE_PLACEHOLDER + "?" +
+        params.joinToString("&") { if (it.startsWith(TIMESTAMP_PARAM)) TIMESTAMP_PARAM + TIMESTAMP_PLACEHOLDER else it }
+    // The proof that folding loses nothing, and the one place an event's own values are compared
+    // with its link: filled in again, the template has to be this exact href. It fails for a link
+    // to another event, and for an href that itself contains the text of a placeholder.
+    return template.takeIf { it.replace(SEQUENCE_PLACEHOLDER, sequence).replace(TIMESTAMP_PLACEHOLDER, timestamp) == href }
+}
+
+/** The string value of member [key], or null when it is absent or is not a JSON string. */
+private fun JsonObject.text(key: String): String? = (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+
+private fun foldedLinksMarker(template: String, events: Int): JsonObject = buildJsonObject {
+    put("rel", CONTEXT_REL)
+    put("href_template", template)
+    put("events", events)
+    put(
+        "note",
+        "Server-authored marker inserted by $SERVER_NAME. Not part of the InsightIDR API response. Each of " +
+            "the events carried one links entry with this rel, whose href was href_template with " +
+            "$SEQUENCE_PLACEHOLDER and $TIMESTAMP_PLACEHOLDER replaced by that event's own sequence_number_str " +
+            "and timestamp. Those per-event copies were removed and nothing else was changed.",
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Notices. Server-authored, and emitted OUTSIDE the fence — so the one piece of API content that
 // reaches them, the name of the array that was trimmed, is allow-listed first ([noticeSafeKey]).
 // ---------------------------------------------------------------------------
@@ -309,6 +475,26 @@ private const val CHEAPER_WAYS =
         "  - Need a specific slice? Narrow the time window, add a where(...) filter, or lower per_page.\n" +
         "Paging through logsearch_get_next_page loads every page into this conversation — do not use\n" +
         "it to walk a whole result set."
+
+/**
+ * What was folded, where it went, and what to do instead of following a link.
+ *
+ * Counts and fixed text only. The template is API-provided, so it is shown inside the data block
+ * and never here.
+ *
+ * The last sentence is there because this notice names a tool, and for an audit log that tool cannot
+ * work: spec 3.0.2 has no audit counterpart to `/query/context`, and on 2026-10-12 the API answered
+ * the Context link it had itself put on an audit-log event with HTTP 404, `errorCode` 101035,
+ * "Requested log ... was not found".
+ */
+private fun foldedNotice(fold: FoldedLinks): String =
+    "$NOTICE_TAG ${fold.events} per-event \"Context\" links, identical apart from each event's own sequence " +
+        "number and timestamp, were folded into one template (${ResultBudget.FOLDED_LINKS_KEY} in the data " +
+        "block), saving ${fold.savedChars} characters of compact JSON. The fold dropped no data: each link is " +
+        "that template with the event's own sequence_number_str and timestamp filled in.\n" +
+        "To read the events around one, call logsearch_get_context_events with sequence_number = its " +
+        "sequence_number_str, timestamp = its timestamp and log_key = its log_id. Audit logs are the " +
+        "exception: the API has no context endpoint for them and answers these links with HTTP 404."
 
 private fun compactedNotice(limit: Int): String =
     "$NOTICE_TAG Large result rendered as COMPACT JSON (not pretty-printed) to fit the " +

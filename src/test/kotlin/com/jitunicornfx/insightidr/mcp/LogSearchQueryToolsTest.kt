@@ -374,6 +374,26 @@ class LogSearchQueryToolsTest {
     }
 
     @Test
+    fun `the Context link repeated on every event of a LEQL result is folded on the way out`() = runBlocking {
+        // A page as the API answers a query with a statement over a 34-log log set; see foldContextLinks.
+        val logs = logKeys(34)
+        val h = harness(body = linkedResult(20, logs).encoded())
+        val result = h.call(
+            "logsearch_query_logs",
+            mapOf("log_keys" to logs, "query" to "where(action=ACCOUNT_LOCKED)", "time_range" to "last 1 hour"),
+        )
+        val envelope = parseEnvelope((result.content.first() as TextContent).text)
+        val data = JsonCodec.compact.parseToJsonElement(envelope.body).jsonObject
+
+        assertFalse(result.isError == true)
+        assertEquals(20, data["events"]!!.jsonArray.size, "every event is still there")
+        assertTrue(data["events"]!!.jsonArray.none { "links" in it.jsonObject }, "without its own copy of the link")
+        val template = data[ResultBudget.FOLDED_LINKS_KEY]!!.jsonObject["href_template"]!!.jsonPrimitive.content
+        assertTrue("/query/context/{sequence_number_str}?" in template, "was: $template")
+        assertTrue("20 per-event \"Context\" links" in envelope.after, "and the server says so in its own voice")
+    }
+
+    @Test
     fun `query_logsets_by_name repeats the logset_name parameter`() = runBlocking {
         val h = harness()
         h.call(

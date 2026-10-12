@@ -346,7 +346,7 @@ see `INSIGHTIDR_LOG_SEARCH_BASE_URL` to target the unified route
 ## Large results
 
 A single Log Search page can run to megabytes, which is expensive to put in a model's context and
-usually not what you wanted anyway. Two mechanisms handle that.
+usually not what you wanted anyway. Three mechanisms handle that.
 
 ### The response budget
 
@@ -365,6 +365,27 @@ Above it the server degrades in steps, each one lossier than the last:
 Whenever anything was compacted or dropped, a server-authored notice is appended **outside** the
 untrusted-data envelope, saying exactly what happened and what to do instead. Error bodies are never
 trimmed below a floor, so the diagnostic you need to fix a failing call always survives.
+
+### Repeated Context links
+
+When a query carries a LEQL statement, the Log Search API puts a `rel: "Context"` link on every
+event, and the link lists every log the query covered: 189 characters for one log, 1,476 for a
+34-log log set, 3,972 for a 98-log one (measured 2026-10-12). At the default page of 100 that was
+43–89% of a result, and it pushed 44–56 of the 100 events out of the response budget.
+
+The link holds nothing the result does not. Its path ends in the event's own `sequence_number_str`,
+its `timestamp` parameter is the event's `timestamp`, and the rest is identical on every event. So
+when the per-event copies cost 5,000 characters or more, the server **folds** them into one
+`_mcp_folded_links` object in the data block — the link as a template, with `{sequence_number_str}`
+and `{timestamp}` where the event's own values go — and says so in a notice outside the envelope.
+Nothing is lost: each event's link is that template with the event's two fields filled in. To read
+the events around one, call `logsearch_get_context_events` with its `sequence_number_str`,
+`timestamp` and `log_id`. (Audit logs are the exception: the API has no context endpoint for them,
+and answers the links it puts on their events with HTTP 404.)
+
+The fold is all or nothing. Unless *every* event carries exactly that one link, and every link is
+the same once the event's own two values are taken out, the result is returned as the API sent it.
+A result that has to be cut, an error body and a spool file are never folded.
 
 ### Spooling a whole result set
 
@@ -514,9 +535,10 @@ How a download is trusted before it replaces anything:
   API, matching the documented request schema (`{ field, operator, value }` / `{ field, order }`).
 - Tools that only read are annotated with `readOnlyHint`; delete/remove operations are annotated as
   destructive so clients can prompt appropriately.
-- Results are returned as pretty-printed JSON text, unless they exceed the response budget — see
-  [Large results](#large-results). Non-2xx responses are marked as tool errors and include the API's
-  response body (never trimmed below a floor) to help the model self-correct.
+- Results are returned as pretty-printed JSON text, unless they exceed the response budget or repeat
+  one link on every event — see [Large results](#large-results). Non-2xx responses are marked as tool
+  errors and include the API's response body (never trimmed below a floor) to help the model
+  self-correct.
 - The response budget is enforced at a single choke point (`ApiResponse.toToolResult`), which every
   tool funnels through, so no tool can return an unbounded result by omission.
 - Both IDR APIs are served from `api.insight`; only Log Search lives on `rest.logs.insight`. Every v1

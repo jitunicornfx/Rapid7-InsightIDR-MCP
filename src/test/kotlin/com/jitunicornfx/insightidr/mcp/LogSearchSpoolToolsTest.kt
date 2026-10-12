@@ -8,6 +8,7 @@ import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
@@ -225,6 +226,20 @@ class LogSearchSpoolToolsTest {
         assertEquals(2, lines.size)
         lines.forEach { JsonCodec.compact.parseToJsonElement(it).jsonObject }
         assertTrue("could not be parsed as JSON" in text)
+    }
+
+    @Test
+    fun `a spooled event keeps its Context link, which only a result bound for the conversation folds`() = runBlocking {
+        // The fold saves tokens. A spool file costs none, each line of it has to stand on its own
+        // with no template beside it, and it may be kept as evidence: it holds what the API sent.
+        // A last page: no top-level Next link to follow.
+        val page = JsonObject(linkedResult(20, logKeys(34)) - "links")
+        val h = harness(listOf(HttpStatusCode.OK to page.encoded()))
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
+
+        assertEquals(page["events"]!!.jsonArray.toList(), linesOnDisk().map { JsonCodec.compact.parseToJsonElement(it) })
+        assertFalse(ResultBudget.FOLDED_LINKS_KEY in text)
+        assertFalse("folded" in serverAuthored(text))
     }
 
     @Test
