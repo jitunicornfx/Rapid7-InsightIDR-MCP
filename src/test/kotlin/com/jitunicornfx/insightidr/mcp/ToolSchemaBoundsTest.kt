@@ -62,24 +62,56 @@ class ToolSchemaBoundsTest {
     }
 
     @Test
-    fun `every tool that runs LEQL on a query endpoint states the clause order`() {
-        val leqlQueries = declaring("query")
-            .map { (tool, schema) -> tool to schema.getValue("description").jsonPrimitive.content }
-            .filter { (_, description) -> "LEQL" in description }
-            .toMap()
+    fun `every parameter that could carry LEQL is classified, and the measured ones state the clause order`() {
+        // Found two ways, because the tools do not agree on a name: by the names LEQL parameters have
+        // here (query, statement, leql), and by any description that mentions LEQL at all. That is a
+        // net, not a proof - a LEQL parameter with a new name and a description that never says so
+        // would slip through - but everything it catches has to be put in one of the three sets below.
+        val candidates = tools.flatMap { tool ->
+            val params = tool.inputSchema.properties.orEmpty().mapNotNull { (param, schema) ->
+                val description = (schema as? JsonObject)?.get("description")?.jsonPrimitive?.content ?: ""
+                if (param in setOf("query", "statement", "leql") || description.contains("leql", ignoreCase = true)) {
+                    "${tool.name}.$param" to description
+                } else {
+                    null
+                }
+            }
+            // A tool that talks about LEQL without any one parameter doing so: the LEQL is somewhere
+            // inside a body the tool describes as a whole.
+            val wholeTool = tool.description.orEmpty()
+            if (params.isEmpty() && wholeTool.contains("leql", ignoreCase = true)) listOf("${tool.name}.(tool)" to wholeTool) else params
+        }.toMap()
 
-        // The order was measured on the endpoints behind these.
+        // The clause order was measured on the endpoint behind each of these (see Leql.kt).
         val measured = setOf(
-            "logsearch_query_log", "logsearch_query_logs", "logsearch_query_logset", "logsearch_query_logsets_by_name",
-            "logsearch_audit_query_log", "logsearch_audit_query_logs", "logsearch_spool_query_to_file",
+            "logsearch_query_log.query", "logsearch_query_logs.query", "logsearch_query_logset.query",
+            "logsearch_query_logsets_by_name.query", "logsearch_audit_query_log.query",
+            "logsearch_audit_query_logs.query", "logsearch_spool_query_to_file.query",
         )
-        // This one answered 406 to every call until now, so nothing could be measured through it.
-        val notMeasured = setOf("logsearch_download_log_data")
-        // A LEQL tool added later is in neither set, and fails here until someone decides which.
-        assertEquals(measured + notMeasured, leqlQueries.keys)
+        // These take LEQL, or a body with LEQL in it, on endpoints where it was not measured: creating
+        // a saved query, detection rule or metric writes to the tenant, the download answered 406 to
+        // everything, and the alert tools' "leql" clause belongs to a different API altogether.
+        val notMeasured = setOf(
+            "logsearch_create_saved_query.statement", "logsearch_replace_saved_query.statement",
+            "logsearch_update_saved_query.statement", "logsearch_download_log_data.query",
+            "logsearch_create_detection_rule.tag", "logsearch_replace_detection_rule.tag",
+            "logsearch_create_metric.(tool)", "logsearch_replace_metric.(tool)",
+            "search_alerts.search", "patch_alerts.search", "investigate_alerts.search",
+            "generate_alert_report.search", "get_assignee_options.search",
+        )
+        // These mention LEQL and take none: variables are values a query refers to, a saved query is
+        // run as stored, and the rest only describe what LEQL can be used for.
+        val notLeql = setOf(
+            "logsearch_list_variables.(tool)", "logsearch_get_variable.variable_id", "logsearch_create_variable.(tool)",
+            "logsearch_update_variable.(tool)", "logsearch_delete_variable.(tool)", "logsearch_list_metrics.(tool)",
+            "logsearch_get_log_top_keys.(tool)", "logsearch_run_saved_query.(tool)", "logsearch_run_saved_query_on_logs.(tool)",
+        )
 
-        for (tool in measured) assertTrue(leqlQueries.getValue(tool).endsWith(LEQL_QUERY_GUIDANCE), tool)
-        for (tool in notMeasured) assertTrue(LEQL_CLAUSE_ORDER !in leqlQueries.getValue(tool), "$tool: not measured, so not claimed")
+        assertEquals((measured + notMeasured + notLeql).sorted(), candidates.keys.sorted())
+        for (param in measured) assertTrue(candidates.getValue(param).endsWith(LEQL_QUERY_GUIDANCE), param)
+        for (param in notMeasured + notLeql) {
+            assertTrue(LEQL_CLAUSE_ORDER !in candidates.getValue(param), "$param: not measured, so not claimed")
+        }
     }
 
     @Test

@@ -136,6 +136,9 @@ class ToolSupportExtraTest {
         assertTrue("privileges" in textOf(ApiResponse(403, false, "", null).toToolResult()))
         assertTrue("id/RRN" in textOf(ApiResponse(404, false, "", null).toToolResult()))
         assertTrue("input schema" in textOf(ApiResponse(400, false, "", null).toToolResult()))
+        // A 406 is this server's own Accept header being refused; the caller cannot fix it by retrying.
+        val notAcceptable = textOf(ApiResponse(406, false, "", null).toToolResult())
+        assertTrue("Accept header" in notAcceptable && "Report it rather than retrying" in notAcceptable, notAcceptable)
         assertTrue("Rate limited" in textOf(ApiResponse(429, false, "", null).toToolResult()))
         assertTrue("retrying may succeed" in textOf(ApiResponse(503, false, "", null).toToolResult()))
         // Unmapped statuses stay hint-free but still report the code (pinned exactly).

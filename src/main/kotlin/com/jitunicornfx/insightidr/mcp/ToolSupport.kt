@@ -425,6 +425,10 @@ private fun statusHint(status: Int): String? = when (status) {
     401 -> "Authentication failed — verify INSIGHTIDR_API_KEY holds a valid Insight platform API key for this region."
     403 -> "The API key lacks the privileges for this operation — an Organization key or additional roles may be required."
     404 -> "Not found — the id/RRN may be wrong, or the API key cannot access that resource."
+    // Said plainly because nothing the caller can change will fix it: logsearch_download_log_data
+    // answered 406 to every call for as long as it had existed, and a bare status line let that pass
+    // for a problem with the arguments.
+    406 -> "The API would not answer in any format this server asked for (its Accept header), which the tool's arguments do not control — most likely a defect in this MCP server. Report it rather than retrying."
     429 -> "Rate limited — wait briefly before retrying."
     in 500..599 -> "Server-side error at Rapid7 — retrying may succeed."
     else -> null

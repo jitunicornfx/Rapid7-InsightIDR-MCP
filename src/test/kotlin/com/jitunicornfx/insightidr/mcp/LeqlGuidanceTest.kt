@@ -43,6 +43,8 @@ class LeqlGuidanceTest {
 
         assertEquals("InsightIDR API returned HTTP 400. $LEQL_SYNTAX_ERROR_HINT", line)
         assertTrue(LEQL_CLAUSE_ORDER in line, "the order is spelled out: the API never says which rule was broken")
+        // Attributed to where it was measured. The hint also reaches tools whose endpoints were not.
+        assertTrue("the query endpoints accept only $LEQL_CLAUSE_ORDER" in line)
         assertTrue("select(...) goes BEFORE where(...)" in line)
         // The hint this replaces. Every parameter of the failing call was valid against the schema,
         // so it sent the model to look where the mistake was not.
@@ -75,6 +77,12 @@ class LeqlGuidanceTest {
         // A 5xx that carries the code is still the API being unwell, and retrying is still the advice.
         assertTrue("retrying may succeed" in statusLine(503, syntaxRejection))
         assertFalse(LEQL_CLAUSE_ORDER in statusLine(503, syntaxRejection))
+        // Nor is it for any other 4xx: each keeps the hint that belongs to its own status.
+        assertTrue("id/RRN" in statusLine(404, syntaxRejection))
+        assertTrue("Rate limited" in statusLine(429, syntaxRejection))
+        for (status in listOf(401, 403, 404, 406, 422, 429)) {
+            assertFalse(LEQL_CLAUSE_ORDER in statusLine(status, syntaxRejection), "HTTP $status")
+        }
         // A success is never annotated, whatever its body holds.
         val success = parseEnvelope(textOf(200, syntaxRejection))
         assertFalse("LEQL" in success.before + success.after)

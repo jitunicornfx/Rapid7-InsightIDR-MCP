@@ -163,6 +163,11 @@ internal suspend fun Rapid7Client.awaitQueryCompletion(
  * In 0.4.0 and 0.4.1 the code was read from a key named `code`, which the API does not send, and
  * this worked only because the message matched; [apiErrorCode] reads `errorCode`.
  *
+ * The code alone is enough to go on because the API's codes are per condition, not per category.
+ * Measured the same day: three different "Invalid Time Range" faults answer 101017, 101021 and
+ * 101022, a per_page out of range 1010014, a negative sequence_number 101015, an unknown label
+ * 101005. Nothing but pagination on a statistic query was seen to answer 101009.
+ *
  * Matched on the raw [ApiResponse.body] (this runs before [toToolResult] pretty-prints and wraps it),
  * on either the error code or the message text, and never on a 2xx — a successful result body that
  * happens to contain the string `101009` (e.g. a log line) must not trigger a retry.
