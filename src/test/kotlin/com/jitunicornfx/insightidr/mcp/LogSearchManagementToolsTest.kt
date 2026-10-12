@@ -1,6 +1,7 @@
 package com.jitunicornfx.insightidr.mcp
 
 import com.jitunicornfx.insightidr.mcp.tools.registerLogSearchManagementTools
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
@@ -66,6 +67,19 @@ class LogSearchManagementToolsTest {
         assertEquals("last 1 hour", req.url.parameters["time_range"])
         assertEquals("1000", req.url.parameters["limit"])
         assertEquals("where(x)", req.url.parameters["query"])
+    }
+
+    @Test
+    fun `download_log_data does not ask for JSON, which the endpoint refuses`() = runBlocking {
+        // Checked 2026-10-12: the endpoint serves application/octet-stream only (the spec says
+        // text/plain) and answers "Accept: application/json" with a 406 on every call.
+        val h = harness()
+        h.call("logsearch_download_log_data", mapOf("log_ids" to "a", "time_range" to "last 1 hour", "limit" to 1))
+        assertEquals("*/*", h.lastRequest.headers[HttpHeaders.Accept])
+
+        // Everything else still asks for JSON, which is what everything else serves.
+        h.call("logsearch_list_logs")
+        assertEquals("application/json", h.lastRequest.headers[HttpHeaders.Accept])
     }
 
     @Test

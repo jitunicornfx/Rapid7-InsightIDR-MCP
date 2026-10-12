@@ -58,6 +58,19 @@ internal const val LS_RESULT_SIZE_GUIDANCE =
 /** The download endpoint's `limit`: spec 3.0.2 gives 500,000,000 as both its maximum and its default. */
 internal const val LS_MAX_DOWNLOAD_ENTRIES = 500_000_000L
 
+/**
+ * The `Accept` header for the download endpoint, which is the one Log Search endpoint that does not
+ * answer in JSON.
+ *
+ * Spec 3.0.2 says it answers `text/plain`. Checked 2026-10-12, it does not: it serves
+ * `application/octet-stream` and nothing else, refusing `Accept: application/json` — what this client
+ * sends everywhere else — and `Accept: text/plain` alike with HTTP 406, before it looks at the API
+ * key. JSON is all this client had ever asked for, so logsearch_download_log_data failed on every
+ * call. Asking for anything is the request that cannot be refused, whichever of the spec and the
+ * service changes next; the body is fenced as untrusted text whatever its type.
+ */
+internal const val LS_DOWNLOAD_ACCEPT = "*/*"
+
 /** The only export format the API supports (spec 3.0.2: "Currently only `csv` is supported"). */
 internal val LS_EXPORT_FORMATS = listOf("csv")
 

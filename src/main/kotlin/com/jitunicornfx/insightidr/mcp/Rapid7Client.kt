@@ -154,6 +154,8 @@ class Rapid7Client(
      * @param jsonBody optional JSON body (takes precedence over [rawBody]).
      * @param rawBody optional raw string body, sent with [rawContentType].
      * @param rawContentType content type for [rawBody]; defaults to `application/json`.
+     * @param accept the `Accept` header. JSON for everything but an endpoint that serves something
+     *   else and says so with a 406.
      */
     suspend fun request(
         method: HttpMethod,
@@ -163,11 +165,12 @@ class Rapid7Client(
         rawBody: String? = null,
         rawContentType: ContentType = ContentType.Application.Json,
         base: ApiBase = ApiBase.IDR_V2,
+        accept: String = ContentType.Application.Json.toString(),
     ): ApiResponse {
         return http.prepareRequest(baseUrlFor(base) + path) {
             this.method = method
             header("X-Api-Key", config.apiKey)
-            header(HttpHeaders.Accept, ContentType.Application.Json.toString())
+            header(HttpHeaders.Accept, accept)
             url {
                 query.forEach { (key, values) ->
                     values.forEach { value -> parameters.append(key, value) }

@@ -172,6 +172,7 @@ fun Server.registerLogSearchManagementTools(client: Rapid7Client) {
                 "limit" to args.longOrNull("limit"),
             ),
             base = ApiBase.LOG_SEARCH,
+            accept = LS_DOWNLOAD_ACCEPT,
         ).toToolResult()
     }
 
