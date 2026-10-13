@@ -16,11 +16,33 @@ package com.jitunicornfx.insightidr.mcp
  *    calculate, sort or limit.
  *  - select() together with calculate() is refused even in that order.
  *  - Keywords are case-insensitive.
- *  - select(k1, k2) returns each event's message reduced to those keys.
+ *  - select(k1, k2) reduces each event's message to those keys, but not on its own: see below.
  *
  * Every refusal is the same HTTP 400 — errorCode [LEQL_SYNTAX_ERROR_CODE], "Invalid Query Syntax: the
  * query entered is invalid" — and so is an unbalanced parenthesis or quote. Nothing in the response
  * says which rule was broken, so anything a model is to act on has to come from here.
+ *
+ * What select() returns was measured separately the same day: 32 queries, most of them on
+ * GET /query/logs/{key} and most held to one known event by a one-second from/to, so that the same
+ * event answered each shape of query. No exception:
+ *
+ *  - The selected keys came back when where() held at least one key comparison (15 queries). Tried:
+ *    =, !=, >, =/regex/, ICONTAINS and IN [..]. The key compared did not have to be a selected one,
+ *    nor one any event has, nor the term that matched: where(KEYWORD OR no_such_key=x) worked.
+ *  - They also came back, with no such where(), when the request set kvp_info=true (4 queries), which
+ *    adds a kvp_info array to every event.
+ *  - Otherwise every event's message was "{}", although the event held the keys (13 queries):
+ *    select() alone, select() limit(), and select() with a where() of keywords or of a bare regex.
+ *    where(key) is one of those: a bare key name is a keyword.
+ *
+ * It is not an error and nothing in the response marks it: no field of search_stats separated the two.
+ * The pair select() alone / select() with a key comparison gave those two answers on each of the six
+ * endpoints, on an event three days old, and on three kinds of JSON event. A selected key the event
+ * lacks is left out; a nested key is asked for as a.b and comes back as one flat "a.b" key.
+ * Comparing k with the regex that matches anything (dot, star, between slashes: written out it would
+ * close this comment, see [LEQL_QUERY_GUIDANCE]) matched 33 of the 33 events in an hour of one log,
+ * the number calculate(count) gave with no where() at all. Why the API does this is not known and is
+ * not said anywhere in this server. Events that are not JSON were not tried.
  *
  * NOT measured: a saved query's statement, the download endpoint's query, and the LEQL inside
  * detection rules and metrics. Creating those writes to the tenant, and the download answered 406 to
@@ -32,7 +54,10 @@ internal const val LEQL_CLAUSE_ORDER = "select() where() groupby() calculate() h
 internal const val LEQL_QUERY_GUIDANCE =
     "Clauses are optional but their order is fixed: $LEQL_CLAUSE_ORDER. Any other order is rejected " +
         "as a syntax error — write select(...) where(...), never where(...) select(...). " +
-        "select(key1, key2) returns only those keys of each event; it cannot be combined with calculate()."
+        "select(key1, key2) returns only those keys of each event, but ONLY when the same query has a " +
+        "where() that compares a key: where(key=value), or where(key1=/.*/) when there is nothing else " +
+        "to filter on. With no where(), or a where() of bare keywords or a bare regex, every event " +
+        "comes back as an empty {} although it holds the keys. select() cannot be combined with calculate()."
 
 /** The Log Search API's error code for a query it could not parse. Observed; not in the spec. */
 internal const val LEQL_SYNTAX_ERROR_CODE = "101011"

@@ -37,6 +37,36 @@ class LeqlGuidanceTest {
     }
 
     @Test
+    fun `select is only offered with the where clause that makes it return keys`() {
+        // Measured 2026-10-12 (Leql.kt): select() on its own returned "{}" for events that hold the
+        // keys. The sentence this replaces offered it unconditionally, as the way to shrink a result.
+        assertFalse("returns only those keys of each event;" in LEQL_QUERY_GUIDANCE)
+        assertTrue("ONLY when the same query has a where() that compares a key" in LEQL_QUERY_GUIDANCE)
+        assertTrue("where(key1=/.*/)" in LEQL_QUERY_GUIDANCE, "a way to select without filtering on anything else")
+        // The failure is a 200 full of empty events, so the text has to say what it looks like.
+        assertTrue("every event comes back as an empty {} although it holds the keys" in LEQL_QUERY_GUIDANCE)
+        assertTrue(LEQL_QUERY_GUIDANCE.endsWith("select() cannot be combined with calculate()."))
+    }
+
+    @Test
+    fun `a select with no where clause reaches the API as written`() = runBlocking {
+        // The shape of what the live API returned on 2026-10-12 for select(action) alone.
+        val emptied = """{"logs":["lk1"],"events":[{"message":"{}","sequence_number_str":"5","timestamp":1}],"leql":{"statement":"select(action)"}}"""
+        val h = mcpHarness(responseBody = emptied) { registerLogSearchQueryTools(it) }
+        val result = h.call(
+            "logsearch_query_log",
+            mapOf("log_key" to "lk1", "query" to "select(action)", "time_range" to "last 1 hours", "per_page" to 1),
+        )
+
+        assertEquals(1, h.requests.size)
+        // The server adds neither a where() nor kvp_info to make the select work: the query the model
+        // wrote is the one the API answers, and the advice is in the parameter's description.
+        assertEquals("select(action)", h.lastRequest.url.parameters["query"])
+        assertNull(h.lastRequest.url.parameters["kvp_info"])
+        assertFalse(result.isError == true)
+    }
+
+    @Test
     fun `a LEQL syntax rejection is explained as one`() {
         val envelope = parseEnvelope(textOf(400, syntaxRejection))
         val line = envelope.before.lineSequence().first()
