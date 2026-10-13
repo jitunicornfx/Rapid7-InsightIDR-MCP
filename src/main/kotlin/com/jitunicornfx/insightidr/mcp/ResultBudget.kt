@@ -142,15 +142,27 @@ internal fun renderWithinBudget(raw: String, budget: ResultBudget, ok: Boolean):
     // fallback is the text as it arrived - escaped first, like every other path, and returned whole
     // if that already fits.
     val compact = encodeOrNull(JsonCodec.compact, element) ?: return renderAsText(raw, limit, budget)
-    return lineAwareCut(compact, limit, budget, wasJson = true)
+    return lineAwareCut(compact, compact.length.toLong(), limit, budget, wasJson = true)
 }
 
-/** A body that is not rendered as JSON: whole if it fits, otherwise cut at a line boundary. */
+/**
+ * A body that is not rendered as JSON: whole if it fits, otherwise cut at a line boundary.
+ *
+ * Measured as it will be shown, escaped, for the same reason encodeOrNull does it - but measured by
+ * counting, and built only as far as it can be shown: all of a body that fits, and otherwise as much
+ * of its start as a cut can keep.
+ *
+ * Whatever is not JSON, or is too large to parse, arrives here, and that can be all 64 MiB the client
+ * reads of one response. Escaped whole, a body of control characters that size was a string six times
+ * as long beside the builder it was copied out of, to keep 200,000 characters of it: measured
+ * 2026-10-12, an OutOfMemoryError in a 512 MB heap and only just enough in 1 GB. An OutOfMemoryError
+ * is an Error, which `apiTool` does not catch.
+ */
 private fun renderAsText(raw: String, limit: Int, budget: ResultBudget): BudgetedBody {
-    // Escaped before it is measured, for the same reason encodeOrNull does it.
-    val text = escapeInvisible(raw)
-    return if (text.length <= limit) BudgetedBody(text, null, BudgetStrategy.PRETTY)
-    else lineAwareCut(text, limit, budget, wasJson = false)
+    val length = escapedLength(raw)
+    if (length <= limit) return BudgetedBody(escapeInvisible(raw), null, BudgetStrategy.PRETTY)
+    val head = escapeInvisibleHead(raw, maxOf(limit, budget.sampleFloorChars))
+    return lineAwareCut(head, length, limit, budget, wasJson = false)
 }
 
 /**
@@ -299,13 +311,18 @@ private fun truncationMarker(arrayKey: String, kept: Int, total: Int): JsonObjec
 }
 
 /**
- * Truncate [text] to the budget, preferring the last line boundary so a line-oriented body
+ * Truncate a body to the budget, preferring the last line boundary so a line-oriented body
  * (`logsearch_download_log_data` returns one log entry per line) ends on a complete record.
  * The result is a PREFIX, not valid JSON; the notice says so.
+ *
+ * [head] is the start of the body as it is shown, escaped, and [totalLength] is the length of all of
+ * it in that same form. A caller holding the whole body passes it and its length. One that never
+ * built the rest passes at least what a cut can keep - `max(limit, sampleFloorChars)` characters, or
+ * the whole body if that is shorter - and the length it counted.
  */
-private fun lineAwareCut(text: String, limit: Int, budget: ResultBudget, wasJson: Boolean): BudgetedBody {
-    val target = maxOf(limit, budget.sampleFloorChars).coerceAtMost(text.length)
-    var slice = text.substring(0, target)
+private fun lineAwareCut(head: String, totalLength: Long, limit: Int, budget: ResultBudget, wasJson: Boolean): BudgetedBody {
+    val target = minOf(maxOf(limit, budget.sampleFloorChars).toLong(), totalLength).toInt()
+    var slice = head.substring(0, target)
     val lastBreak = slice.lastIndexOf('\n')
     val strategy = if (lastBreak >= budget.sampleFloorChars) {
         slice = slice.substring(0, lastBreak)
@@ -315,7 +332,7 @@ private fun lineAwareCut(text: String, limit: Int, budget: ResultBudget, wasJson
     }
     // Never emit a dangling half of a surrogate pair — substring can split one.
     if (slice.isNotEmpty() && slice.last().isHighSurrogate()) slice = slice.dropLast(1)
-    return BudgetedBody(slice, cutNotice(text.length, slice.length, limit, wasJson), strategy)
+    return BudgetedBody(slice, cutNotice(totalLength, slice.length, limit, wasJson), strategy)
 }
 
 // ---------------------------------------------------------------------------
@@ -513,7 +530,13 @@ private fun droppedNotice(key: String?, kept: Int, total: Int, limit: Int): Stri
         CHEAPER_WAYS
 }
 
-private fun cutNotice(originalLength: Int, keptLength: Int, limit: Int, wasJson: Boolean): String =
+/**
+ * [originalLength] and [keptLength] are both lengths of the body as it is shown: with invisible
+ * characters escaped, and for a JSON body re-encoded compact. That is what the budget is spent on, so
+ * the two numbers and the limit compare with each other; it is not the number of characters the API
+ * sent whenever anything was escaped.
+ */
+private fun cutNotice(originalLength: Long, keptLength: Int, limit: Int, wasJson: Boolean): String =
     "$NOTICE_TAG This response was $originalLength characters and was CUT to $keptLength to fit " +
         "the $limit-character response budget (INSIGHTIDR_MAX_RESULT_CHARS). The block above is a " +
         "PREFIX of the response and is NOT valid JSON — do not try to parse it as a whole document.\n" +

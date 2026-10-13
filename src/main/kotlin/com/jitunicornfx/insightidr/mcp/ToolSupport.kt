@@ -357,9 +357,21 @@ private fun isInvisible(cp: Int): Boolean = when (cp) {
     else -> false
 }
 
+/** What one UTF-16 unit becomes when it is escaped: a backslash, a `u` and four hex digits. */
+private const val ESCAPED_UNIT_CHARS = 6
+
 private fun StringBuilder.appendEscaped(c: Char) {
     append("\\u").append(c.code.toString(16).padStart(4, '0'))
 }
+
+/**
+ * Whether the code point [cp], found at index [at] of this text, is one [escapeInvisible] rewrites.
+ *
+ * A carriage return is left alone as half of a CRLF line ending and escaped on its own, where all it
+ * can do is send a terminal back to the start of the line to overwrite it.
+ */
+private fun String.hidesAt(cp: Int, at: Int): Boolean =
+    isInvisible(cp) || (cp == 0x0D && getOrNull(at + 1) != '\n')
 
 /**
  * Rewrite every invisible or display-altering character in [text] as its `\uXXXX` escape (a
@@ -374,24 +386,36 @@ private fun StringBuilder.appendEscaped(c: Char) {
  * budget measures anything; see `encodeOrNull` in ResultBudget.kt. It is idempotent, and returns the
  * same instance when there is nothing to escape, which is nearly always.
  */
-internal fun escapeInvisible(text: String): String {
-    // A carriage return is left alone as half of a CRLF line ending and escaped on its own, where
-    // all it can do is send a terminal back to the start of the line to overwrite it.
-    fun hides(cp: Int, at: Int) = isInvisible(cp) || (cp == 0x0D && text.getOrNull(at + 1) != '\n')
+internal fun escapeInvisible(text: String): String = escapeInvisibleHead(text, Int.MAX_VALUE)
 
+/**
+ * The start of what [escapeInvisible] returns for [text]: at least [atLeast] characters of it, or
+ * all of it when it is no longer than that.
+ *
+ * For a caller that is about to cut the result and needs only what the cut can keep. Escaping never
+ * shortens, so that much of the output is never further into [text] than [atLeast] characters, and
+ * the rest of a 64 MiB body is not turned into a string six times its size to be thrown away.
+ *
+ * What comes back is exactly a prefix of the full result, because it is the same pass stopped early:
+ * a surrogate pair and a CRLF are both read from [text] itself, so neither is judged differently for
+ * lying across the stopping point. It stops only after a whole code point, so it can run over
+ * [atLeast] by up to the eleven characters an escaped pair has left.
+ */
+internal fun escapeInvisibleHead(text: String, atLeast: Int): String {
     var i = 0
-    while (i < text.length) {
+    while (i < text.length && i < atLeast) {
         val cp = text.codePointAt(i)
-        if (hides(cp, i)) break
+        if (text.hidesAt(cp, i)) break
         i += Character.charCount(cp)
     }
     if (i >= text.length) return text
+    if (i >= atLeast) return text.substring(0, i)
 
-    val out = StringBuilder(text.length + 64).append(text, 0, i)
-    while (i < text.length) {
+    val out = StringBuilder(minOf(text.length, atLeast) + 64).append(text, 0, i)
+    while (i < text.length && out.length < atLeast) {
         val cp = text.codePointAt(i)
         val width = Character.charCount(cp)
-        if (hides(cp, i)) {
+        if (text.hidesAt(cp, i)) {
             for (k in 0 until width) out.appendEscaped(text[i + k])
         } else {
             out.append(text, i, i + width)
@@ -399,6 +423,23 @@ internal fun escapeInvisible(text: String): String {
         i += width
     }
     return out.toString()
+}
+
+/**
+ * How long [escapeInvisible] would make [text], counted without building it.
+ *
+ * A Long, because six times the length of a String need not fit in an Int.
+ */
+internal fun escapedLength(text: String): Long {
+    var length = text.length.toLong()
+    var i = 0
+    while (i < text.length) {
+        val cp = text.codePointAt(i)
+        val width = Character.charCount(cp)
+        if (text.hidesAt(cp, i)) length += width * (ESCAPED_UNIT_CHARS - 1)
+        i += width
+    }
+    return length
 }
 
 /**

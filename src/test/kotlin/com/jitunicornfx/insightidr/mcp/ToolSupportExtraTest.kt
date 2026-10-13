@@ -327,6 +327,46 @@ class ToolSupportExtraTest {
     }
 
     @Test
+    fun `the head of an escaped text is the start of the whole, and little more than was asked for`() {
+        val tagA = String(Character.toChars(0xE0041))
+        val samples = listOf(
+            "", "plain text only", "a​b", "x${tagA}y", "😀 emoji 😀", "line one\r\nline two\rbare",
+            "\r", "\r\n", "\n\r", "\uD83D", "\uDE00\uD83D", "\u0001".repeat(40), "ab‮cd".repeat(9),
+            "$tagA$tagA\r\n😀\r", "tail\r", "é\u009B\u007F﻿",
+        )
+        for (sample in samples) {
+            val whole = escapeInvisible(sample)
+            val shown = sample.map { "%04x".format(it.code) }
+            assertEquals(whole.length.toLong(), escapedLength(sample), "counted, not built: $shown")
+            // Every stopping point there is, so every character of every sample lies across one.
+            for (atLeast in 0..whole.length + 2) {
+                val head = escapeInvisibleHead(sample, atLeast)
+                assertTrue(whole.startsWith(head), "$shown stopped at $atLeast gave ${head.map { "%04x".format(it.code) }}")
+                assertTrue(head.length >= minOf(atLeast, whole.length), "$shown stopped at $atLeast is too short")
+                // An escaped pair is twelve characters and is never left half written.
+                assertTrue(head.length <= atLeast + 11, "$shown stopped at $atLeast ran on to ${head.length}")
+            }
+        }
+        val plain = "nothing to see, including emoji 😀 and accents é"
+        assertTrue(escapeInvisibleHead(plain, plain.length) === plain, "all of a text with nothing to escape is that text")
+    }
+
+    @Test
+    fun `a pair or a CRLF lying across the stopping point is read as it is in the whole text`() {
+        val tagA = String(Character.toChars(0xE0041))
+
+        // Cut off first and escaped on its own, the first half of the pair is a lone surrogate, which
+        // is left as it is - where the whole text has two escapes.
+        assertEquals("ab\uDB40", escapeInvisible("ab${tagA}cd".take(3)))
+        assertEquals("ab\\udb40\\udc41", escapeInvisibleHead("ab${tagA}cd", 3))
+
+        // And the carriage return is a bare one, which is rewritten - where the whole text has a CRLF.
+        assertEquals("ab\\u000d", escapeInvisible("ab\r\ncd".take(3)))
+        assertEquals("ab\r", escapeInvisibleHead("ab\r\ncd", 3))
+        assertEquals("a\\u200bb\r", escapeInvisibleHead("a​b\r\ncd", 9), "and the same once something has been escaped")
+    }
+
+    @Test
     fun `defusing a body of nothing but dashes stays fast`() {
         // A pattern anchored on the dash run rescans it from every dash: quadratic, minutes here.
         val started = System.nanoTime()
