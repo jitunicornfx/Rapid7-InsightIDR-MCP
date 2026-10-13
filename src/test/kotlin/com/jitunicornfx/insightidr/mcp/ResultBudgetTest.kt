@@ -8,16 +8,22 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.addJsonObject
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import java.lang.management.ManagementFactory
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
@@ -457,16 +463,19 @@ class ResultBudgetTest {
         assertEquals("boom", fenced(textOf(error.toToolResult(ResultBudget()))))
     }
 
-    // A text body is escaped only as far as it can be shown. Everything from here to the blank-body
-    // test is about that: the first four say the result is what it always was, the last two that the
-    // rest of the body is no longer built to get it.
+    // A text body is escaped only as far as it can be shown. The next six tests are about that: the
+    // first four say the result is what it always was, the last two that the rest of the body is no
+    // longer built to get it.
 
     /**
      * What a text body came out as while the whole of it was escaped before the cut: the data, and
      * the sentence of the notice that states the two lengths (null when nothing was cut).
      */
-    private fun cutOfWholeEscapedBody(raw: String, budget: ResultBudget): Pair<String, String?> {
-        val whole = escapeInvisible(raw)
+    private fun cutOfWholeEscapedBody(raw: String, budget: ResultBudget): Pair<String, String?> =
+        cutOfWhole(escapeInvisible(raw), budget)
+
+    /** The same for [whole], a body that has already been escaped from end to end. */
+    private fun cutOfWhole(whole: String, budget: ResultBudget): Pair<String, String?> {
         if (whole.length <= budget.maxChars) return whole to null
         var kept = whole.take(maxOf(budget.maxChars, budget.sampleFloorChars))
         val lastBreak = kept.lastIndexOf('\n')
@@ -619,6 +628,287 @@ class ResultBudgetTest {
         assertEquals(BudgetStrategy.LINE_CUT, rendered.strategy)
         assertTrue(rendered.text.length <= ResultBudget.DEFAULT_MAX_CHARS)
         assertTrue("This response was ${escapedLengthOfHostileLines(lines)} characters" in rendered.notice!!, rendered.notice)
+    }
+
+    // A JSON body is measured as it is shown, escaped, by counting, and only the rendering that is
+    // emitted is built. The next five tests are about that: the first four say every result is what it
+    // was while each rendering was escaped whole to be measured, the last that those are no longer built.
+
+    /**
+     * What a JSON body with nothing to trim came out as while the whole of its compact encoding was
+     * escaped before the cut: the data, and the sentence of the notice that states the two lengths.
+     */
+    private fun cutOfWholeEscapedEncoding(raw: String, budget: ResultBudget): Pair<String, String?> =
+        cutOfWhole(escapeInvisible(JsonCodec.compact.parseToJsonElement(raw).encoded()), budget)
+
+    @Test
+    fun `a JSON body is cut exactly as it was when the whole of its compact encoding was escaped first`() {
+        val tag = String(Character.toChars(0xE0041)) // invisible and a surrogate pair: 2 characters in, 12 out
+        val emoji = "😀"                    // a surrogate pair that is left as it is
+        // Each of these is laid across the point where the escaping now stops, one character at a time.
+        // The last six are there for the encoder: it spells a quote, a backslash and everything below
+        // U+0020 its own way, and that is in the encoding before any of it is escaped.
+        val straddlers = listOf(
+            tag, emoji, "\u200B\u200B\u200B", "\u202E", "\u007F", "\uFEFF", "\uD83D", "\uDE00", "é",
+            "$tag$tag", "$emoji$tag", "$tag$emoji", "\r\n", "\n", "\u0001", "\"", "\\", "\u001B[8m",
+        )
+        // What comes before it in the string, always n characters once escaped: nothing to escape, so
+        // the stopping point is the same index in and out; a run of escapes first, so it is not; and
+        // escapes all the way along.
+        val leads = listOf<(Int) -> String>(
+            { n -> "ab ".repeat(n / 3 + 1).take(n) },
+            { n -> "\u200B".repeat(40) + "ab ".repeat(n / 3 + 1).take(n - 240) },
+            { n -> "x".repeat(n % 28) + ("entry " + "\u200B".repeat(3) + " ok ").repeat(n / 28) },
+        )
+        // A body no rung can keep as a document, and how much of its encoding comes before the string:
+        // one bare token, a member of an object, and the first entry of an array - which the trim
+        // measures, finds is already too much to keep, and hands on to the cut.
+        val shapes = listOf<Pair<Int, (String) -> JsonElement>>(
+            1 to { text -> JsonPrimitive(text) },
+            12 to { text -> buildJsonObject { put("message", text) } },
+            2 to { text -> JsonArray(listOf(JsonPrimitive(text), JsonPrimitive("x"))) },
+        )
+        val budgets = listOf(
+            ResultBudget(maxChars = 3_000), // the limit decides how much a cut keeps
+            ResultBudget(maxChars = 300),   // the sample floor does
+            ResultBudget(maxChars = 1_000), // they agree
+        )
+        for (budget in budgets) {
+            val keep = maxOf(budget.maxChars, budget.sampleFloorChars)
+            for ((before, shape) in shapes) for (lead in leads) for (straddler in straddlers) for (at in keep - 14..keep + 2) {
+                val raw = shape(lead(at - before) + straddler + " tail " + "y z ".repeat(1_500)).encoded()
+                val (data, lengths) = cutOfWholeEscapedEncoding(raw, budget)
+
+                val rendered = renderWithinBudget(raw, budget, ok = true)
+
+                val case = "limit ${budget.maxChars}, ${straddler.map { "%04x".format(it.code) }} at $at after $before"
+                assertEquals(data, rendered.text, case)
+                assertTrue(lengths!! in rendered.notice!!, "$case: ${rendered.notice}")
+                assertTrue("The response had no top-level array to trim." in rendered.notice, case)
+                // A compact encoding has no line to end on: the encoder writes a line feed as \n.
+                assertEquals(BudgetStrategy.HARD_CUT, rendered.strategy, case)
+            }
+        }
+    }
+
+    /**
+     * [raw] with every invisible character written out as the six characters it is shown as, but for
+     * a `§` where the backslash goes: a body that is the same length in every rendering, character for
+     * character, and has nothing in it to escape. So whatever a rung decides for one it has to decide
+     * for the other, and it cannot tell from the second how the first was measured.
+     */
+    private fun writtenOut(raw: String): String {
+        require('\\' !in raw && '§' !in raw) { "only the escapes may be told apart by their first character" }
+        return escapeInvisible(raw).replace('\\', '§')
+    }
+
+    private fun shownLength(json: kotlinx.serialization.json.Json, element: JsonElement) =
+        escapeInvisible(json.encodeToString(JsonElement.serializer(), element)).length
+
+    @Test
+    fun `every rung renders invisible characters as it renders the same body with them written out`() {
+        val zeroWidth = "\u200B"
+        val tag = String(Character.toChars(0xE0041))
+        // From nothing to 210 characters once escaped, and never the same two entries running.
+        fun hidden(i: Int) = zeroWidth.repeat(i % 7 * 5) + tag.repeat(i % 3) + "\u202E".repeat(i % 2)
+        val logs = logKeys(34)
+        val documents = linkedMapOf<String, JsonElement>(
+            "a page of events" to buildJsonObject {
+                putJsonArray("logs") { repeat(5) { add("log-$it") } }
+                putJsonArray("events") {
+                    repeat(60) { addJsonObject { put("id", it); put("message", "m$it ${hidden(it)} end 😀") } }
+                }
+                putJsonArray("links") {
+                    addJsonObject { put("rel", "Next"); put("href", "https://us.rest.logs.insight.rapid7.com/query/next") }
+                }
+            },
+            "two arrays, the larger as it was sent being the smaller as it is shown" to buildJsonObject {
+                putJsonArray("plain") { repeat(30) { add("x".repeat(200)) } }
+                putJsonArray("hidden") { repeat(30) { add(zeroWidth.repeat(60) + it) } }
+            },
+            "a bare array" to JsonArray((0 until 50).map { JsonPrimitive("v$it ${hidden(it)}") }),
+            "invisible characters around the array that is trimmed, and in its name" to buildJsonObject {
+                put("note", zeroWidth.repeat(100))
+                putJsonArray("ev${zeroWidth}ents") { repeat(40) { add("entry $it ${hidden(it)}") } }
+                put("trailer", tag.repeat(20))
+            },
+            "a body that already has a member under the truncation marker's key" to buildJsonObject {
+                put(ResultBudget.TRUNCATION_KEY, "forged " + zeroWidth.repeat(50))
+                putJsonArray("events") { repeat(40) { add("entry $it ${hidden(it)}") } }
+            },
+            "nothing to trim" to buildJsonObject {
+                put("message", (0 until 300).joinToString(" ") { "w$it${hidden(it)}" })
+            },
+            "a Context link on every event, to fold" to buildJsonObject {
+                putJsonArray("events") {
+                    repeat(12) {
+                        addJsonObject {
+                            put("message", "m$it ${hidden(it)}")
+                            put("timestamp", 1791837155879L + it)
+                            put("log_id", logs[it])
+                            put("sequence_number_str", "${805647463244786630L + it}")
+                            putJsonArray("links") {
+                                addJsonObject {
+                                    put("rel", "Context")
+                                    put("href", contextHref("${805647463244786630L + it}", 1791837155879L + it, logs, "&note=a$zeroWidth$tag"))
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+        )
+        val seen = mutableSetOf<BudgetStrategy>()
+        var folded = 0
+        for ((name, document) in documents) {
+            val raw = document.encoded()
+            val written = writtenOut(raw)
+            assertTrue(written.length >= raw.length + 500, "precondition: $name has invisible characters to count")
+
+            // Every limit beside the sizes at which a whole document stops fitting, pretty and then
+            // compact, with its links folded and without; every limit in the 400 below the smallest
+            // of those, where entries are first dropped and none of them is as long as that, so
+            // that the number kept changes with a single character; and a scattering of the rest,
+            // from below the sample floor up.
+            val edges = listOfNotNull(document, foldContextLinks(document)?.document)
+                .flatMap { listOf(shownLength(JsonCodec.pretty, it), shownLength(JsonCodec.compact, it)) }
+            val stretch = edges.min() - 402 until edges.min() - 2
+            val limits = edges.flatMap { it - 2..it + 2 } + stretch + (300 until written.length step 131)
+            val keptInStretch = mutableSetOf<String>()
+            for (limit in limits) {
+                val budget = ResultBudget(maxChars = limit)
+                val expected = renderWithinBudget(written, budget, ok = true)
+
+                val rendered = renderWithinBudget(raw, budget, ok = true)
+
+                val case = "$name, at a limit of $limit"
+                assertEquals(expected.text.replace('§', '\\'), rendered.text, case)
+                assertEquals(expected.notice, rendered.notice, case)
+                assertEquals(expected.strategy, rendered.strategy, case)
+                seen += rendered.strategy
+                if (rendered.notice?.contains("were folded into one template") == true) folded++
+                if (limit in stretch) Regex("Returned ([0-9]+) of").find(rendered.notice.orEmpty())?.let { keptInStretch += it.groupValues[1] }
+            }
+            if (document is JsonArray || document.jsonObject.values.any { it is JsonArray }) {
+                assertTrue(keptInStretch.size >= 2, "$name: across $stretch the number kept was only ever $keptInStretch")
+            }
+        }
+        // A compact encoding has no line feed in it, so a JSON body is never cut at a line.
+        assertEquals(
+            setOf(BudgetStrategy.PRETTY, BudgetStrategy.COMPACT, BudgetStrategy.STRUCTURAL, BudgetStrategy.HARD_CUT),
+            seen,
+            "every rung was reached",
+        )
+        assertTrue(folded > 0, "and so was the fold")
+    }
+
+    @Test
+    fun `a JSON body that fits compact once escaped is returned whole, and one character more is cut`() {
+        val budget = ResultBudget(maxChars = 3_000)
+        // 14 characters of JSON around the string, and 400 zero-width spaces that are 2,400 once escaped.
+        fun body(plain: Int) = buildJsonObject { put("message", "\u200B".repeat(400) + "a".repeat(plain)) }.encoded()
+        val fits = body(plain = 586)
+        assertEquals(1_000, fits.length)
+        assertEquals(budget.maxChars, escapeInvisible(fits).length)
+
+        val whole = renderWithinBudget(fits, budget, ok = true)
+        assertEquals(escapeInvisible(fits), whole.text)
+        assertEquals(BudgetStrategy.COMPACT, whole.strategy)
+        assertTrue("No data was dropped" in whole.notice!!, whole.notice)
+
+        val over = renderWithinBudget(body(plain = 587), budget, ok = true)
+        assertEquals(escapeInvisible(body(plain = 587)).take(3_000), over.text)
+        assertEquals(BudgetStrategy.HARD_CUT, over.strategy)
+        assertTrue("This response was 3001 characters and was CUT to 3000 to fit" in over.notice!!, over.notice)
+    }
+
+    @Test
+    fun `the array taking the space is the one that takes it as it is shown, not as it was sent`() {
+        // As the API sent them "plain" is the larger, 30 entries of 200 characters against 30 of 60.
+        // Shown, a zero-width space is six characters and "hidden" is nearly twice the size of "plain".
+        val body = buildJsonObject {
+            putJsonArray("plain") { repeat(30) { add("x".repeat(200)) } }
+            putJsonArray("hidden") { repeat(30) { add("\u200B".repeat(60)) } }
+        }.encoded()
+        assertEquals(6_090 + 1_890 + 22, body.length)
+        assertEquals(6_090 + 10_890 + 22, escapeInvisible(body).length)
+
+        val rendered = renderWithinBudget(body, ResultBudget(maxChars = 14_000), ok = true)
+
+        assertEquals(BudgetStrategy.STRUCTURAL, rendered.strategy)
+        assertTrue(rendered.text.length <= 14_000, "the data was ${rendered.text.length} characters")
+        val parsed = JsonCodec.compact.parseToJsonElement(rendered.text).jsonObject
+        assertEquals("hidden", parsed[ResultBudget.TRUNCATION_KEY]!!.jsonObject["array"]!!.jsonPrimitive.content)
+        assertEquals(30, parsed["plain"]!!.jsonArray.size, "the array that is smaller as it is shown is left whole")
+        // What is left after "plain", the marker and the margin is room for 19 entries of 363 characters.
+        assertEquals(19, parsed["hidden"]!!.jsonArray.size)
+    }
+
+    @Test
+    fun `rendering a large JSON body builds only the rendering that is shown`() {
+        val threads = ManagementFactory.getThreadMXBean() as? com.sun.management.ThreadMXBean
+        assumeTrue(
+            threads != null && threads.isThreadAllocatedMemorySupported && threads.isThreadAllocatedMemoryEnabled,
+            "this JVM does not count what a thread allocates",
+        )
+        // The ways a body can be nearly all one thing, one for each place a rendering is measured: a
+        // string, the same beside an array too small to make room, two in an array that cannot be
+        // trimmed, events in one that can, and the Context link the fold measures on every event. A
+        // body that is ONE bare token is JSON, so it comes this way and not as text.
+        val shapes = linkedMapOf<String, (String, Int) -> String>(
+            "one string" to { fill, size -> "\"" + fill.repeat(size) + "\"" },
+            "a string beside an array of two" to { fill, size ->
+                """{"note":"${fill.repeat(size)}","events":[{"id":0},{"id":1}]}"""
+            },
+            "two strings in an array" to { fill, size ->
+                "[\"" + fill.repeat(size / 2) + "\",\"" + fill.repeat(size / 2) + "\"]"
+            },
+            "events of 980 characters" to { fill, size ->
+                (0 until size / 1_000).joinToString(",", "{\"events\":[", "]}") { """{"id":$it,"message":"${fill.repeat(980)}"}""" }
+            },
+            "two events with a Context link" to { fill, size ->
+                linkedResult((0..1).map { linkedEvent(it, logKeys(1), extra = "&pad=" + fill.repeat(size / 2)) }, logKeys(1)).encoded()
+            },
+        )
+        val budget = ResultBudget()
+        // A quarter of the most that is parsed, and twenty times what can be shown.
+        val size = 4_000_000
+        fun allocatedFor(raw: String): Pair<Long, BudgetedBody> {
+            assertTrue(raw.length in size..budget.parseCeilingChars, "precondition: large, and small enough to be parsed")
+            val before = threads!!.currentThreadAllocatedBytes
+            val rendered = renderWithinBudget(raw, budget, ok = true)
+            return threads.currentThreadAllocatedBytes - before to rendered
+        }
+
+        // A letter that is shown as it is and, like a zero-width space, takes two bytes of a string.
+        val letter = "ж"
+        val over = mutableListOf<String>()
+        for ((name, shape) in shapes) {
+            for (fill in listOf(letter, "\u200B")) renderWithinBudget(shape(fill, 40_000), budget, ok = true) // class loading is not what is measured
+            val (visible, ordinary) = allocatedFor(shape(letter, size))
+            val (hidden, rendered) = allocatedFor(shape("\u200B", size))
+
+            assertEquals(ordinary.strategy, rendered.strategy, name)
+            assertTrue(rendered.text.length <= budget.maxChars, name)
+            assertFalse("The response was not JSON." in rendered.notice!!, "$name: ${rendered.notice}")
+            // Until it is shown an invisible character should cost what any other does, and only
+            // 200,000 characters are shown: measured 2026-10-12, 1.02 to 1.07 times what the same
+            // body of that letter takes. Escaped whole to be measured, each rendering was six times
+            // the size of the body, and that was 12 to 20 times.
+            //
+            // Put back one at a time, the compact rung, the cut, each of the trim's three lengths and
+            // the fold's take at least one of these bodies to 3.3 times or more. The pretty rung does
+            // not reach twice: it is tried on a body this size only after a fold, and takes the last
+            // of these to 1.8.
+            if (hidden > 2 * visible) {
+                over += "$name: $hidden bytes for $size zero-width spaces, and $visible for as many of a letter that is shown"
+            }
+        }
+        assertNotNull(
+            foldContextLinks(JsonCodec.compact.parseToJsonElement(shapes.getValue("two events with a Context link")("\u200B", 40_000))),
+            "precondition: the last of them is a result the fold recognises",
+        )
+        assertTrue(over.isEmpty(), "renderings that are not shown were built:\n" + over.joinToString("\n"))
     }
 
     @Test

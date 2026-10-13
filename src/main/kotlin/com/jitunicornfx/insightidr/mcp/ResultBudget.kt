@@ -155,8 +155,11 @@ internal fun renderWithinBudget(raw: String, budget: ResultBudget, ok: Boolean):
     // When the element cannot be encoded at all (nesting deep enough to overflow the encoder), the
     // fallback is the text as it arrived - escaped first, like every other path, and returned whole
     // if that already fits.
-    val compact = encodeOrNull(JsonCodec.compact, element) ?: return renderAsText(raw, limit, budget, CutReason.NOT_JSON)
-    return lineAwareCut(compact, compact.length.toLong(), limit, budget, CutReason.NOTHING_TO_TRIM)
+    // The encoding is escaped as far as the cut can keep and the rest of it is counted, as
+    // renderAsText does it: the same prefix, and the same length in the notice.
+    val compact = encodeUnescapedOrNull(JsonCodec.compact, element) ?: return renderAsText(raw, limit, budget, CutReason.NOT_JSON)
+    val head = escapeInvisibleHead(compact, maxOf(limit, budget.sampleFloorChars))
+    return lineAwareCut(head, escapedLength(compact), limit, budget, CutReason.NOTHING_TO_TRIM)
 }
 
 /**
@@ -210,18 +213,15 @@ private fun renderAsDocument(element: JsonElement, sizeHint: Int, limit: Int, bu
     // pretty >= compact, and for valid JSON compact <= raw (whitespace only adds), so a pretty
     // render at that size is near-certainly wasted allocation.
     if (sizeHint <= limit) {
-        val pretty = encodeOrNull(JsonCodec.pretty, element)
-        if (pretty != null && pretty.length <= limit) {
+        encodeUnescapedOrNull(JsonCodec.pretty, element)?.let { escapedWithin(it, limit) }?.let { pretty ->
             return BudgetedBody(pretty, null, BudgetStrategy.PRETTY)
         }
     }
 
     // Rung 2 — compact. Recovers the whitespace pretty added, which rescues bodies in the
     // [limit, ~2x limit] band. It does not shrink an already-dense API response.
-    val compact = encodeOrNull(JsonCodec.compact, element) ?: return null
-    if (compact.length <= limit) {
-        return BudgetedBody(compact, compactedNotice(limit), BudgetStrategy.COMPACT)
-    }
+    val compact = encodeUnescapedOrNull(JsonCodec.compact, element) ?: return null
+    escapedWithin(compact, limit)?.let { return BudgetedBody(it, compactedNotice(limit), BudgetStrategy.COMPACT) }
 
     // Rung 3 — structural: drop entries from the largest trimmable top-level array, keeping the
     // document valid, parseable JSON.
@@ -311,20 +311,45 @@ private fun String.digitsEnd(from: Int): Int {
 }
 
 /**
- * Encode [element], with invisible characters already escaped.
+ * Encode [element], with invisible characters already escaped: a rendering as it is shown.
  *
- * Every rung of the ladder measures what this returns. Escaping here rather than in the envelope is
- * what keeps the budget honest: an escape is up to six times longer than the character it replaces,
- * so a body of zero-width characters that "fit" before escaping would leave the server at six times
- * its limit.
+ * Every rung of the ladder measures a rendering in this form. Escaping before the measurement rather
+ * than in the envelope is what keeps the budget honest: an escape is up to six times longer than the
+ * character it replaces, so a body of zero-width characters that "fit" before escaping would leave
+ * the server at six times its limit.
+ *
+ * Only a rung that is going to emit the rendering builds it. One that wants to know how long it is
+ * counts instead - [encodedLengthOrNull], [escapedWithin] - and the cut escapes as far as it can keep.
+ * Each used to build all of it to read its length. Measured 2026-10-12 at the 16,000,000 characters
+ * that are the most parsed, to show 200,000 of them: 263 bytes allocated for each character of a body
+ * that is one string of zero-width spaces, and 389 for one of events of 980 of them. Counted, 13 and
+ * 21, where the same bodies with nothing to escape take 7 and 13.
  */
-private fun encodeOrNull(json: Json, element: JsonElement): String? = try {
-    escapeInvisible(json.encodeToString(JsonElement.serializer(), element))
+private fun encodeOrNull(json: Json, element: JsonElement): String? =
+    encodeUnescapedOrNull(json, element)?.let(::escapeInvisible)
+
+/**
+ * Encode [element] and no more: what the encoder wrote, with invisible characters still in it. Not
+ * yet what is shown, so never emitted and never measured by its own length.
+ */
+private fun encodeUnescapedOrNull(json: Json, element: JsonElement): String? = try {
+    json.encodeToString(JsonElement.serializer(), element)
 } catch (_: StackOverflowError) {
     null
 } catch (_: Exception) {
     null
 }
+
+/** How long [encodeOrNull] would make [element], counted without building it. */
+private fun encodedLengthOrNull(json: Json, element: JsonElement): Long? =
+    encodeUnescapedOrNull(json, element)?.let(::escapedLength)
+
+/**
+ * [encoded] as it is shown, with invisible characters escaped - or null, and nothing built, when that
+ * is longer than [limit].
+ */
+private fun escapedWithin(encoded: String, limit: Int): String? =
+    if (escapedLength(encoded) <= limit) escapeInvisible(encoded) else null
 
 /**
  * Drop trailing entries from the largest trimmable array so the document fits, keeping it valid,
@@ -347,7 +372,7 @@ private fun trimLargestArray(root: JsonElement, limit: Int, budget: ResultBudget
     is JsonObject -> root.entries.asSequence()
         .filter { it.key !in ResultBudget.NEVER_TRIM_KEYS }
         .mapNotNull { entry -> (entry.value as? JsonArray)?.let { entry.key to it } }
-        .map { (key, array) -> Triple(key, array, encodeOrNull(JsonCodec.compact, array)?.length ?: 0) }
+        .map { (key, array) -> Triple(key, array, encodedLengthOrNull(JsonCodec.compact, array) ?: 0L) }
         .sortedByDescending { it.third }
         .firstNotNullOfOrNull { (key, array, _) -> trimArray(root, key, array, limit, budget) }
 
@@ -360,14 +385,14 @@ private fun trimArray(root: JsonElement, key: String?, array: JsonArray, limit: 
 
     // One pass: encode each entry once and accumulate. No binary search, no repeated whole-document
     // encoding — the cost is O(total size), the same as the compact encode already performed.
-    val lengths = array.map { (encodeOrNull(JsonCodec.compact, it) ?: return null).length }
+    val lengths = array.map { encodedLengthOrNull(JsonCodec.compact, it) ?: return null }
 
     val shell = shellDocument(root, key, array.size)
-    val shellLength = encodeOrNull(JsonCodec.compact, shell)?.length ?: return null
+    val shellLength = encodedLengthOrNull(JsonCodec.compact, shell) ?: return null
     val available = limit - shellLength - SAFETY_MARGIN
     if (available <= 0) return null
 
-    var used = 0
+    var used = 0L
     var keep = 0
     for (length in lengths) {
         // +1 for the separating comma.
@@ -502,27 +527,32 @@ internal fun foldContextLinks(root: JsonElement): FoldedLinks? {
     val events = document[EVENTS_KEY] as? JsonArray ?: return null
     if (events.size < 2) return null
 
+    // What a link takes is counted and never built, like every other length the ladder wants. A real
+    // link is a few kilobytes, but nothing here limits how long an href is. Measured 2026-10-12 with
+    // the rungs already counting: a body of two events whose hrefs held 16,000,000 zero-width
+    // characters between them took 268 bytes allocated for each character while this escaped the
+    // links to measure them, and 81 once it counted.
     var template: String? = null
-    var removed = 0
+    var removed = 0L
     val stripped = ArrayList<JsonElement>(events.size)
     for (entry in events) {
         val event = entry as? JsonObject ?: return null
         val links = event[EVENT_LINKS_KEY] ?: return null
         val own = contextLinkTemplate(event, links) ?: return null
         if (template == null) template = own else if (template != own) return null
-        removed += (encodeOrNull(JsonCodec.compact, links) ?: return null).length + EVENT_LINKS_MEMBER_CHARS
+        removed += (encodedLengthOrNull(JsonCodec.compact, links) ?: return null) + EVENT_LINKS_MEMBER_CHARS
         stripped += JsonObject(event.filterKeys { it != EVENT_LINKS_KEY })
     }
 
     val marker = foldedLinksMarker(template ?: return null, events.size)
-    val added = (encodeOrNull(JsonCodec.compact, marker) ?: return null).length + MARKER_MEMBER_CHARS
+    val added = (encodedLengthOrNull(JsonCodec.compact, marker) ?: return null) + MARKER_MEMBER_CHARS
     val folded = JsonObject(
         LinkedHashMap(document).apply {
             put(EVENTS_KEY, JsonArray(stripped))
             put(ResultBudget.FOLDED_LINKS_KEY, marker)
         },
     )
-    return FoldedLinks(folded, events.size, removed - added)
+    return FoldedLinks(folded, events.size, (removed - added).toInt())
 }
 
 /**
