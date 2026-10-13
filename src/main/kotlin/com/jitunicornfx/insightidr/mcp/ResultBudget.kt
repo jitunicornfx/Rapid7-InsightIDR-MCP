@@ -126,6 +126,9 @@ internal fun prettyOrRaw(raw: String): String {
  * a notice; see [foldContextLinks]. A fold is kept only while the result is still a JSON document.
  * Its template sits at the END of that document, so a cut would say the template is in the data
  * block and then cut it off: a body that has to be cut is cut as it arrived instead.
+ *
+ * What is rendered is the tree, and a tree has one member for each key of an object. When the
+ * response had more, a notice ahead of any other says how many are missing; see [repeatedKeys].
  */
 internal fun renderWithinBudget(raw: String, budget: ResultBudget, ok: Boolean): BudgetedBody {
     if (raw.isBlank()) return BudgetedBody(raw, null, BudgetStrategy.PRETTY)
@@ -143,15 +146,19 @@ internal fun renderWithinBudget(raw: String, budget: ResultBudget, ok: Boolean):
     // Not JSON at all.
     val element = parseOrNull(raw) ?: return renderAsText(raw, limit, budget, CutReason.NOT_JSON)
 
+    // A key that an object repeats has one member in the tree and more than one in the text. Every
+    // rendering from here on is of the tree, so each of them says what it cannot show.
+    val repeated = repeatedKeys(raw, element)?.let(::repeatedKeysNotice)
+
     // An error body is the diagnostic, and is never rewritten.
     val fold = if (ok) foldContextLinks(element)?.takeIf { it.savedChars >= budget.minFoldSavingChars } else null
     if (fold != null) {
         renderAsDocument(fold.document, raw.length - fold.savedChars, limit, budget)?.let { rendered ->
-            return rendered.copy(notice = listOfNotNull(foldedNotice(fold), rendered.notice).joinToString("\n\n"))
+            return rendered.copy(notice = listOfNotNull(repeated, foldedNotice(fold), rendered.notice).joinToString("\n\n"))
         }
     }
 
-    renderAsDocument(element, raw.length, limit, budget)?.let { return it }
+    renderAsDocument(element, raw.length, limit, budget)?.let { return it.saying(repeated) }
 
     // Rung 4 — cut. The output is a prefix, not a JSON document; the notice says so.
     // When the element cannot be encoded at all (nesting deep enough to overflow the encoder), the
@@ -161,8 +168,12 @@ internal fun renderWithinBudget(raw: String, budget: ResultBudget, ok: Boolean):
     // renderAsText does it: the same prefix, and the same length in the notice.
     val compact = encodeUnescapedOrNull(JsonCodec.compact, element) ?: return renderAsText(raw, limit, budget, CutReason.NOT_JSON)
     val head = escapeInvisibleHead(compact, maxOf(limit, budget.sampleFloorChars))
-    return lineAwareCut(head, escapedLength(compact), limit, budget, CutReason.NOTHING_TO_TRIM)
+    return lineAwareCut(head, escapedLength(compact), limit, budget, CutReason.NOTHING_TO_TRIM).saying(repeated)
 }
+
+/** This body with [first] ahead of whatever notice it has. */
+private fun BudgetedBody.saying(first: String?): BudgetedBody =
+    if (first == null) this else copy(notice = listOfNotNull(first, notice).joinToString("\n\n"))
 
 /**
  * Why a body is cut rather than trimmed as a document. It is the one thing a cut notice says about
@@ -681,8 +692,9 @@ private fun foldedLinksMarker(template: String, events: Int): JsonObject = build
 }
 
 // ---------------------------------------------------------------------------
-// Notices. Server-authored, and emitted OUTSIDE the fence — so the one piece of API content that
-// reaches them, the name of the array that was trimmed, is allow-listed first ([noticeSafeKey]).
+// Notices. Server-authored, and emitted OUTSIDE the fence — so the API content that reaches them,
+// the name of the array that was trimmed and the keys an object repeated, is allow-listed first
+// ([noticeSafeKey]).
 // ---------------------------------------------------------------------------
 
 /** A JSON key as it appears in real API responses: a short plain identifier, and nothing else. */
@@ -728,6 +740,25 @@ private fun foldedNotice(fold: FoldedLinks): String =
         "To read the events around one, call logsearch_get_context_events with sequence_number = its " +
         "sequence_number_str, timestamp = its timestamp and log_key = its log_id. Audit logs are the " +
         "exception: the API has no context endpoint for them and answers these links with HTTP 404."
+
+/** Most keys a [repeatedKeysNotice] names. Nothing limits how many an object repeats. */
+private const val MAX_REPEATED_KEYS_NAMED = 5
+
+/**
+ * How many members the data block cannot show, and the keys they were under.
+ *
+ * A count, fixed text, and the keys that pass [noticeSafeKey], of which at most
+ * [MAX_REPEATED_KEYS_NAMED]. The rest are counted and not named.
+ */
+private fun repeatedKeysNotice(repeated: RepeatedKeys): String {
+    val named = repeated.keys.mapNotNull(::noticeSafeKey).take(MAX_REPEATED_KEYS_NAMED)
+    val unnamed = repeated.keys.size - named.size
+    val keys = named + listOfNotNull("$unnamed not named here".takeIf { unnamed > 0 })
+    val members = if (repeated.dropped == 1L) "1 member of this response is" else "${repeated.dropped} members of this response are"
+    return "$NOTICE_TAG $members NOT in the data block above. The response repeats a key within an object, " +
+        "and only the last member under a key is kept when a response is read as JSON.\n" +
+        "Keys repeated: ${keys.joinToString(", ")}."
+}
 
 private fun compactedNotice(limit: Int): String =
     "$NOTICE_TAG Large result rendered as COMPACT JSON (not pretty-printed) to fit the " +

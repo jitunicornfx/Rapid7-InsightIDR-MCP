@@ -88,10 +88,10 @@ internal fun holdsMoreValuesThan(text: String, max: Int = MAX_PARSED_VALUES): Bo
 }
 
 /** The four characters the parser skips between tokens. */
-private fun Char.isJsonSpace(): Boolean = this == ' ' || this == '\n' || this == '\r' || this == '\t'
+internal fun Char.isJsonSpace(): Boolean = this == ' ' || this == '\n' || this == '\r' || this == '\t'
 
 /** The index after the quote that closes the string whose first character is at [from]. */
-private fun afterString(text: String, from: Int): Int {
+internal fun afterString(text: String, from: Int): Int {
     var i = from
     while (i < text.length) {
         val c = text[i++]
