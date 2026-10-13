@@ -49,6 +49,35 @@ class InvestigationToolsV2Test {
     }
 
     @Test
+    fun `list_investigations sends sources through as given`() = runBlocking {
+        val h = harness(body = "[]")
+        h.call("list_investigations", mapOf("sources" to "USER,HUNT"))
+        assertEquals("USER,HUNT", h.lastRequest.url.parameters["sources"])
+
+        // The values are documented, not enforced here: it is the API that refuses MANUAL, and a
+        // source it adds later still has to get through.
+        h.call("list_investigations", mapOf("sources" to "MANUAL"))
+        assertEquals("MANUAL", h.lastRequest.url.parameters["sources"])
+    }
+
+    @Test
+    fun `the read tools name the sources the live API accepts`() = runBlocking {
+        // Measured 2026-10-12: the list endpoint and _search both answer HTTP 400 to MANUAL, "Valid
+        // options are [HUNT, ALERT, USER, AUTOMATION]". The v2 spec's enums say MANUAL and name
+        // neither USER nor AUTOMATION.
+        val tools = harness().tools().associateBy { it.name }
+        fun property(tool: String, name: String) = tools.getValue(tool).inputSchema.properties!!.getValue(name).jsonObject
+
+        for (schema in listOf(property("list_investigations", "sources"), property("search_investigations", "search"))) {
+            val description = schema.getValue("description").jsonPrimitive.content
+            assertTrue("HUNT, ALERT, USER, AUTOMATION" in description, description)
+            assertTrue("rejects MANUAL" in description, description)
+        }
+        // A comma-separated list cannot be an enum.
+        assertNull(property("list_investigations", "sources")["enum"])
+    }
+
+    @Test
     fun `get_investigation uses the id in the path`() = runBlocking {
         val h = harness()
         h.call("get_investigation", mapOf("id" to "abc123"))
@@ -218,6 +247,26 @@ class InvestigationToolsV2Test {
         assertEquals("/idr/v2/investigations/bulk_close", h.lastRequest.url.encodedPath)
         assertNull(h.lastRequest.url.parameters["multi-customer"])
         assertEquals("ALERT", h.lastBodyJson()["source"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `bulk_close describes its source values without constraining them`() = runBlocking {
+        val h = harness()
+        val source = h.tools().single { it.name == "bulk_close_investigations" }.inputSchema.properties!!
+            .getValue("source").jsonObject
+        // The spec says ALERT, MANUAL, HUNT; the read endpoints were measured (2026-10-12) to reject
+        // MANUAL and accept USER. Nobody has measured this endpoint, so neither list may refuse a value.
+        assertNull(source["enum"], "source must not be a hard enum")
+        val description = source.getValue("description").jsonPrimitive.content
+        assertTrue("ALERT, MANUAL, HUNT" in description, description)
+        assertTrue("HUNT, ALERT, USER, AUTOMATION" in description, description)
+        assertTrue("has not been measured" in description, description)
+
+        val window = mapOf("from" to "2026-01-01T00:00:00Z", "to" to "2026-02-01T00:00:00Z")
+        for (value in listOf("USER", "MANUAL")) {
+            h.call("bulk_close_investigations", window + ("source" to value))
+            assertEquals(value, h.lastBodyJson()["source"]!!.jsonPrimitive.content)
+        }
     }
 
     @Test

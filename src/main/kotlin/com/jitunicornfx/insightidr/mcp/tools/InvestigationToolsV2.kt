@@ -17,6 +17,22 @@ private val THREAT_COMMAND_REASONS = listOf(
     "FalsePositive", "LegitimateApplication/Profile", "CompanyOwnedDomain", "Other",
 )
 
+// Sources the two read endpoints accept as a filter. Measured against the live API (us region) on
+// 2026-10-12, because the v2 spec (2.3.1.0) does not settle it: the `sources` query parameter of
+// GET /investigations is a bare string whose example is "USER,ALERT", the _search field table names
+// no values for `source`, and the only enums are the single comma-joined strings "MANUAL,HUNT,ALERT"
+// (InvestigationV2.source) and "ALERT,MANUAL,HUNT" (BulkCloseInvestigationsRequestV2.source).
+//  - GET /investigations?sources=MANUAL: HTTP 400, "Invalid value MANUAL for field sources. Valid
+//    options are [HUNT, ALERT, USER, AUTOMATION]." _search on source EQUALS MANUAL: the same 400,
+//    naming the field `source`.
+//  - GET /investigations with ALERT, HUNT, USER, AUTOMATION and "USER,HUNT": HTTP 200 each. The
+//    records returned for USER carry "source": "USER"; HUNT and AUTOMATION matched no records on
+//    the tenant measured.
+//  - _search on source EQUALS USER: HTTP 200, the same records as the list call.
+// NOT measured: POST /investigations/bulk_close. Probing it risks closing investigations, so its
+// `source` parameter further down is a plain string that names both lists and refuses nothing.
+private val SOURCE_FILTER_VALUES = listOf("HUNT", "ALERT", "USER", "AUTOMATION")
+
 // The MSSP scoping flag: a snake_case tool argument mapped to the hyphenated API query parameter.
 private const val MULTI_CUSTOMER_ARG = "multi_customer"
 private const val MULTI_CUSTOMER_QUERY = "multi-customer"
@@ -69,6 +85,7 @@ private val SEARCH_CRITERIA_DESC =
         "(use operator IN with an array value to match any of several values). Searchable fields and " +
         "the operator each supports: " +
         SEARCHABLE_FIELD_OPERATORS.entries.joinToString(", ") { "${it.key} (${it.value})" } +
+        ". source is one of ${SOURCE_FILTER_VALUES.joinToString(", ")}; the API rejects MANUAL" +
         ". Example: [{\"field\":\"status\",\"operator\":\"EQUALS\",\"value\":\"OPEN\"}," +
         "{\"field\":\"title\",\"operator\":\"CONTAINS\",\"value\":\"phishing\"}]."
 
@@ -129,7 +146,11 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         inputSchema = toolSchema {
             pagingParams("Number of investigations per page (max 100). Defaults to 20.", maxSize = 100, defaultSize = 20)
             stringParam("statuses", "Comma-separated statuses to include (OPEN, INVESTIGATING, WAITING, CLOSED).")
-            stringParam("sources", "Comma-separated investigation sources to include (e.g. ALERT, MANUAL, HUNT).")
+            stringParam(
+                "sources",
+                "Comma-separated investigation sources to include (${SOURCE_FILTER_VALUES.joinToString(", ")}). " +
+                    "The API rejects MANUAL.",
+            )
             stringParam("priorities", "Comma-separated priorities to include (UNSPECIFIED, LOW, MEDIUM, HIGH, CRITICAL).")
             stringParam("assignee_email", "Filter to investigations assigned to this user email.")
             stringParam("start_time", "ISO-8601 timestamp; only investigations created at/after this time.")
@@ -360,7 +381,17 @@ fun Server.registerInvestigationV2Tools(client: Rapid7Client) {
         // the chance to confirm — more so than remove_alert_from_investigation, which unlinks one alert.
         destructive = true,
         inputSchema = toolSchema("source", "from", "to") {
-            stringParam("source", "Investigation source whose investigations should be closed.", enum = listOf("ALERT", "MANUAL", "HUNT"))
+            // Deliberately NOT an enum. The spec's enum for this body is the single string
+            // "ALERT,MANUAL,HUNT", and the read endpoints were measured to reject MANUAL and to accept
+            // USER and AUTOMATION (see SOURCE_FILTER_VALUES). This endpoint has not been measured, and a
+            // hard enum built on either list could refuse a value it accepts.
+            stringParam(
+                "source",
+                "Investigation source whose investigations should be closed. The spec lists ALERT, MANUAL, " +
+                    "HUNT; the list and search endpoints instead accept ${SOURCE_FILTER_VALUES.joinToString(", ")} " +
+                    "and reject MANUAL. Which of the two this endpoint follows has not been measured, so the " +
+                    "value is sent as given.",
+            )
             stringParam("from", "ISO-8601 timestamp; close investigations created at/after this time.")
             stringParam("to", "ISO-8601 timestamp; close investigations created at/before this time.")
             stringParam("alert_type", "Category of alert types to close (required for some sources).")
