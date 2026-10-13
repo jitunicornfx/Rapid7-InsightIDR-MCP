@@ -3,6 +3,7 @@ package com.jitunicornfx.insightidr.mcp
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -211,12 +212,86 @@ private fun renderAsDocument(element: JsonElement, sizeHint: Int, limit: Int, bu
     return trimLargestArray(element, limit, budget)
 }
 
+/** [raw] as a JSON tree, or null when it is not JSON - which the parser alone does not settle; see [isJson]. */
 private fun parseOrNull(raw: String): JsonElement? = try {
-    JsonCodec.compact.parseToJsonElement(raw)
+    JsonCodec.compact.parseToJsonElement(raw).takeIf(::isJson)
 } catch (_: StackOverflowError) {
     null
 } catch (_: Exception) {
     null
+}
+
+/**
+ * Whether every value in [root] is one JSON has, which is less than the parser accepts.
+ *
+ * Even with `isLenient` off, kotlinx.serialization reads an unquoted word as a value, wherever a
+ * value may stand, and the encoder writes it back as whatever it most resembles. Observed 2026-10-12
+ * through [renderWithinBudget]: a body of `hello` came back as `"hello"`, `OK` and a line feed as
+ * `"OK"`, `0010` as `10`, `1d` as `1.0`, and `[WARN]` as an array holding the string `"WARN"`. A
+ * one-word answer, or one short line from `logsearch_download_log_data`, was shown as something the
+ * API did not send, and when it had to be cut the notice said it "had no top-level array to trim".
+ *
+ * So a parse counts only when every value in it is an object, an array, a quoted string, a number as
+ * RFC 8259 writes one, `true`, `false` or `null`. One of the last five on its own is a JSON text too,
+ * and is still rendered as one: no fixture in this project has an endpoint that answers with a bare
+ * scalar, which is not evidence that none does.
+ *
+ * Walked with a stack of its own, not by recursion: the parser returns objects nested deeper than
+ * recursion over them survives. Observed the same day in a test worker, it parsed objects 50,000
+ * deep, and the encoder, which does recurse, had given up by 10,000.
+ */
+internal fun isJson(root: JsonElement): Boolean {
+    val open = ArrayDeque<Iterator<JsonElement>>()
+    open.addLast(listOf(root).iterator())
+    while (open.isNotEmpty()) {
+        val values = open.last()
+        if (!values.hasNext()) {
+            open.removeLast()
+            continue
+        }
+        when (val value = values.next()) {
+            is JsonObject -> open.addLast(value.values.iterator())
+            is JsonArray -> open.addLast(value.iterator())
+            is JsonPrimitive -> if (!value.isJsonScalar()) return false
+        }
+    }
+    return true
+}
+
+private fun JsonPrimitive.isJsonScalar(): Boolean =
+    isString || this is JsonNull || content == "true" || content == "false" || isJsonNumber(content)
+
+/**
+ * Whether [text] is a number as RFC 8259 writes one: `-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`.
+ *
+ * Not `toLongOrNull` or `toDoubleOrNull`, which is how the encoder decides what to write: those read
+ * `0010`, `+1`, `.5` and `1d` as numbers, and none of them is one in JSON.
+ */
+private fun isJsonNumber(text: String): Boolean {
+    var i = if (text.startsWith('-')) 1 else 0
+    // A leading zero stands alone: 0 and 0.5 are numbers, 007 is not.
+    val whole = if (text.getOrNull(i) == '0') i + 1 else text.digitsEnd(i)
+    if (whole == i) return false
+    i = whole
+    if (text.getOrNull(i) == '.') {
+        val fraction = text.digitsEnd(i + 1)
+        if (fraction == i + 1) return false
+        i = fraction
+    }
+    if (text.getOrNull(i) == 'e' || text.getOrNull(i) == 'E') {
+        val from = if (text.getOrNull(i + 1) == '+' || text.getOrNull(i + 1) == '-') i + 2 else i + 1
+        val exponent = text.digitsEnd(from)
+        if (exponent == from) return false
+        i = exponent
+    }
+    return i == text.length
+}
+
+/** The index after the run of ASCII digits that starts at [from], which is [from] when there is none. */
+private fun String.digitsEnd(from: Int): Int {
+    var i = from
+    while (i < length && this[i] in '0'..'9') i++
+    return i
 }
 
 /**

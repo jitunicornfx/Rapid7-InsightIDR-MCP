@@ -5,6 +5,7 @@ import com.jitunicornfx.insightidr.mcp.testutil.parseEnvelope
 import io.modelcontextprotocol.kotlin.sdk.types.CallToolResult
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.int
@@ -344,6 +345,116 @@ class ResultBudgetTest {
             val notice = renderWithinBudget(over, budget, ok = true).notice!!
             assertTrue("was not checked for JSON" in notice, notice)
         }
+    }
+
+    // What counts as JSON. kotlinx.serialization reads an unquoted word as a value, wherever a value
+    // may stand, and writes it back as whatever it most resembles. Observed 2026-10-12, while such a
+    // body was still taken for JSON: hello came back as "hello", 0010 as 10, 1d as 1.0, OK and a line
+    // feed as "OK", and [WARN] as an array of one string. None of those is what the API sent.
+
+    private fun assertReturnedAsItArrived(bodies: List<String>) {
+        for (body in bodies) {
+            val rendered = renderWithinBudget(body, ResultBudget(), ok = true)
+            assertEquals(body, rendered.text)
+            assertNull(rendered.notice, body)
+        }
+    }
+
+    @Test
+    fun `a body that is one bare word is not JSON, and comes back as it arrived`() {
+        assertReturnedAsItArrived(
+            listOf(
+                "hello", "ok", "OK\n", " hello ", "TRUE", "True", "NULL", "'hello'",
+                // Not numbers as JSON writes them, though each can be read as one. The last two are
+                // digits, but not ASCII ones, and the library wrote both back as 123.
+                "0010", "007", "+1", ".5", "1.", "1d", "7F", "0x1F", "١٢٣", "１２３",
+                "0f3c1a2b-9d4e-4c7a-8b1f-2a3b4c5d6e7f", "192.168.1.1", "<html></html>",
+            ),
+        )
+    }
+
+    @Test
+    fun `a bare word inside brackets or braces is not JSON either`() {
+        assertReturnedAsItArrived(
+            listOf(
+                "[WARN]", "[2026-10-12]", "[a,b,c]", """{"a":hello}""", """{"a":007}""", "[1e]", "[-]", "[1.5.2]",
+                // Deep in a document that is otherwise JSON, after values that are.
+                """{"events":[{"id":1,"level":"info"},{"id":2,"level":WARN}],"links":[]}""",
+                """[1,"a",{"k":[true,nope]},2]""",
+            ),
+        )
+    }
+
+    @Test
+    fun `a JSON scalar is still JSON, and so is every way JSON writes a number`() {
+        // A quoted string, a number, true, false and null are each a JSON text on their own (RFC 8259).
+        // No fixture in this project has an endpoint answering with one, which does not show that none
+        // does, so they are rendered exactly as they were.
+        val scalars = mapOf(
+            "\"hello\"" to "\"hello\"",
+            "42" to "42",
+            "0" to "0",
+            "-0.5" to "-0.5",
+            "true" to "true",
+            "false" to "false",
+            "null" to "null",
+            // Re-encoded and trimmed, which a body passed through as text would not be.
+            "\"caf\\u00e9 \\/ x\"" to "\"café / x\"",
+            " \"padded\"\n" to "\"padded\"",
+        )
+        for ((body, expected) in scalars) {
+            assertEquals(expected, renderWithinBudget(body, ResultBudget(), ok = true).text, body)
+        }
+
+        // Inside a document, where being taken for text would show: every kind of scalar, and every
+        // way JSON writes a number.
+        val members = listOf("0", "-0", "10", "1.5", "1e5", "1E+5", "-1.25e-3", "0.0", "0e0", "-7", "true", "false", "null", "\"s\"")
+        val document = members.withIndex().joinToString(",", "{", "}") { (i, value) -> "\"m$i\":$value" }
+        val rendered = renderWithinBudget(document, ResultBudget(), ok = true).text
+        assertTrue(rendered.startsWith("{\n  \"m0\": 0,\n"), "still pretty-printed as a document: $rendered")
+        assertEquals(members.size, JsonCodec.compact.parseToJsonElement(rendered).jsonObject.size)
+        // And one at a time, so that no member can stand in for another.
+        for (value in members) {
+            assertTrue(isJson(JsonCodec.compact.parseToJsonElement("[$value]")), value)
+        }
+    }
+
+    @Test
+    fun `what counts as JSON is decided without recursion, however deep the body goes`() {
+        fun nested(leaf: JsonElement): JsonElement {
+            var element = leaf
+            repeat(1_000_000) { element = if (it % 2 == 0) JsonObject(mapOf("a" to element)) else JsonArray(listOf(element)) }
+            return element
+        }
+
+        assertTrue(isJson(nested(JsonPrimitive(1))))
+        // A bare word, as the parser hands one over.
+        assertFalse(isJson(nested(JsonCodec.compact.parseToJsonElement("nope"))))
+    }
+
+    @Test
+    fun `one bare word too large for the budget is cut as the text it is`() {
+        val word = "x".repeat(300_000)
+
+        val rendered = renderWithinBudget(word, ResultBudget(), ok = true)
+
+        assertEquals(word.take(ResultBudget.DEFAULT_MAX_CHARS), rendered.text, "the start of it, with no quote in front")
+        assertTrue("\nThe response was not JSON.\n" in rendered.notice!!, rendered.notice)
+
+        // The same word in quotes IS JSON, and has no array in it. The notice goes on saying that.
+        val quoted = renderWithinBudget("\"$word\"", ResultBudget(), ok = true)
+        assertTrue("\nThe response had no top-level array to trim.\n" in quoted.notice!!, quoted.notice)
+    }
+
+    @Test
+    fun `a one-word body reaches the tool result without quotes the API did not send`() {
+        // logsearch_download_log_data returns log entries as text, one per line, and nothing stops an
+        // entry from being a single word. An error body can be one too.
+        val entry = ApiResponse(200, ok = true, body = "heartbeat", contentType = "application/octet-stream")
+        assertEquals("heartbeat", fenced(textOf(entry.toToolResult(ResultBudget()))))
+
+        val error = ApiResponse(500, ok = false, body = "boom", contentType = null)
+        assertEquals("boom", fenced(textOf(error.toToolResult(ResultBudget()))))
     }
 
     // A text body is escaped only as far as it can be shown. Everything from here to the blank-body
