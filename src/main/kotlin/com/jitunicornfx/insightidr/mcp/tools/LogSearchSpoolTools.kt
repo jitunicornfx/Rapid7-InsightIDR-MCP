@@ -487,6 +487,7 @@ integerParam(
                 bytes = writer.sizeOnDisk(),
                 pages = pages,
                 status = status,
+                complete = complete,
                 nextLink = offeredLink,
                 linkWithheld = resumeHref != null && offeredLink == null,
                 elapsedMs = elapsed(),
@@ -673,6 +674,7 @@ private fun spoolSummary(
     bytes: Long,
     pages: Int,
     status: String,
+    complete: Boolean,
     nextLink: String?,
     linkWithheld: Boolean,
     elapsedMs: Long,
@@ -684,7 +686,11 @@ private fun spoolSummary(
     samples: List<String>,
 ): String = buildString {
     if (path == null) {
-        append("No events matched, so no file was written.\n\n")
+        // "No events matched" is a finding, and only a run that finished has made it. One that
+        // stopped with nothing written - a first page it could not read, a query still running, empty
+        // pages with another still on offer - knows only that it wrote nothing, and used to say that
+        // nothing matched directly above a status line saying INCOMPLETE.
+        append(if (complete) "No events matched, so no file was written.\n\n" else "No events were written, so there is no file.\n\n")
     } else {
         append("Spooled $events events to a file on the machine running this MCP server. ")
         append("The events were NOT added to this conversation — only this summary was.\n\n")

@@ -259,6 +259,7 @@ class LogSearchSpoolToolsTest {
         assertEquals(1, h.requests.size, "a Next link in a page that was not read is not followed")
         assertTrue("INCOMPLETE — page 1 was not read: as JSON it holds more than 1000000 values" in text, text)
         assertFalse("could not be parsed as JSON" in text)
+        assertFalse("No events matched" in text, text)
     }
 
     @Test
@@ -293,6 +294,34 @@ class LogSearchSpoolToolsTest {
 
         assertTrue(spooled().isEmpty(), "the file is created lazily, so a zero-event run leaves nothing")
         assertTrue("No events matched" in text)
+    }
+
+    @Test
+    fun `a run that did not finish and wrote nothing does not say that nothing matched`() = runBlocking {
+        // "No events matched" is a finding, and only a run that finished has made it. These stopped
+        // with nothing written and nothing known: the one page there was could not be read, or every
+        // page so far was empty and the API was still offering another.
+        val unread = harness(listOf(HttpStatusCode.OK to "this is not json"))
+        val unreadText = textOf(unread.call("logsearch_spool_query_to_file", spoolArgs()))
+
+        assertTrue(spooled().isEmpty())
+        assertTrue("INCOMPLETE — page 1 returned a body that could not be parsed as JSON" in unreadText, unreadText)
+        assertFalse("No events matched" in unreadText, unreadText)
+        assertTrue(unreadText.startsWith("No events were written, so there is no file.\n"), unreadText)
+
+        val empty = harness(
+            listOf(
+                HttpStatusCode.OK to page("", NEXT_1),
+                HttpStatusCode.OK to page("", NEXT_2),
+                HttpStatusCode.OK to page("", "https://us.rest.logs.insight.rapid7.com/query/next-3"),
+            ),
+        )
+        val emptyText = textOf(empty.call("logsearch_spool_query_to_file", spoolArgs()))
+
+        assertTrue(spooled().isEmpty())
+        assertTrue("STOPPED" in emptyText && "consecutive empty pages" in emptyText, emptyText)
+        assertFalse("No events matched" in emptyText, emptyText)
+        assertTrue(emptyText.startsWith("No events were written, so there is no file.\n"), emptyText)
     }
 
     @Test
@@ -427,7 +456,7 @@ class LogSearchSpoolToolsTest {
 
         assertTrue("still running" in text, text)
         assertFalse("COMPLETE —" in text.replace("INCOMPLETE —", ""), text)
-        assertFalse("No events matched" in text && "COMPLETE" in text.replace("INCOMPLETE", ""), text)
+        assertFalse("No events matched" in text, text)
         assertTrue("resume_from_next_link = $self" in text, "resuming keeps waiting for the same query")
     }
 
