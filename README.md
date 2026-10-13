@@ -320,7 +320,9 @@ see `INSIGHTIDR_LOG_SEARCH_BASE_URL` to target the unified route
   2026-10-12), so the `query` descriptions say to pair it with a `where(key=...)`. A query still
   running when the tool stops waiting leaves a continuation id to poll; the API discards one that is
   not polled — its spec says at least every 20 seconds — and then answers HTTP 404, which comes back
-  explained as "run the query again", not as a wrong id):
+  explained as "run the query again", not as a wrong id. A rate-limited call (HTTP 429) comes back
+  with the wait the API asked for, read from its `Retry-After` header and restated by the server as a
+  number of seconds; that path follows the spec and has not yet been seen live):
   `logsearch_query_log`, `logsearch_query_logs`, `logsearch_query_logset`,
   `logsearch_query_logsets_by_name`, `logsearch_poll_query`, `logsearch_get_next_page`,
   `logsearch_get_context_events`, `logsearch_get_search_stats`, `logsearch_list_query_endpoints`

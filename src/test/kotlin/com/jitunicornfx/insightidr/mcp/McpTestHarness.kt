@@ -4,10 +4,10 @@ import com.jitunicornfx.insightidr.mcp.testutil.InMemoryTransport
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.client.request.HttpRequestData
+import io.ktor.http.Headers
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.TextContent
-import io.ktor.http.headersOf
 import io.modelcontextprotocol.kotlin.sdk.client.Client
 import io.modelcontextprotocol.kotlin.sdk.server.Server
 import io.modelcontextprotocol.kotlin.sdk.server.ServerOptions
@@ -57,6 +57,8 @@ suspend fun mcpHarness(
     contentType: String = "application/json",
     /** 1-based number of the request that fails at the network level instead of being answered. */
     failOnRequest: Int? = null,
+    /** Extra headers on every response, e.g. the ones a rate-limited API answers with. */
+    responseHeaders: Map<String, String> = emptyMap(),
     register: Server.(Rapid7Client) -> Unit,
 ): McpTestHarness {
     val bodies = mutableListOf<String?>()
@@ -71,7 +73,10 @@ suspend fun mcpHarness(
         respond(
             content = body,
             status = st,
-            headers = headersOf(HttpHeaders.ContentType, contentType),
+            headers = Headers.build {
+                append(HttpHeaders.ContentType, contentType)
+                responseHeaders.forEach { (name, value) -> append(name, value) }
+            },
         )
     }
 

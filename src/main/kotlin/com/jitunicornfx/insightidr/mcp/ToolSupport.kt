@@ -470,7 +470,8 @@ private fun statusHint(status: Int): String? = when (status) {
     // answered 406 to every call for as long as it had existed, and a bare status line let that pass
     // for a problem with the arguments.
     406 -> "The API would not answer in any format this server asked for (its Accept header), which the tool's arguments do not control — most likely a defect in this MCP server. Report it rather than retrying."
-    429 -> "Rate limited — wait briefly before retrying."
+    // How long to wait is in the response's headers, not here: see RateLimit.kt.
+    429 -> RATE_LIMIT_HINT
     in 500..599 -> "Server-side error at Rapid7 — retrying may succeed."
     else -> null
 }

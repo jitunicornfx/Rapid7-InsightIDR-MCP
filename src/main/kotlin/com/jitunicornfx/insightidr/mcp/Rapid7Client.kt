@@ -12,6 +12,7 @@ import io.ktor.utils.io.cancel
 import io.ktor.utils.io.readAvailable
 import kotlinx.serialization.json.JsonElement
 import java.io.ByteArrayOutputStream
+import java.time.Instant
 
 /**
  * Thin HTTP wrapper around the InsightIDR REST API.
@@ -187,7 +188,7 @@ class Rapid7Client(
                     setBody(rawBody)
                 }
             }
-        }.execute { it.toApiResponse() }
+        }.execute { it.toApiResponse(logSearch = base == ApiBase.LOG_SEARCH) }
     }
 
     /** [request] against the v1 API base (`https://<region>.api.insight.rapid7.com`, same host as v2). */
@@ -217,7 +218,13 @@ class Rapid7Client(
             method = HttpMethod.Get
             header("X-Api-Key", config.apiKey)
             header(HttpHeaders.Accept, ContentType.Application.Json.toString())
-        }.execute { it.toApiResponse() }
+        }.execute {
+            // Read as a Log Search response, because that is what every caller is following: a Self
+            // or Next link out of one. The URL can be any on the allowed hosts, so this is the
+            // caller's word and not a check; the most it costs is a bounded X-RateLimit-Reset from
+            // some other API being read as seconds.
+            it.toApiResponse(logSearch = true)
+        }
     }
 
     /**
@@ -255,14 +262,28 @@ class Rapid7Client(
                     },
                 ),
             )
-        }.execute { it.toApiResponse() }
+        }.execute { it.toApiResponse(logSearch = base == ApiBase.LOG_SEARCH) }
     }
+
+    /**
+     * How long this 429 asks the caller to wait, from its headers, or null when they do not say.
+     * Neither header's text leaves this function: each is parsed to a bounded number of seconds or
+     * dropped. See RateLimit.kt for where the header names come from, and for the caveat that no 429
+     * has yet been seen.
+     *
+     * [logSearch] gates `X-RateLimit-Reset`, which only the Log Search spec defines.
+     */
+    private fun HttpResponse.retryWait(logSearch: Boolean): Long? = retryWaitSeconds(
+        retryAfter = headers[HttpHeaders.RetryAfter],
+        rateLimitReset = if (logSearch) headers[RATE_LIMIT_RESET_HEADER] else null,
+        now = Instant.now(),
+    )
 
     /**
      * Read this response, up to [maxResponseBytes] of it. Called inside `execute { }`, so the body is
      * streamed from the socket rather than buffered first - which is what makes the limit a limit.
      */
-    private suspend fun HttpResponse.toApiResponse(): ApiResponse {
+    private suspend fun HttpResponse.toApiResponse(logSearch: Boolean): ApiResponse {
         val channel = bodyAsChannel()
         val collected = ByteArrayOutputStream()
         val buffer = ByteArray(64 * 1024)
@@ -285,15 +306,20 @@ class Rapid7Client(
         // malformed header must not cost the caller the response - nor put API-chosen text into an
         // error message - so both uses of it are guarded, and the fallback is UTF-8.
         val charset = runCatching { charset() }.getOrNull() ?: Charsets.UTF_8
+        val notes = listOfNotNull(
+            if (!cutOff) null else
+                "The API's response was larger than ${maxResponseBytes / (1024 * 1024)} MiB and was cut off " +
+                    "there, before rendering; what is shown is only its beginning, and is not complete " +
+                    "JSON. Ask for less: a shorter time window, a smaller 'limit' or page size, or a filter.",
+            // A 429 only. The same headers on any other response are not an instruction to wait.
+            if (status.value == HTTP_TOO_MANY_REQUESTS) rateLimitNote(retryWait(logSearch), logSearch) else null,
+        )
         return ApiResponse(
             status = status.value,
             ok = status.value in 200..299,
             body = String(collected.toByteArray(), charset),
             contentType = runCatching { contentType()?.toString() }.getOrNull(),
-            serverNote = if (!cutOff) null else
-                "The API's response was larger than ${maxResponseBytes / (1024 * 1024)} MiB and was cut off " +
-                    "there, before rendering; what is shown is only its beginning, and is not complete " +
-                    "JSON. Ask for less: a shorter time window, a smaller 'limit' or page size, or a filter.",
+            serverNote = notes.joinToString(" ").ifEmpty { null },
         )
     }
 
@@ -301,6 +327,7 @@ class Rapid7Client(
 
     companion object {
         private const val HTTPS_PORT = 443
+        private const val HTTP_TOO_MANY_REQUESTS = 429
 
         /** 64 MiB. See [maxResponseBytes]. */
         const val DEFAULT_MAX_RESPONSE_BYTES = 64L * 1024 * 1024
