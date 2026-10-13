@@ -298,8 +298,16 @@ integerParam(
                 pages++
                 val events = eventsArray(response.body)
                 if (events == null) {
-                    status = "INCOMPLETE — page $pages returned a body that could not be parsed as JSON " +
-                        "(${response.body.length} characters, content-type ${safeMediaType(response.contentType)})"
+                    // Two different things, and only one of them is about what the API sent. A page
+                    // this server declined to read was not found to be unparseable.
+                    status = if (holdsMoreValuesThan(response.body)) {
+                        "INCOMPLETE — page $pages was not read: as JSON it holds more than $MAX_PARSED_VALUES " +
+                            "values, which is more than this server reads into memory at once " +
+                            "(${response.body.length} characters); a smaller per_page puts fewer events in a page"
+                    } else {
+                        "INCOMPLETE — page $pages returned a body that could not be parsed as JSON " +
+                            "(${response.body.length} characters, content-type ${safeMediaType(response.contentType)})"
+                    }
                     complete = false
                     break@loop
                 }
@@ -606,11 +614,13 @@ private fun writeFailure(e: IOException): String {
 // Reading the response
 // ---------------------------------------------------------------------------
 
-/** The `events` array of a Log Search result, or null when the body is not a parseable result. */
+/**
+ * The `events` array of a Log Search result, or null when the body is not a parseable result - which
+ * includes one that holds too many values to be read; see [holdsMoreValuesThan].
+ */
 internal fun eventsArray(body: String): JsonArray? = try {
-    val root = JsonCodec.compact.parseToJsonElement(body).jsonObject
     // A completed result with no matches may omit `events` entirely; treat that as zero events.
-    root["events"]?.jsonArray ?: JsonArray(emptyList())
+    parseWithinCeiling(body)?.jsonObject?.let { root -> root["events"]?.jsonArray ?: JsonArray(emptyList()) }
 } catch (_: StackOverflowError) {
     null
 } catch (_: Exception) {
@@ -619,7 +629,7 @@ internal fun eventsArray(body: String): JsonArray? = try {
 
 /** Whether the body is a statistic (calculate/groupby) result rather than a page of events. */
 internal fun isStatisticResult(body: String): Boolean = try {
-    JsonCodec.compact.parseToJsonElement(body).jsonObject.containsKey("statistics")
+    parseWithinCeiling(body)?.jsonObject?.containsKey("statistics") == true
 } catch (_: StackOverflowError) {
     false
 } catch (_: Exception) {

@@ -4,7 +4,9 @@ import com.jitunicornfx.insightidr.mcp.Rapid7Client.ApiResponse
 import com.jitunicornfx.insightidr.mcp.tools.LS_DEFAULT_POLL_TIMEOUT_MS
 import com.jitunicornfx.insightidr.mcp.tools.LS_MAX_POLL_TIMEOUT_MS
 import com.jitunicornfx.insightidr.mcp.tools.continuationLink
+import com.jitunicornfx.insightidr.mcp.tools.eventsArray
 import com.jitunicornfx.insightidr.mcp.tools.isStatisticPaginationRejection
+import com.jitunicornfx.insightidr.mcp.tools.isStatisticResult
 import com.jitunicornfx.insightidr.mcp.tools.leqlObjectForPatch
 import com.jitunicornfx.insightidr.mcp.tools.nextPageLink
 import com.jitunicornfx.insightidr.mcp.tools.pollArgs
@@ -14,6 +16,8 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import org.junit.jupiter.api.Assumptions.assumeTrue
+import java.lang.management.ManagementFactory
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -50,6 +54,48 @@ class LogSearchSupportTest {
         assertNull(continuationLink("not json at all"))
         assertNull(nextPageLink(""))
         assertNull(continuationLink("""{"links":[{"rel":"Next","href":"https://x"}]}"""))
+    }
+
+    private val linksAfterEvents = """],"links":[{"rel":"Next","href":"https://x/next"},{"rel":"Self","href":"https://x/self"}]}"""
+
+    @Test
+    fun `a body just under the value ceiling is still read for its links`() {
+        // 999,999 values: the document, its two arrays, the two links and the two strings in each.
+        val body = """{"events":[""" + "1,".repeat(MAX_PARSED_VALUES - 11) + "1" + linksAfterEvents
+        assertFalse(holdsMoreValuesThan(body))
+
+        assertEquals("https://x/next", nextPageLink(body))
+        assertEquals("https://x/self", continuationLink(body))
+        assertEquals(MAX_PARSED_VALUES - 10, eventsArray(body)!!.size)
+        assertTrue(isStatisticResult("""{"statistics":{"count":1},"events":[""" + "1,".repeat(MAX_PARSED_VALUES - 13) + "1" + linksAfterEvents))
+    }
+
+    @Test
+    fun `a body that holds too many values to read into a tree is not read to act on it`() {
+        // Valid JSON, with both links and a statistics member in it: 2,000,000 values in 4,000,000
+        // characters. Measured 2026-10-12, a tree of 78 bytes for each value, and until the ceiling
+        // nothing here limited how many: the same shape at 60,000,000 characters, which the client
+        // will hand over, was an OutOfMemoryError in a 2 GB heap, looking for a link.
+        val dense = """{"statistics":{},"events":[""" + "1,".repeat(1_999_999) + "1" + linksAfterEvents
+        val readers = mapOf<String, (String) -> Any?>(
+            "continuationLink" to ::continuationLink,
+            "nextPageLink" to ::nextPageLink,
+            "eventsArray" to ::eventsArray,
+            "isStatisticResult" to { body -> isStatisticResult(body).takeIf { it } },
+        )
+        for ((name, read) in readers) assertNull(read(dense), name)
+
+        val threads = ManagementFactory.getThreadMXBean() as? com.sun.management.ThreadMXBean
+        assumeTrue(
+            threads != null && threads.isThreadAllocatedMemorySupported && threads.isThreadAllocatedMemoryEnabled,
+            "this JVM does not count what a thread allocates",
+        )
+        for ((name, read) in readers) {
+            val before = threads!!.currentThreadAllocatedBytes
+            read(dense)
+            val allocated = threads.currentThreadAllocatedBytes - before
+            assertTrue(allocated < 64 * 1024, "$name allocated $allocated bytes on a body it does not read")
+        }
     }
 
     @Test

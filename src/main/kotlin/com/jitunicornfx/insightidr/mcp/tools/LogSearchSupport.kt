@@ -112,8 +112,10 @@ internal fun continuationLink(body: String): String? = linkWithRel(body, "Self")
  */
 internal fun nextPageLink(body: String): String? = linkWithRel(body, "Next")
 
+// A body that holds too many values to read into a tree has no link, as far as this can tell, and
+// is handed on as a finished result. The response budget does not parse it either, and says so.
 private fun linkWithRel(body: String, rel: String): String? = try {
-    JsonCodec.compact.parseToJsonElement(body).jsonObject["links"]
+    parseWithinCeiling(body)?.jsonObject?.get("links")
         ?.jsonArray
         ?.firstOrNull { it.jsonObject["rel"]?.jsonPrimitive?.contentOrNull.equals(rel, ignoreCase = true) }
         ?.jsonObject?.get("href")?.jsonPrimitive?.contentOrNull

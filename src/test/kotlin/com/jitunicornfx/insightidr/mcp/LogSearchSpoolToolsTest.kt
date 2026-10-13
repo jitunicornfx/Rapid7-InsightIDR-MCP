@@ -229,6 +229,39 @@ class LogSearchSpoolToolsTest {
     }
 
     @Test
+    fun `a page that holds too many values to read stops the run, and is not called unparseable`() = runBlocking {
+        // Valid JSON, and 1,000,003 values of it: more than this server reads into a tree. It was not
+        // found to be unparseable, because nothing tried.
+        val dense = page("1,".repeat(MAX_PARSED_VALUES) + "1")
+        val h = harness(
+            listOf(
+                HttpStatusCode.OK to page("""{"id":1},{"id":2}""", NEXT_1),
+                HttpStatusCode.OK to dense,
+            ),
+        )
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
+
+        val lines = spooled().single().readLines().filter { it.isNotBlank() }
+        assertEquals(2, lines.size, "the page before it is on disk, whole")
+        lines.forEach { JsonCodec.compact.parseToJsonElement(it).jsonObject }
+        assertTrue("INCOMPLETE — page 2 was not read: as JSON it holds more than 1000000 values" in text, text)
+        assertTrue("(${dense.length} characters)" in text, text)
+        assertFalse("could not be parsed as JSON" in text)
+        assertEquals(text.substringAfter("status:").lineSequence().first().trim(), manifest()["status"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `a first page that holds too many values to read writes no file and says why`() = runBlocking {
+        val h = harness(listOf(HttpStatusCode.OK to page("1,".repeat(MAX_PARSED_VALUES) + "1", NEXT_1)))
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
+
+        assertTrue(spooled().isEmpty(), "nothing was read, so nothing was written")
+        assertEquals(1, h.requests.size, "a Next link in a page that was not read is not followed")
+        assertTrue("INCOMPLETE — page 1 was not read: as JSON it holds more than 1000000 values" in text, text)
+        assertFalse("could not be parsed as JSON" in text)
+    }
+
+    @Test
     fun `a spooled event keeps its Context link, which only a result bound for the conversation folds`() = runBlocking {
         // The fold saves tokens. A spool file costs none, each line of it has to stand on its own
         // with no template beside it, and it may be kept as evidence: it holds what the API sent.

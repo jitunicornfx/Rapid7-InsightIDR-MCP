@@ -36,6 +36,12 @@ data class ResultBudget(
      */
     val parseCeilingChars: Int = DEFAULT_PARSE_CEILING_CHARS,
     /**
+     * Bodies that hold more values than this are never parsed either, however short they are. What a
+     * tree costs is set by how many values it holds, which [parseCeilingChars] does not limit; see
+     * [MAX_PARSED_VALUES] for what was measured, and [holdsMoreValuesThan] for how they are counted.
+     */
+    val parseCeilingValues: Int = DEFAULT_PARSE_CEILING_VALUES,
+    /**
      * Per-event `Context` links are folded into one template only when that saves at least this
      * much; see [foldContextLinks]. Below it the links cost little, and a result that is not worth
      * rewriting is better left exactly as the API sent it.
@@ -51,6 +57,7 @@ data class ResultBudget(
         const val DEFAULT_ERROR_FLOOR_CHARS = 4_000
         const val DEFAULT_SAMPLE_FLOOR_CHARS = 1_000
         const val DEFAULT_PARSE_CEILING_CHARS = 16_000_000
+        const val DEFAULT_PARSE_CEILING_VALUES = MAX_PARSED_VALUES
         const val DEFAULT_MIN_FOLD_SAVING_CHARS = 5_000
 
         /** Key the in-band truncation marker is written under. */
@@ -125,6 +132,12 @@ internal fun renderWithinBudget(raw: String, budget: ResultBudget, ok: Boolean):
     // Too large to hold as a tree, so it is never parsed - and a cut notice may not say what it was.
     if (raw.length > budget.parseCeilingChars) return renderAsText(raw, limit, budget, CutReason.NOT_PARSED)
 
+    // Short enough, and still too large to hold as a tree: a tree is made of values, not characters.
+    // They are counted in the text, without parsing it.
+    if (holdsMoreValuesThan(raw, budget.parseCeilingValues)) {
+        return renderAsText(raw, limit, budget, CutReason.TOO_MANY_VALUES)
+    }
+
     // Not JSON at all.
     val element = parseOrNull(raw) ?: return renderAsText(raw, limit, budget, CutReason.NOT_JSON)
 
@@ -160,6 +173,9 @@ private enum class CutReason {
 
     /** Longer than [ResultBudget.parseCeilingChars], so never parsed. Whether it was JSON is not known. */
     NOT_PARSED,
+
+    /** More values than [ResultBudget.parseCeilingValues], so never parsed. Whether it was JSON is not known. */
+    TOO_MANY_VALUES,
 }
 
 /**
@@ -423,7 +439,7 @@ private fun lineAwareCut(head: String, totalLength: Long, limit: Int, budget: Re
     }
     // Never emit a dangling half of a surrogate pair — substring can split one.
     if (slice.isNotEmpty() && slice.last().isHighSurrogate()) slice = slice.dropLast(1)
-    val notice = cutNotice(totalLength, slice.length, limit, reason, budget.parseCeilingChars)
+    val notice = cutNotice(totalLength, slice.length, limit, reason, budget.parseCeilingChars, budget.parseCeilingValues)
     return BudgetedBody(slice, notice, strategy)
 }
 
@@ -631,8 +647,17 @@ private fun droppedNotice(key: String?, kept: Int, total: Int, limit: Int): Stri
  * The second line is the only thing said about what the response was, and [reason] is all it may be
  * drawn from. A body over [parseCeiling] is cut without being parsed: observed 2026-10-12 with valid
  * JSON over a lowered ceiling, that line was "The response was not JSON.", of a body nobody had read.
+ * One that holds more than [valueCeiling] values is not parsed either, and has a line of its own: it
+ * can be a fraction of [parseCeiling] long, so "too large" would name a limit it never reached.
  */
-private fun cutNotice(originalLength: Long, keptLength: Int, limit: Int, reason: CutReason, parseCeiling: Int): String =
+private fun cutNotice(
+    originalLength: Long,
+    keptLength: Int,
+    limit: Int,
+    reason: CutReason,
+    parseCeiling: Int,
+    valueCeiling: Int,
+): String =
     "$NOTICE_TAG This response was $originalLength characters and was CUT to $keptLength to fit " +
         "the $limit-character response budget (INSIGHTIDR_MAX_RESULT_CHARS). The block above is a " +
         "PREFIX of the response and is NOT valid JSON — do not try to parse it as a whole document.\n" +
@@ -641,5 +666,8 @@ private fun cutNotice(originalLength: Long, keptLength: Int, limit: Int, reason:
             CutReason.NOT_JSON -> "The response was not JSON.\n"
             CutReason.NOT_PARSED ->
                 "The response was too large to parse (over $parseCeiling characters), so it was not checked for JSON.\n"
+            CutReason.TOO_MANY_VALUES ->
+                "The response was not parsed: as JSON it holds more than $valueCeiling values, more than this " +
+                    "server reads into memory at once, so it was not checked for JSON.\n"
         } +
         CHEAPER_WAYS
