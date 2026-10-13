@@ -121,11 +121,11 @@ internal fun renderWithinBudget(raw: String, budget: ResultBudget, ok: Boolean):
     if (raw.isBlank()) return BudgetedBody(raw, null, BudgetStrategy.PRETTY)
     val limit = budget.limitFor(ok)
 
-    val element: JsonElement? =
-        if (raw.length > budget.parseCeilingChars) null else parseOrNull(raw)
+    // Too large to hold as a tree, so it is never parsed - and a cut notice may not say what it was.
+    if (raw.length > budget.parseCeilingChars) return renderAsText(raw, limit, budget, CutReason.NOT_PARSED)
 
-    // Not JSON at all, or too large to hold as a tree.
-    if (element == null) return renderAsText(raw, limit, budget)
+    // Not JSON at all.
+    val element = parseOrNull(raw) ?: return renderAsText(raw, limit, budget, CutReason.NOT_JSON)
 
     // An error body is the diagnostic, and is never rewritten.
     val fold = if (ok) foldContextLinks(element)?.takeIf { it.savedChars >= budget.minFoldSavingChars } else null
@@ -141,8 +141,24 @@ internal fun renderWithinBudget(raw: String, budget: ResultBudget, ok: Boolean):
     // When the element cannot be encoded at all (nesting deep enough to overflow the encoder), the
     // fallback is the text as it arrived - escaped first, like every other path, and returned whole
     // if that already fits.
-    val compact = encodeOrNull(JsonCodec.compact, element) ?: return renderAsText(raw, limit, budget)
-    return lineAwareCut(compact, compact.length.toLong(), limit, budget, wasJson = true)
+    val compact = encodeOrNull(JsonCodec.compact, element) ?: return renderAsText(raw, limit, budget, CutReason.NOT_JSON)
+    return lineAwareCut(compact, compact.length.toLong(), limit, budget, CutReason.NOTHING_TO_TRIM)
+}
+
+/**
+ * Why a body is cut rather than trimmed as a document. It is the one thing a cut notice says about
+ * what the response was, and the notice is in the server's own voice - so a body that was never
+ * parsed has a reason of its own, and is not filed under what a parsed one turned out to be.
+ */
+private enum class CutReason {
+    /** Parsed as JSON, and no rendering of it that is still a document fits. */
+    NOTHING_TO_TRIM,
+
+    /** Shown as text because it could not be rendered as JSON. */
+    NOT_JSON,
+
+    /** Longer than [ResultBudget.parseCeilingChars], so never parsed. Whether it was JSON is not known. */
+    NOT_PARSED,
 }
 
 /**
@@ -158,11 +174,11 @@ internal fun renderWithinBudget(raw: String, budget: ResultBudget, ok: Boolean):
  * 2026-10-12, an OutOfMemoryError in a 512 MB heap and only just enough in 1 GB. An OutOfMemoryError
  * is an Error, which `apiTool` does not catch.
  */
-private fun renderAsText(raw: String, limit: Int, budget: ResultBudget): BudgetedBody {
+private fun renderAsText(raw: String, limit: Int, budget: ResultBudget, reason: CutReason): BudgetedBody {
     val length = escapedLength(raw)
     if (length <= limit) return BudgetedBody(escapeInvisible(raw), null, BudgetStrategy.PRETTY)
     val head = escapeInvisibleHead(raw, maxOf(limit, budget.sampleFloorChars))
-    return lineAwareCut(head, length, limit, budget, wasJson = false)
+    return lineAwareCut(head, length, limit, budget, reason)
 }
 
 /**
@@ -320,7 +336,7 @@ private fun truncationMarker(arrayKey: String, kept: Int, total: Int): JsonObjec
  * built the rest passes at least what a cut can keep - `max(limit, sampleFloorChars)` characters, or
  * the whole body if that is shorter - and the length it counted.
  */
-private fun lineAwareCut(head: String, totalLength: Long, limit: Int, budget: ResultBudget, wasJson: Boolean): BudgetedBody {
+private fun lineAwareCut(head: String, totalLength: Long, limit: Int, budget: ResultBudget, reason: CutReason): BudgetedBody {
     val target = minOf(maxOf(limit, budget.sampleFloorChars).toLong(), totalLength).toInt()
     var slice = head.substring(0, target)
     val lastBreak = slice.lastIndexOf('\n')
@@ -332,7 +348,8 @@ private fun lineAwareCut(head: String, totalLength: Long, limit: Int, budget: Re
     }
     // Never emit a dangling half of a surrogate pair — substring can split one.
     if (slice.isNotEmpty() && slice.last().isHighSurrogate()) slice = slice.dropLast(1)
-    return BudgetedBody(slice, cutNotice(totalLength, slice.length, limit, wasJson), strategy)
+    val notice = cutNotice(totalLength, slice.length, limit, reason, budget.parseCeilingChars)
+    return BudgetedBody(slice, notice, strategy)
 }
 
 // ---------------------------------------------------------------------------
@@ -535,10 +552,19 @@ private fun droppedNotice(key: String?, kept: Int, total: Int, limit: Int): Stri
  * characters escaped, and for a JSON body re-encoded compact. That is what the budget is spent on, so
  * the two numbers and the limit compare with each other; it is not the number of characters the API
  * sent whenever anything was escaped.
+ *
+ * The second line is the only thing said about what the response was, and [reason] is all it may be
+ * drawn from. A body over [parseCeiling] is cut without being parsed: observed 2026-10-12 with valid
+ * JSON over a lowered ceiling, that line was "The response was not JSON.", of a body nobody had read.
  */
-private fun cutNotice(originalLength: Long, keptLength: Int, limit: Int, wasJson: Boolean): String =
+private fun cutNotice(originalLength: Long, keptLength: Int, limit: Int, reason: CutReason, parseCeiling: Int): String =
     "$NOTICE_TAG This response was $originalLength characters and was CUT to $keptLength to fit " +
         "the $limit-character response budget (INSIGHTIDR_MAX_RESULT_CHARS). The block above is a " +
         "PREFIX of the response and is NOT valid JSON — do not try to parse it as a whole document.\n" +
-        (if (wasJson) "The response had no top-level array to trim.\n" else "The response was not JSON.\n") +
+        when (reason) {
+            CutReason.NOTHING_TO_TRIM -> "The response had no top-level array to trim.\n"
+            CutReason.NOT_JSON -> "The response was not JSON.\n"
+            CutReason.NOT_PARSED ->
+                "The response was too large to parse (over $parseCeiling characters), so it was not checked for JSON.\n"
+        } +
         CHEAPER_WAYS

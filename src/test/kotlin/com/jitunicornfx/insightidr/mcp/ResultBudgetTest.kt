@@ -293,6 +293,59 @@ class ResultBudgetTest {
         assertTrue("\\u200b" in body, "escaped, not stripped")
     }
 
+    // What a cut notice says the response was. It is in the server's own voice, outside the envelope,
+    // so it may say only what was found out - and above the parse ceiling nothing was.
+
+    /** Valid JSON of exactly [length] characters, with an `events` array whose tail can be trimmed. */
+    private fun jsonOfLength(length: Int): String {
+        val events = (0 until 40).joinToString(",") { """{"id":$it,"message":"${"x".repeat(100)}"}""" }
+        fun body(pad: Int) = """{"events":[$events,{"id":40,"message":"${"p".repeat(pad)}"}]}"""
+        return body(length - body(0).length)
+    }
+
+    @Test
+    fun `a body too large to parse is not said to be JSON or not, because it was not checked`() {
+        val budget = ResultBudget(maxChars = 4_000, parseCeilingChars = 10_000)
+        // One is JSON and one is not. Neither was parsed, so the notice cannot tell them apart.
+        // Observed 2026-10-12: it said "The response was not JSON." of both.
+        val json = jsonOfLength(10_001)
+        val text = (0 until 400).joinToString("\n") { "entry $it of a log that is not JSON" }
+
+        for (body in listOf(json, text)) {
+            assertTrue(body.length > budget.parseCeilingChars)
+
+            val notice = renderWithinBudget(body, budget, ok = true).notice!!
+
+            assertTrue(
+                "\nThe response was too large to parse (over 10000 characters), so it was not checked for JSON.\n" in notice,
+                notice,
+            )
+            assertFalse("was not JSON" in notice, notice)
+            assertFalse("no top-level array" in notice, notice)
+        }
+    }
+
+    @Test
+    fun `a body exactly at the parse ceiling is still parsed, and the notice says what was found`() {
+        val budget = ResultBudget(maxChars = 4_000, parseCeilingChars = 10_000)
+
+        // JSON: parsed, so it is trimmed as a document and never reaches a cut.
+        val json = jsonOfLength(10_000)
+        assertEquals(budget.parseCeilingChars, json.length)
+        assertEquals(BudgetStrategy.STRUCTURAL, renderWithinBudget(json, budget, ok = true).strategy)
+
+        // Not JSON: parsed and refused, which is something the server can say it knows.
+        val text = "plain text line\n".repeat(625)
+        assertEquals(budget.parseCeilingChars, text.length)
+        assertTrue("\nThe response was not JSON.\n" in renderWithinBudget(text, budget, ok = true).notice!!)
+
+        // One character more and neither is looked at.
+        for (over in listOf(jsonOfLength(10_001), text + "x")) {
+            val notice = renderWithinBudget(over, budget, ok = true).notice!!
+            assertTrue("was not checked for JSON" in notice, notice)
+        }
+    }
+
     // A text body is escaped only as far as it can be shown. Everything from here to the blank-body
     // test is about that: the first four say the result is what it always was, the last two that the
     // rest of the body is no longer built to get it.
