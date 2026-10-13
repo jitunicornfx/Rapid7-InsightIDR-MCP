@@ -1,11 +1,13 @@
 package com.jitunicornfx.insightidr.mcp
 
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.JsonUnquotedLiteral
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -230,11 +232,87 @@ private fun renderAsDocument(element: JsonElement, sizeHint: Int, limit: Int, bu
 
 /** [raw] as a JSON tree, or null when it is not JSON - which the parser alone does not settle; see [isJson]. */
 private fun parseOrNull(raw: String): JsonElement? = try {
-    JsonCodec.compact.parseToJsonElement(raw).takeIf(::isJson)
+    JsonCodec.compact.parseToJsonElement(raw).takeIf(::isJson)?.let(::withNumbersAsWritten)
 } catch (_: StackOverflowError) {
     null
 } catch (_: Exception) {
     null
+}
+
+/**
+ * [root] with every number in it held so that it is written back as the text the API sent.
+ *
+ * The parser keeps that text and the encoder does not write it. It reads the text as a Long, then a
+ * ULong, then a Double, and writes whichever it got. Observed 2026-10-12 through [renderWithinBudget]:
+ * `1.50` came back as `1.5`, `1e5` as `100000.0`, `0.00001` as `1.0E-5`, `-0` as `0`, and
+ * `123456789012345678901234567890` as `1.2345678901234568E29`, which is not the same number. Nothing
+ * said so, and the notice of the compact rung said "No data was dropped".
+ *
+ * So a number that would not come back as it was is replaced by one the encoder writes as it stands.
+ * The only number left alone is an integer that fits a Long: read as one and written as one, it is
+ * the text it was, and a document with no other kind of number is returned as it is, with nothing
+ * copied. No fixture in this project that stands for an API response has another kind, which does
+ * not show that the API sends none.
+ *
+ * Only for what [isJson] has passed: what is put in the place of a number is written without being
+ * read again, so it is put there only when it is a number as RFC 8259 writes one.
+ *
+ * Walked with a stack of its own, for the reason [isJson] is.
+ */
+private fun withNumbersAsWritten(root: JsonElement): JsonElement {
+    if (root is JsonPrimitive) return root.asWritten()
+    val open = ArrayDeque<Rewrite>()
+    open.addLast(Rewrite(root))
+    while (true) {
+        val top = open.last()
+        val member = top.next()
+        when {
+            member is JsonPrimitive -> top.put(member, member.asWritten())
+            member != null -> open.addLast(Rewrite(member))
+            else -> {
+                open.removeLast()
+                val parent = open.lastOrNull() ?: return top.result()
+                parent.put(top.source, top.result())
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalSerializationApi::class)
+private fun JsonPrimitive.asWritten(): JsonPrimitive = when {
+    isString || this is JsonNull || content == "true" || content == "false" -> this
+    content != "-0" && content.toLongOrNull() != null -> this
+    isJsonNumber(content) -> JsonUnquotedLiteral(content)
+    else -> this
+}
+
+/** An object or array part-way through [withNumbersAsWritten]: where the walk is, and a copy once a member has changed. */
+private class Rewrite(val source: JsonElement) {
+    private val members = (source as? JsonObject)?.entries?.iterator()
+    private val items = (source as? JsonArray)?.iterator()
+    private var key = ""
+    private var index = -1
+    private var objectCopy: LinkedHashMap<String, JsonElement>? = null
+    private var arrayCopy: ArrayList<JsonElement>? = null
+
+    /** The next member, or null after the last. */
+    fun next(): JsonElement? = when {
+        members != null -> if (members.hasNext()) members.next().also { key = it.key }.value else null
+        items != null && items.hasNext() -> items.next().also { index++ }
+        else -> null
+    }
+
+    /** Put [now] where [was], the member [next] last returned, stands. Nothing is copied when they are the same. */
+    fun put(was: JsonElement, now: JsonElement) {
+        if (now === was) return
+        when (source) {
+            is JsonObject -> (objectCopy ?: LinkedHashMap(source).also { objectCopy = it })[key] = now
+            is JsonArray -> (arrayCopy ?: ArrayList(source).also { arrayCopy = it })[index] = now
+            is JsonPrimitive -> Unit
+        }
+    }
+
+    fun result(): JsonElement = objectCopy?.let(::JsonObject) ?: arrayCopy?.let(::JsonArray) ?: source
 }
 
 /**

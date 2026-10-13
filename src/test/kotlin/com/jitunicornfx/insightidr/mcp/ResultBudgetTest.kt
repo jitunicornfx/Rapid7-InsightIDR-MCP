@@ -463,6 +463,152 @@ class ResultBudgetTest {
         assertEquals("boom", fenced(textOf(error.toToolResult(ResultBudget()))))
     }
 
+    // Numbers. Every JSON body is parsed and written again, and the library does not write a number
+    // back as it read it: it reads the text as a Long, then a ULong, then a Double, and writes that.
+    // Observed 2026-10-12 through renderWithinBudget: 1.50 came back as 1.5, 1e5 as 100000.0, 0.00001
+    // as 1.0E-5, -0 as 0, and 123456789012345678901234567890 as 1.2345678901234568E29, which is not
+    // the same number. Nothing said so. No fixture in this project that stands for an API response
+    // holds a number that was rewritten, which does not show that the API sends none.
+
+    /** A document with one member for each of [numbers], each written exactly as given. */
+    private fun documentOf(numbers: List<String>) =
+        numbers.withIndex().joinToString(",", "{", "}") { (i, number) -> "\"n$i\":$number" }
+
+    /** Each member of the document [rendered] as it is written there: the text, not the value it stands for. */
+    private fun numbersShown(rendered: String): List<String> =
+        JsonCodec.compact.parseToJsonElement(rendered).jsonObject.values.map { it.jsonPrimitive.content }
+
+    /** Every one of [sent] that [shown] has as different text, beside what it was shown as. */
+    private fun changed(sent: List<String>, shown: List<String>): Map<String, String> {
+        assertEquals(sent.size, shown.size, "as many numbers shown as were sent: $shown")
+        return sent.zip(shown).filter { (was, isNow) -> was != isNow }.toMap()
+    }
+
+    /** [n] events that each carry [score], written exactly as given. */
+    private fun scoredEvents(n: Int, score: String, pad: Int): String {
+        val events = (0 until n).joinToString(",") { """{"id":$it,"score":$score,"message":"${"x".repeat(pad)}"}""" }
+        return """{"events":[$events]}"""
+    }
+
+    /** The different ways `score` is written across the events of the document [rendered]. */
+    private fun scoresShown(rendered: String): Set<String> =
+        JsonCodec.compact.parseToJsonElement(rendered).jsonObject["events"]!!.jsonArray
+            .map { it.jsonObject["score"]!!.jsonPrimitive.content }
+            .toSet()
+
+    @Test
+    fun `a number in a document is shown as the API wrote it`() {
+        // The body this was first observed with.
+        val sent = listOf("1.50", "1e5", "123456789012345678901234567890", "0.00001")
+        val rendered = renderWithinBudget("""{"a":1.50,"b":1e5,"c":123456789012345678901234567890,"d":0.00001}""", ResultBudget(), ok = true)
+
+        assertEquals(emptyMap(), changed(sent, numbersShown(rendered.text)), rendered.text)
+    }
+
+    @Test
+    fun `a number that is the whole body is shown as the API wrote it`() {
+        val sent = listOf("1.50", "1E2", "-0", "0.1000000000000000055511151231257827")
+
+        val shown = sent.map { renderWithinBudget(it, ResultBudget(), ok = true).text }
+
+        assertEquals(emptyMap(), changed(sent, shown))
+    }
+
+    @Test
+    fun `every way JSON writes a number is shown as it was written`() {
+        val sent = listOf(
+            // A fraction that ends in zeros, and one that has more digits than a double holds.
+            "1.50", "0.10", "2.000", "0.30000000000000004441", "3.141592653589793238462643383279",
+            // An exponent, however it is spelled.
+            "1e5", "1E5", "1e+5", "1E+2", "1e-7", "-1.25e-3", "0e0", "1.5e300", "5e-324",
+            // A negative zero, and a fraction small enough to be written back with an exponent.
+            "-0", "0.00001",
+            // An integer one past what 64 bits hold, in each direction, and one far past.
+            "18446744073709551616", "-9223372036854775809", "123456789012345678901234567890",
+        )
+
+        val rendered = renderWithinBudget(documentOf(sent), ResultBudget(), ok = true)
+
+        assertEquals(emptyMap(), changed(sent, numbersShown(rendered.text)), rendered.text)
+    }
+
+    @Test
+    fun `a number in an array is shown as it was written, and everything around it is where it was`() {
+        // Numbers that change and values that do not, side by side, in arrays inside arrays.
+        val body = """{"values":[1.50,2,[3.0e1,"s",null,true,4.250],{"k":[5e0,6],"j":-0},[],7.0],"n":7,"m":[[[0.10]]]}"""
+
+        val rendered = renderWithinBudget(body, ResultBudget(), ok = true)
+
+        assertTrue(rendered.text.startsWith("{\n  \"values\": [\n    1.50,\n    2,\n"), "still a pretty-printed document: ${rendered.text}")
+        assertEquals(body, rendered.text.filterNot { it.isWhitespace() })
+    }
+
+    @Test
+    fun `a number is shown as it was written when the document is re-rendered compact`() {
+        // The notice of this rung says "No data was dropped", of a document it wrote again.
+        val body = scoredEvents(n = 20, score = "0.50", pad = 100)
+
+        val rendered = renderWithinBudget(body, ResultBudget(maxChars = (body.length * 1.2).toInt()), ok = true)
+
+        assertEquals(BudgetStrategy.COMPACT, rendered.strategy)
+        assertEquals(setOf("0.50"), scoresShown(rendered.text))
+    }
+
+    @Test
+    fun `a number is shown as it was written in the events a trimmed document keeps`() {
+        val body = scoredEvents(n = 200, score = "0.50", pad = 200)
+
+        val rendered = renderWithinBudget(body, ResultBudget(maxChars = 8_000), ok = true)
+
+        assertEquals(BudgetStrategy.STRUCTURAL, rendered.strategy)
+        assertEquals(setOf("0.50"), scoresShown(rendered.text))
+    }
+
+    @Test
+    fun `a number in an error body is shown as it was written`() {
+        // An error body is the diagnostic, and is never rewritten.
+        val rendered = renderWithinBudget("""{"status":429,"retry_after":1.50,"limit":1e3}""", ResultBudget(), ok = false)
+
+        assertEquals(emptyMap(), changed(listOf("429", "1.50", "1e3"), numbersShown(rendered.text)), rendered.text)
+    }
+
+    @Test
+    fun `a number that is already written the way it would be written back is unchanged`() {
+        // What was observed to survive, and has to go on surviving whatever is done about the rest:
+        // an integer that fits in 64 bits, signed or not, and a fraction or exponent as Kotlin prints one.
+        val sent = listOf(
+            "0", "7", "-7", "1760000000000", "9223372036854775807", "-9223372036854775808",
+            "9223372036854775808", "18446744073709551615",
+            "1.0", "0.0", "1.5", "0.1", "-0.5", "100.0", "123.456", "1.0E-5", "2.5E10", "-0.0",
+        )
+        val rendered = renderWithinBudget(documentOf(sent), ResultBudget(), ok = true)
+        assertEquals(emptyMap(), changed(sent, numbersShown(rendered.text)), rendered.text)
+    }
+
+    @Test
+    fun `a number too large for a double is shown as it was written, in a body still rendered as a document`() {
+        // The encoder refuses to write a double that is not finite. Observed 2026-10-12: a body with
+        // such a number anywhere in it came back as text, as it arrived, and not as the document it is.
+        val rendered = renderWithinBudget("""{"n":1E400,"m":-1e999,"id":7}""", ResultBudget(), ok = true)
+
+        assertEquals("{\n  \"n\": 1E400,\n  \"m\": -1e999,\n  \"id\": 7\n}", rendered.text)
+        assertNull(rendered.notice)
+    }
+
+    @Test
+    fun `a number is shown as it was written however deep in the body it is`() {
+        // Deeper than the encoder can write, the body comes back as text, which is the number as it
+        // was sent too. Either way nothing is thrown on the way to finding that out.
+        for (depth in listOf(10, 200, 20_000)) {
+            val body = """{"a":""".repeat(depth) + "1.50" + "}".repeat(depth)
+
+            val rendered = renderWithinBudget(body, ResultBudget(maxChars = 1_000_000), ok = true)
+
+            assertTrue("1.50" in rendered.text, "depth $depth")
+            assertFalse("1.5}" in rendered.text || "1.5\n" in rendered.text, "depth $depth")
+        }
+    }
+
     // A text body is escaped only as far as it can be shown. The next six tests are about that: the
     // first four say the result is what it always was, the last two that the rest of the body is no
     // longer built to get it.
