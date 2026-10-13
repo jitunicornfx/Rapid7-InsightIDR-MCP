@@ -23,6 +23,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -389,6 +390,199 @@ class ResultBudgetTest {
                 """[1,"a",{"k":[true,nope]},2]""",
             ),
         )
+    }
+
+    // Where an array ends. The library's array reader does not stop at a `]` that a value follows: it
+    // reads the value into the same array, as it would after a comma. Observed 2026-10-12, while such
+    // a body was still taken for JSON: [1]2] came back as the array 1, 2, ["a"]"b"] as "a", "b", and
+    // {"events":[{"id":1}]{"id":2}]} as a document whose events held both objects. The tree is well
+    // formed by then, so isJson has nothing to find in it. It is the text that shows it.
+
+    @Test
+    fun `an array read on past its end is not JSON, and the body comes back as it arrived`() {
+        assertReturnedAsItArrived(
+            listOf(
+                // The four this was observed with.
+                "[1]2]", "[1]2]3]", """{"events":[{"id":1}]{"id":2}]}""", """["a"]"b"]""",
+                // Whatever kind of value follows the bracket, and whatever space lies between.
+                "[1]true]", "[1]null]", "[1]-2.5e3]", "[1][2]]", """[1]{"a":2}]""", "[1] 2 ]", "[1]\n2\n]", "[1]\t\r\n2]",
+                // Further in, and after an array that is whole.
+                "[[1]2]]", "[[]]1]", "[[1],[2]3]]", """{"a":[1]"b"]}""", """{"a":{"b":[[1]2]]},"c":[]}""",
+                // After a string with a bracket and a quote of its own in it.
+                """["]"]1]""", """["a\"]"]"b"]""",
+                // What a tree lost to a repeated key is not said of a body that is not rendered from one.
+                """{"a":[1]2],"a":3}""",
+            ),
+        )
+    }
+
+    @Test
+    fun `an array that ends where it closes is still JSON, and so is a bracket inside a string`() {
+        val documents = listOf(
+            // What JSON has after a `]`: a comma, another `]`, a `}`, or the end of the text.
+            "[[]]", "[[1],[2]]", "[[1] , [2] ]", "[[[1]]]", "[[1]\t]", "[1]\n", " [ [ 1 ] ]\r\n", """{"a":[1],"b":[2]}""", """{"a":[1]}""",
+            """{"events":[{"id":1,"tags":["a","b"]},{"id":2,"tags":[]}],"links":[]}""",
+            // A `]` inside a string ends nothing, whatever is written after it there.
+            """["]"]""", """["a]b"]""", """["]","x"]""", """["]1"]""", """{"k]":"]x"}""", """{"]":[1],"b":"]"}""",
+            // Nor does a quote that a backslash precedes end the string it is in.
+            """["a\"]b"]""", """["\"]","x"]""", """["]\"x"]""", """["a\\\"]1"]""",
+            // A backslash that is itself escaped precedes a quote that does.
+            """["a\\"]""", """["a\\","b"]""", """[["a\\"],"b"]""",
+        )
+        for (document in documents) {
+            val pretty = JsonCodec.pretty.encodeToString(JsonElement.serializer(), JsonCodec.compact.parseToJsonElement(document))
+            assertNotEquals(document, pretty, "a body that being taken for text would show in")
+
+            val rendered = renderWithinBudget(document, ResultBudget(), ok = true)
+
+            assertEquals(pretty, rendered.text, document)
+            assertNull(rendered.notice, document)
+        }
+    }
+
+    @Test
+    fun `an array read on past its end and too large for the budget is cut as the text it is`() {
+        // 3,000 strings with a `]` where each comma would be: 300,001 characters the parser reads as one array.
+        val body = (0 until 3_000).joinToString("]", "[", "]") { "\"${"x".repeat(97)}\"" }
+
+        val rendered = renderWithinBudget(body, ResultBudget(), ok = true)
+
+        assertEquals(body.take(ResultBudget.DEFAULT_MAX_CHARS), rendered.text, "the start of it, as it arrived")
+        assertTrue("\nThe response was not JSON.\n" in rendered.notice!!, rendered.notice)
+
+        // The same strings with commas between them ARE an array, and it is still trimmed as one.
+        val array = renderWithinBudget(body.replace("\"]\"", "\",\""), ResultBudget(), ok = true)
+        assertEquals(BudgetStrategy.STRUCTURAL, array.strategy)
+    }
+
+    @Test
+    fun `an array read on past its end reaches the tool result as the API sent it, in an error body too`() {
+        val events = """{"events":[{"id":1}]{"id":2}]}"""
+        assertEquals(events, fenced(textOf(ok(events, ResultBudget()))))
+
+        // An error body is the diagnostic, and is never rewritten.
+        val error = ApiResponse(400, ok = false, body = """["bad request"]"query"]""", contentType = "application/json")
+        assertEquals("""["bad request"]"query"]""", fenced(textOf(error.toToolResult(ResultBudget()))))
+    }
+
+    /** Whether a text is JSON, written from RFC 8259 and not from the parser. It recurses: for short texts only. */
+    private class Rfc8259(private val text: String) {
+        private var i = 0
+
+        fun isJsonText(): Boolean {
+            space()
+            if (!value()) return false
+            space()
+            return i == text.length
+        }
+
+        private fun space() {
+            while (i < text.length && text[i] in " \t\n\r") i++
+        }
+
+        private fun value(): Boolean = when (text.getOrNull(i)) {
+            null -> false
+            '{' -> members('}') { string() && colon() && value() }
+            '[' -> members(']') { value() }
+            '"' -> string()
+            else -> scalar()
+        }
+
+        /** From an opening bracket: nothing, or one [member] and then a comma and another any number of times, up to [close]. */
+        private inline fun members(close: Char, member: () -> Boolean): Boolean {
+            i++
+            space()
+            if (text.getOrNull(i) == close) {
+                i++
+                return true
+            }
+            while (true) {
+                space()
+                if (!member()) return false
+                space()
+                val next = text.getOrNull(i++)
+                if (next == close) return true
+                if (next != ',') return false
+            }
+        }
+
+        private fun colon(): Boolean {
+            space()
+            if (text.getOrNull(i) != ':') return false
+            i++
+            space()
+            return true
+        }
+
+        private fun string(): Boolean {
+            if (text.getOrNull(i) != '"') return false
+            i++
+            while (i < text.length) {
+                val c = text[i++]
+                when {
+                    c == '"' -> return true
+                    c < ' ' -> return false
+                    c == '\\' -> when (text.getOrNull(i++)) {
+                        '"', '\\', '/', 'b', 'f', 'n', 'r', 't' -> Unit
+                        'u' -> {
+                            if (i + 4 > text.length || !text.substring(i, i + 4).all { it in "0123456789abcdefABCDEF" }) return false
+                            i += 4
+                        }
+                        else -> return false
+                    }
+                }
+            }
+            return false
+        }
+
+        private fun scalar(): Boolean {
+            val from = i
+            while (i < text.length && text[i] !in " \t\n\r,:[]{}\"") i++
+            val word = text.substring(from, i)
+            return word == "true" || word == "false" || word == "null" || NUMBER.matches(word)
+        }
+
+        private companion object {
+            val NUMBER = Regex("""-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?""")
+        }
+    }
+
+    @Test
+    fun `a text made of brackets, commas, colons, numbers and strings is rendered as JSON exactly when it is JSON`() {
+        // The second string has a bracket each way and an escaped quote in it.
+        val tokens = listOf("[", "]", "{", "}", ",", ":", "1", "\"k\"", "\"]\\\"[\"")
+        val budget = ResultBudget()
+        var texts = 0
+        var json = 0
+        val wrong = ArrayList<String>()
+
+        /** Every text of [length] tokens, with [between] between each two. */
+        fun everyTextOf(length: Int, between: String) {
+            val chosen = IntArray(length)
+            while (true) {
+                val text = chosen.joinToString(between) { tokens[it] }
+                val isJson = Rfc8259(text).isJsonText()
+                val expected = if (isJson) JsonCodec.pretty.encodeToString(JsonElement.serializer(), JsonCodec.compact.parseToJsonElement(text)) else text
+                val rendered = renderWithinBudget(text, budget, ok = true)
+                texts++
+                if (isJson) json++
+                if ((rendered.text != expected || rendered.notice != null) && wrong.size < 20) wrong += text
+
+                var k = length - 1
+                while (k >= 0 && ++chosen[k] == tokens.size) chosen[k--] = 0
+                if (k < 0) return
+            }
+        }
+
+        // Every one of up to six tokens, and of up to five with space between them.
+        for (length in 1..6) everyTextOf(length, "")
+        for (length in 1..5) everyTextOf(length, " ")
+        for (length in 1..5) everyTextOf(length, "\t\r\n")
+
+        assertEquals(emptyList(), wrong, "shown as a document when it is not JSON, or as text when it is")
+        // So that it is known what was compared: [1]1] is among them, and so is [[1]].
+        assertEquals(597_870 + 2 * 66_429, texts)
+        assertEquals(63 + 2 * 28, json)
     }
 
     @Test
