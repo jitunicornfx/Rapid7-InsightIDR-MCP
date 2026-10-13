@@ -241,9 +241,14 @@ private fun renderAsDocument(element: JsonElement, sizeHint: Int, limit: Int, bu
     return trimLargestArray(element, limit, budget)
 }
 
-/** [raw] as a JSON tree, or null when it is not JSON - which the parser alone does not settle; see [isJson]. */
+/**
+ * [raw] as a JSON tree, or null when it is not JSON - which the parser alone does not settle: see
+ * [isJson] for what it takes for a value, and [hasValueAfterArrayEnd] for where it ends an array.
+ */
 private fun parseOrNull(raw: String): JsonElement? = try {
-    JsonCodec.compact.parseToJsonElement(raw).takeIf(::isJson)?.let(::withNumbersAsWritten)
+    JsonCodec.compact.parseToJsonElement(raw)
+        .takeIf { isJson(it) && !hasValueAfterArrayEnd(raw) }
+        ?.let(::withNumbersAsWritten)
 } catch (_: StackOverflowError) {
     null
 } catch (_: Exception) {
@@ -397,6 +402,42 @@ private fun String.digitsEnd(from: Int): Int {
     var i = from
     while (i < length && this[i] in '0'..'9') i++
     return i
+}
+
+/**
+ * Whether [text], which has parsed, has the start of a value after a `]`: something JSON never has,
+ * and the parser reads as one more entry of the array that the `]` should have ended.
+ *
+ * Read from `JsonTreeReader.readArray` in kotlinx.serialization 1.11.0: after an entry it takes a `,`
+ * or a `]`, and after either it goes round again for as long as a value can begin, where the object
+ * reader beside it stops at a `}`. Observed 2026-10-12 through [renderWithinBudget]: `[1]2]` came back
+ * as the array 1, 2, `["a"]"b"]` as "a", "b", and `{"events":[{"id":1}]{"id":2}]}` as a document whose
+ * `events` held both objects. The tree is well formed by then, so [isJson] has nothing to find in it,
+ * and nothing said the body was not what the API sent.
+ *
+ * In a text that has parsed, what follows a `]` outside a quoted string is a `,`, another `]`, a `}`,
+ * the end of the text, or a value the array went on to. Only the last is looked for, and it is all
+ * that has to be: with no such `]`, the arrays and objects the parser built are the ones JSON has.
+ * Checked 2026-10-13 through [renderWithinBudget] against a reader written from RFC 8259: every text
+ * of seven tokens out of `[ ] { } , :`, a number and two strings, and 1,500,000 documents of up to
+ * 120 with a token or two changed, were rendered as a document exactly when they were JSON.
+ *
+ * A string is read as [holdsMoreValuesThan] reads one, which is as the parser does. One pass over the
+ * text, allocating nothing: measured the same day on 15,200,000 characters of events, 12 to 15 ms,
+ * where rendering that body took 370 to 500.
+ */
+private fun hasValueAfterArrayEnd(text: String): Boolean {
+    var i = 0
+    // What was read last, whitespace aside, was a `]` outside a string.
+    var closed = false
+    while (i < text.length) {
+        val c = text[i++]
+        if (c.isJsonSpace()) continue
+        if (closed && c != ',' && c != ']' && c != '}') return true
+        closed = c == ']'
+        if (c == '"') i = afterString(text, i)
+    }
+    return false
 }
 
 /**
