@@ -105,13 +105,6 @@ internal data class BudgetedBody(
     val strategy: BudgetStrategy,
 )
 
-/** Pretty-print [raw] if it is valid JSON, otherwise return it unchanged. */
-internal fun prettyOrRaw(raw: String): String {
-    if (raw.isBlank()) return raw
-    val element = parseOrNull(raw) ?: return raw
-    return encodeOrNull(JsonCodec.pretty, element) ?: raw
-}
-
 /**
  * Render [raw] into at most [ResultBudget.limitFor] characters, degrading through progressively
  * lossier strategies, and never throwing.
