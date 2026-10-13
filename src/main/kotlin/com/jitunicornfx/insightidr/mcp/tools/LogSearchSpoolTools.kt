@@ -430,8 +430,10 @@ integerParam(
                 }
                 if (!response.ok) {
                     complete = false
-                    // Only a transient failure is worth resuming. Anything else — typically a 404
-                    // once the query has expired — would just fail the same way again.
+                    // Only a transient failure is worth resuming. Anything else would just fail the
+                    // same way again. That is not a query "expiring": a Next link is a new query
+                    // written out as a URL and holds no continuation (see QueryContinuation.kt), so
+                    // a 404 on one is the spec's "Log Not Found".
                     if (response.status == 429 || response.status in 500..599) {
                         status = "INCOMPLETE — page ${pages + 1} failed with HTTP ${response.status}"
                         resumeHref = href

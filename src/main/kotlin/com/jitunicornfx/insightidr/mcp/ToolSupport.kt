@@ -506,11 +506,18 @@ private const val MAX_ERROR_CODE_BODY_CHARS = 4_096
 
 /**
  * The hint for an error response: one keyed to the API's own error code where this server knows
- * that code, which says more than the status can, and otherwise [statusHint].
+ * that code, which says more than the status can, and otherwise [statusHint]. The codes it knows are
+ * the LEQL syntax error (Leql.kt) and the four a query continuation is refused with
+ * (QueryContinuation.kt).
  */
-private fun errorHint(status: Int, body: String): String? = when {
-    status == 400 && apiErrorCode(body) == LEQL_SYNTAX_ERROR_CODE -> LEQL_SYNTAX_ERROR_HINT
-    else -> statusHint(status)
+private fun errorHint(status: Int, body: String): String? {
+    // A code is matched only under the status it was observed with: a 5xx that happens to carry one
+    // is still the API being unwell.
+    val code = apiErrorCode(body)
+    return when {
+        status == 400 && code == LEQL_SYNTAX_ERROR_CODE -> LEQL_SYNTAX_ERROR_HINT
+        else -> continuationHint(status, code) ?: statusHint(status)
+    }
 }
 
 /**

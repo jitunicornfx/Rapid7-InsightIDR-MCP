@@ -636,7 +636,7 @@ class LogSearchSpoolToolsTest {
 
     @Test
     fun `only a failure worth retrying offers a resume link`() = runBlocking {
-        // 429 and 5xx are transient. A 404 here means the query has expired: resuming cannot work.
+        // 429 and 5xx are transient. A 404 is not: the same link would be answered the same way.
         val gone = harness(
             listOf(
                 HttpStatusCode.OK to page("""{"id":1}""", NEXT_1),

@@ -167,7 +167,8 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
     apiTool(
         name = "logsearch_poll_query",
         description = "Poll an in-progress Log Search query by its continuation id (returned in a 202 response). " +
-            "Returns the current progress or the final result.",
+            "Returns the current progress or the final result. Not for audit queries: their ids are only " +
+            "valid on logsearch_audit_poll_query. " + CONTINUATION_POLL_GUIDANCE,
         readOnly = true,
         inputSchema = toolSchema("query_id") {
             stringParam("query_id", "The continuation id generated when the query started.")

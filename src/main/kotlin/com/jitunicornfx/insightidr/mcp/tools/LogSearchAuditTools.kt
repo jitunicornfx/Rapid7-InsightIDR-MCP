@@ -102,7 +102,9 @@ fun Server.registerLogSearchAuditTools(client: Rapid7Client) {
 
     apiTool(
         name = "logsearch_audit_poll_query",
-        description = "Poll an in-progress audit-log query by its continuation id (Log Search Audit API).",
+        description = "Poll an in-progress audit-log query by its continuation id (Log Search Audit API). " +
+            "Only for audit queries: an id from any other query is only valid on logsearch_poll_query. " +
+            CONTINUATION_POLL_GUIDANCE,
         readOnly = true,
         inputSchema = toolSchema("query_id") {
             stringParam("query_id", "The continuation id generated when the audit query started.")

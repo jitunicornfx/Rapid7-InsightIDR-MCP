@@ -317,7 +317,10 @@ see `INSIGHTIDR_LOG_SEARCH_BASE_URL` to target the unified route
   `query` descriptions and a rejected query comes back with it spelled out. `select()` narrows each
   event to the named keys only when the query also has a `where()` that compares a key (or the
   request sets `kvp_info=true`); on its own it returned every event as an empty `{}` (measured
-  2026-10-12), so the `query` descriptions say to pair it with a `where(key=...)`):
+  2026-10-12), so the `query` descriptions say to pair it with a `where(key=...)`. A query still
+  running when the tool stops waiting leaves a continuation id to poll; the API discards one that is
+  not polled — its spec says at least every 20 seconds — and then answers HTTP 404, which comes back
+  explained as "run the query again", not as a wrong id):
   `logsearch_query_log`, `logsearch_query_logs`, `logsearch_query_logset`,
   `logsearch_query_logsets_by_name`, `logsearch_poll_query`, `logsearch_get_next_page`,
   `logsearch_get_context_events`, `logsearch_get_search_stats`, `logsearch_list_query_endpoints`
