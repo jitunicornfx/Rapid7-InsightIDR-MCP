@@ -458,6 +458,9 @@ class LogSearchSpoolToolsTest {
         assertFalse("COMPLETE —" in text.replace("INCOMPLETE —", ""), text)
         assertFalse("No events matched" in text, text)
         assertTrue("resume_from_next_link = $self" in text, "resuming keeps waiting for the same query")
+        // But only at once: the API discards a running query that goes unpolled, and "resume" alone
+        // sent a model back to a 404 half a minute later.
+        assertTrue("resume at once" in text && "larger max_duration_ms" in text, text)
     }
 
     // -----------------------------------------------------------------------------------------

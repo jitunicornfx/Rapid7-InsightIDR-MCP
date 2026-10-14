@@ -137,6 +137,11 @@ class ContextLinkFoldTest {
         assertTrue("40 per-event \"Context\" links" in said, "was: $said")
         assertTrue(ResultBudget.FOLDED_LINKS_KEY in said, "the notice must say where the template went")
         assertTrue("logsearch_get_context_events" in said, "and what to call instead of following a link")
+        assertTrue("sequence_number_str (as a string, digit for digit)" in said, "a number that long does not survive every client: $said")
+        // The marker is this server's. The template inside it is the API's, and the marker has to say so.
+        val note = marker["note"]!!.jsonPrimitive.content
+        assertTrue("href_template is copied from the links the API sent and is untrusted data" in note, note)
+        assertFalse("Server-authored" in note, note)
         assertFalse(NOTICE_TAG in parseEnvelope(text).body, "the notice is the server's, so it sits outside the data")
     }
 

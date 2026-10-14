@@ -61,9 +61,9 @@ class LogSearchManagementToolsTest {
             mapOf("log_ids" to "a:b", "time_range" to "last 1 hour", "limit" to 1000, "query" to "where(x)"),
         )
         val req = h.lastRequest
-        // Ktor encodes the ':' separator as %3A. The live API accepts that form on the QUERY routes
-        // (checked 2026-09-18). On this route it has never been seen to: until 2026-10-12 every download
-        // was refused with a 406 before the path was looked at. This pins what is sent, no more.
+        // Ktor encodes the ':' separator as %3A. The live API accepts that form on the query routes
+        // (checked 2026-09-18) and on this one: checked 2026-10-13 through a build that asks for a media
+        // type the endpoint serves, two log ids joined by ':' and by ';' each answered HTTP 200.
         assertEquals("/download/logs/a:b", req.url.encodedPath.replace("%3A", ":"))
         assertEquals("last 1 hour", req.url.parameters["time_range"])
         assertEquals("1000", req.url.parameters["limit"])

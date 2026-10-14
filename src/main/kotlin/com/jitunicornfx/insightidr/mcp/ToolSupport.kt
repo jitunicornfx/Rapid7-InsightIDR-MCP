@@ -528,8 +528,9 @@ private fun errorHint(status: Int, body: String): String? {
  * Split out from [toToolResult] so a tool that must prepend its own explanation — the spool tool,
  * when it declines to spool a statistic query — reuses exactly the same rendering.
  */
-internal fun ApiResponse.toToolText(budget: ResultBudget = ResultBudget.active): String {
-    val rendered = renderWithinBudget(body, budget, ok)
+internal fun ApiResponse.toToolText(budget: ResultBudget = ResultBudget.active, rawText: Boolean = false): String {
+    // An error is the API's own JSON whatever the endpoint serves when it succeeds, and is shown as one.
+    val rendered = renderWithinBudget(body, budget, ok, rawText = rawText && ok)
     return buildString {
         if (!ok) {
             append("InsightIDR API returned HTTP $status.")
@@ -554,9 +555,12 @@ internal fun ApiResponse.toToolText(budget: ResultBudget = ResultBudget.active):
  *
  * [budget] defaults to the process-wide value installed at startup, so all existing call sites are
  * bounded without change; tests pass an explicit budget to exercise the ladder hermetically.
+ *
+ * [rawText] is for the one endpoint that answers in text by design, the download of log entries. Its
+ * body is shown as it arrived and is never read as an API document.
  */
-fun ApiResponse.toToolResult(budget: ResultBudget = ResultBudget.active): CallToolResult =
-    CallToolResult(content = listOf(TextContent(toToolText(budget))), isError = !ok)
+fun ApiResponse.toToolResult(budget: ResultBudget = ResultBudget.active, rawText: Boolean = false): CallToolResult =
+    CallToolResult(content = listOf(TextContent(toToolText(budget, rawText))), isError = !ok)
 
 fun errorResult(message: String): CallToolResult =
     CallToolResult(content = listOf(TextContent(message)), isError = true)

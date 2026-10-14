@@ -438,6 +438,36 @@ class LogSearchQueryToolsTest {
     }
 
     @Test
+    fun `get_context_events takes the sequence number as a string and sends every digit of it`() = runBlocking {
+        val h = harness()
+        // Nineteen digits, as spec 3.0.2's own example is: past 2^53, where a client that holds tool
+        // arguments as doubles has rounded a number before this server ever sees it.
+        val schema = h.tools().single { it.name == "logsearch_get_context_events" }.inputSchema.properties!!
+        assertEquals("string", schema["sequence_number"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+
+        h.call(
+            "logsearch_get_context_events",
+            mapOf("sequence_number" to "3234729357407797123", "timestamp" to "1700000000000", "log_key" to "lk1", "context_type" to "SURROUND"),
+        )
+        assertEquals("/query/context/3234729357407797123", h.lastRequest.url.encodedPath)
+    }
+
+    @Test
+    fun `get_context_events refuses a sequence number that is not digits, before any request`() = runBlocking {
+        // 8.05647463244786E17 is what a rounded number looks like once a client has written it out again.
+        for (bad in listOf<Any>(8.05647463244786E17, "8.05647463244786E17", "12a", "-5", "1.0", " 7")) {
+            val h = harness()
+            val result = h.call(
+                "logsearch_get_context_events",
+                mapOf("sequence_number" to bad, "timestamp" to "1", "log_key" to "lk1", "context_type" to "SURROUND"),
+            )
+            assertTrue(result.isError == true, "$bad")
+            assertEquals(0, h.requests.size, "$bad must not reach the API")
+            assertTrue("sequence_number_str" in (result.content.first() as TextContent).text, "$bad")
+        }
+    }
+
+    @Test
     fun `search stats and endpoint discovery hit their paths`() = runBlocking {
         val h = harness()
         h.call("logsearch_get_search_stats")

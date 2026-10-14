@@ -54,7 +54,7 @@ class QueryContinuationTest {
         assertTrue("(errorCode 101056)" in line)
         assertTrue("run the original query again" in line && "do not retry it" in line)
         // What makes running it again work where polling it by hand did not.
-        assertTrue("A larger poll_timeout_ms on the query tool (up to 120000)" in line, line)
+        assertTrue("poll_timeout_ms on a query tool (up to 120000), max_duration_ms on logsearch_spool_query_to_file" in line, line)
         // The hint this replaces, said to a model holding the id the API had issued a moment before.
         assertFalse("id/RRN" in line)
         // The server's voice carries none of the API's text. That stays inside the fence.

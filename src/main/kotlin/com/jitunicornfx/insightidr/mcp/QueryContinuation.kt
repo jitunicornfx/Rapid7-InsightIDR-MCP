@@ -53,8 +53,9 @@ internal const val CONTINUATION_GONE_HINT =
     "The API has no query under this continuation id (errorCode $CONTINUATION_GONE_CODE). It discards " +
         "a query that goes unpolled — the Log Search spec says to poll at least every " +
         "$CONTINUATION_POLL_SECONDS seconds — and an id or link it has discarded cannot be revived, so " +
-        "do not retry it: run the original query again. A larger poll_timeout_ms on the query tool (up " +
-        "to $LS_MAX_POLL_TIMEOUT_MS) lets this server do the polling inside one call."
+        "do not retry it: run the original query again. Giving the tool longer to wait lets this server " +
+        "do the polling inside one call: poll_timeout_ms on a query tool (up to $LS_MAX_POLL_TIMEOUT_MS), " +
+        "max_duration_ms on logsearch_spool_query_to_file."
 
 /** [code] is always one of the literals in [CONTINUATION_HINTS], never anything read from a response. */
 private fun continuationNotIssuedHint(code: String): String =

@@ -289,8 +289,12 @@ integerParam(
                 // Treated as a final page this reads as "no events matched ... COMPLETE" - an
                 // authoritative false negative from a search that had not finished searching.
                 continuationLink(response.body)?.let { self ->
+                    // "Resume" alone sent a model back half a minute later, to a 404: the API discards
+                    // a running query that goes unpolled (see QueryContinuation.kt for what was measured).
                     status = "INCOMPLETE — the query was still running when the time allowed for it ran out; " +
-                        "resume to keep waiting for it"
+                        "resume at once to keep waiting for it, because the API discards a query that goes " +
+                        "unpolled (its spec says to poll every $CONTINUATION_POLL_SECONDS seconds), or run it " +
+                        "again with a larger max_duration_ms"
                     complete = false
                     resumeHref = self
                     break@loop

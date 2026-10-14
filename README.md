@@ -117,7 +117,7 @@ Serves two MCP transports on one port:
 |---|---|---|
 | `/mcp` | **Streamable HTTP** (current MCP spec) | Always, if your client supports it. |
 | `/sse` | HTTP+SSE (the older transport) | Your client only speaks the older transport. |
-| `/` | HTTP+SSE, **deprecated** | Never for new setups. This is where 0.3.x served it; it stays for one release so that a self-updated server does not strand existing clients, and will then be removed. Move to `/mcp` or `/sse`. |
+| `/` | HTTP+SSE, **deprecated** | Never for new setups. This is where 0.3.x served it; it is kept so that a self-updated server does not strand existing clients, and will be removed in a later release. Move to `/mcp` or `/sse`. |
 
 So a client URL looks like `http://127.0.0.1:3001/mcp`.
 
@@ -321,8 +321,9 @@ see `INSIGHTIDR_LOG_SEARCH_BASE_URL` to target the unified route
   running when the tool stops waiting leaves a continuation id to poll; the API discards one that is
   not polled — its spec says at least every 20 seconds — and then answers HTTP 404, which comes back
   explained as "run the query again", not as a wrong id. A rate-limited call (HTTP 429) comes back
-  with the wait the API asked for, read from its `Retry-After` header and restated by the server as a
-  number of seconds; that path follows the spec and has not yet been seen live):
+  with the wait the API asked for, read from its `Retry-After` header (or, for Log Search, from
+  `X-RateLimit-Reset` when that one is missing) and restated by the server as a number of seconds;
+  that path follows the spec and has not yet been seen live):
   `logsearch_query_log`, `logsearch_query_logs`, `logsearch_query_logset`,
   `logsearch_query_logsets_by_name`, `logsearch_poll_query`, `logsearch_get_next_page`,
   `logsearch_get_context_events`, `logsearch_get_search_stats`, `logsearch_list_query_endpoints`
@@ -367,12 +368,20 @@ Above it the server degrades in steps, each one lossier than the last:
    `data`, …). The result is still **valid, parseable JSON**, and carries an `_mcp_truncated` object
    recording how many entries were returned and dropped. The `links` array is never trimmed, so the
    `rel: "Next"` href always survives and pagination keeps working.
-3. **Cut** — for a response with no trimmable array, or one that isn't JSON at all (a raw log
-   download). The cut prefers a line boundary, so line-oriented output ends on a whole record.
+3. **Cut** — for a response with no trimmable array, one that isn't JSON at all (a raw log
+   download), or one too large to read as JSON: longer than 16,000,000 characters, or holding more
+   than 1,000,000 JSON values. The cut prefers a line boundary, so line-oriented output ends on a
+   whole record.
 
 Whenever anything was compacted or dropped, a server-authored notice is appended **outside** the
 untrusted-data envelope, saying exactly what happened and what to do instead. Error bodies are never
 trimmed below a floor, so the diagnostic you need to fix a failing call always survives.
+
+Apart from that a response is shown as the API sent it. Text that only resembles JSON is shown as
+text, not rewritten into JSON; numbers keep the digits they were written with; and when an object
+repeats a key — read as JSON, only the last member under a key survives — a notice says how many
+members are missing. A log download (`logsearch_download_log_data`) is log entries, one to a line,
+and is always shown as text, never read as a document.
 
 ### Repeated Context links
 
@@ -383,12 +392,13 @@ event, and the link lists every log the query covered: 189 characters for one lo
 
 The link holds nothing the result does not. Its path ends in the event's own `sequence_number_str`,
 its `timestamp` parameter is the event's `timestamp`, and the rest is identical on every event. So
-when the per-event copies cost 5,000 characters or more, the server **folds** them into one
+when folding them saves 5,000 characters or more, the server **folds** them into one
 `_mcp_folded_links` object in the data block — the link as a template, with `{sequence_number_str}`
 and `{timestamp}` where the event's own values go — and says so in a notice outside the envelope.
 Nothing is lost: each event's link is that template with the event's two fields filled in. To read
-the events around one, call `logsearch_get_context_events` with its `sequence_number_str`,
-`timestamp` and `log_id`. (Audit logs are the exception: the API has no context endpoint for them,
+the events around one, call `logsearch_get_context_events` with its `sequence_number_str` (as a
+string: it is too long for a JSON number to arrive intact from every client), `timestamp` and
+`log_id`. (Audit logs are the exception: the API has no context endpoint for them,
 and answers the links it puts on their events with HTTP 404.)
 
 The fold is all or nothing. Unless *every* event carries exactly that one link, and every link is

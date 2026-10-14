@@ -173,7 +173,8 @@ fun Server.registerLogSearchManagementTools(client: Rapid7Client) {
             ),
             base = ApiBase.LOG_SEARCH,
             accept = LS_DOWNLOAD_ACCEPT,
-        ).toToolResult()
+        // Log entries, one to a line, each written by whoever wrote the log: text, never a document.
+        ).toToolResult(rawText = true)
     }
 
     // ------------------------------------------------------------------

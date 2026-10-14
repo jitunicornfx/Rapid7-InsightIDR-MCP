@@ -8,6 +8,9 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 
+/** A sequence number as the API writes it: digits, and no more of them than one path segment holds. */
+private val SEQUENCE_NUMBER = Regex("^[0-9]{1,32}$")
+
 /**
  * Log Search API — querying log data with LEQL, and Saved Queries.
  * Query endpoints are asynchronous (202 + continuation links); tools poll to completion by default.
@@ -192,7 +195,16 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
             "(Log Search API, GET /query/context/{sequence_number}).",
         readOnly = true,
         inputSchema = toolSchema("sequence_number", "timestamp", "log_key", "context_type") {
-            integerParam("sequence_number", "The sequence number of the log entry to fetch context for.")
+            // A string, not an integer. Spec 3.0.2's own example of one is 3234729357407797000:
+            // nineteen digits, past the 2^53 that a client holding tool arguments as doubles carries
+            // exactly, and already rounded in the example. The API returns sequence_number_str beside
+            // sequence_number on every event, and the fold notice sends a model here with it.
+            stringParam(
+                "sequence_number",
+                "The sequence number of the log entry to fetch context for: the event's " +
+                    "sequence_number_str, passed as a string, digit for digit. Passed as a number it can " +
+                    "be rounded before it gets here, and the context of some other entry comes back.",
+            )
             stringParam("timestamp", "The timestamp of the log entry to fetch contextual events for.")
             stringParam("log_key", "The key of the log containing the log entry.")
             stringParam("context_type", "Which context to return relative to the entry.", enum = listOf("BEFORE", "AFTER", "SURROUND"))
@@ -203,9 +215,15 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
         },
     ) { args ->
         val (wait, timeout) = args.pollArgs()
+        // Digits or nothing. A number a client rewrote as 8.05E17 is refused here, where the reason
+        // can be given, and is not sent on to be answered as some other entry or as a bare 400.
+        val sequence = args.requireString("sequence_number")
+        require(SEQUENCE_NUMBER.matches(sequence)) {
+            "'sequence_number' must be the digits of the event's sequence_number_str, passed as a string."
+        }
         client.submitLogSearchQuery(
             HttpMethod.Get,
-            "/query/context/${seg(args.requireString("sequence_number"))}",
+            "/query/context/${seg(sequence)}",
             query = query(
                 "timestamp" to args.requireString("timestamp"),
                 "log_keys" to args.requireString("log_key"),
