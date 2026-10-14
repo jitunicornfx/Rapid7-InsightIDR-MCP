@@ -62,6 +62,25 @@ class ToolSchemaBoundsTest {
     }
 
     @Test
+    fun `every sequence_number is asked for as a string, and as the event's sequence_number_str`() {
+        // Nineteen digits, as spec 3.0.2's own examples have, is past the 2^53 that a client holding
+        // tool arguments as doubles carries exactly. In 0.4.2 the context tool's was a string and the
+        // six query tools' paging one was still an integer.
+        val found = declaring("sequence_number")
+        assertEquals(
+            listOf(
+                "logsearch_audit_query_log", "logsearch_audit_query_logs", "logsearch_get_context_events",
+                "logsearch_query_log", "logsearch_query_logs", "logsearch_query_logset", "logsearch_query_logsets_by_name",
+            ),
+            found.map { it.first }.sorted(),
+        )
+        for ((tool, schema) in found) {
+            assertEquals("string", schema.getValue("type").jsonPrimitive.content, "$tool sequence_number type")
+            assertTrue("sequence_number_str" in schema.getValue("description").jsonPrimitive.content, tool)
+        }
+    }
+
+    @Test
     fun `every parameter that could carry LEQL is classified, and the measured ones state the clause order`() {
         // Found two ways, because the tools do not agree on a name: by the names LEQL parameters have
         // here (query, statement, leql), and by any description that mentions LEQL at all. That is a

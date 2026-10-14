@@ -308,7 +308,13 @@ see `INSIGHTIDR_LOG_SEARCH_BASE_URL` to target the unified route
 
 - **Query log data** (async queries auto-poll to completion; disable with `wait_for_completion=false`;
   `per_page` defaults to 100, which usually fits the response budget, and paginated results expose a
-  `rel: "Next"` link — pass its href to `logsearch_get_next_page` for the next page. Statistic
+  `rel: "Next"` link — pass its href to `logsearch_get_next_page` for the next page. Wherever a
+  tool takes a `sequence_number` — `logsearch_get_context_events`, and as a paging parameter
+  `logsearch_query_log`, `_logs`, `_logset`, `_logsets_by_name` and the two audit query tools, where
+  the spec says it adds the entries of the `from` millisecond with larger sequence numbers — it is
+  an event's `sequence_number_str`, passed as a string: nineteen digits do not arrive intact as a
+  JSON number from every client. A number is taken only up to fifteen digits, which a double holds
+  exactly, and any other value is refused before any request is made. Statistic
   queries — those using `calculate()` or `groupby()` — can't be paginated; the server detects the
   API's "pagination not supported" rejection and transparently re-runs them without pagination, so
   they just work. LEQL clauses must appear in the order `select() where() groupby() calculate()

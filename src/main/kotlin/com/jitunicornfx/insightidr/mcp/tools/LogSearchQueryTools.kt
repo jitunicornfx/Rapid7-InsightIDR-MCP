@@ -8,12 +8,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 
-/** A sequence number as the API writes it: digits, and no more of them than one path segment holds. */
-private val SEQUENCE_NUMBER = Regex("^[0-9]{1,32}$")
-
-/** Every whole number of this many digits is below 2^53 (9,007,199,254,740,992), so a double holds it exactly. */
-private const val MAX_EXACT_NUMBER_DIGITS = 15
-
 /**
  * Log Search API — querying log data with LEQL, and Saved Queries.
  * Query endpoints are asynchronous (202 + continuation links); tools poll to completion by default.
@@ -218,20 +212,8 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
         },
     ) { args ->
         val (wait, timeout) = args.pollArgs()
-        // Digits or nothing. A number a client rewrote as 8.05E17 is refused here, where the reason
-        // can be given, and is not sent on to be answered as some other entry or as a bare 400.
-        val sequence = args.requireString("sequence_number")
-        require(SEQUENCE_NUMBER.matches(sequence)) {
-            "'sequence_number' must be the digits of the event's sequence_number_str, passed as a string."
-        }
-        // A rounded number is still nothing but digits, so the check above cannot see one. What can be
-        // seen is how it arrived: as a JSON number of more digits than a double carries exactly, it
-        // may have been rounded on the way, and only a string is known to be the digits the API wrote.
-        val arrivedAsString = (args["sequence_number"] as? kotlinx.serialization.json.JsonPrimitive)?.isString == true
-        require(arrivedAsString || sequence.length <= MAX_EXACT_NUMBER_DIGITS) {
-            "'sequence_number' arrived as a JSON number too long to be sure it was not rounded on the way. " +
-                "Pass the event's sequence_number_str as a string."
-        }
+        // The same rule as the query tools' paging sequence_number: see sequenceNumberOrNull.
+        val sequence = args.requireSequenceNumber()
         client.submitLogSearchQuery(
             HttpMethod.Get,
             "/query/context/${seg(sequence)}",

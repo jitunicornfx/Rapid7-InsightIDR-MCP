@@ -1,6 +1,7 @@
 package com.jitunicornfx.insightidr.mcp
 
 import com.jitunicornfx.insightidr.mcp.testutil.parseEnvelope
+import com.jitunicornfx.insightidr.mcp.tools.registerLogSearchAuditTools
 import com.jitunicornfx.insightidr.mcp.tools.registerLogSearchQueryTools
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
@@ -457,7 +458,7 @@ class LogSearchQueryToolsTest {
         // 8.05647463244786E17 is what a rounded number looks like once a client has written it out again.
         // And a number of nineteen digits may be one a client rounded and wrote out in full: it is all
         // digits, so only the fact that it did not arrive as a string gives it away.
-        for (bad in listOf<Any>(8.05647463244786E17, "8.05647463244786E17", "12a", "-5", "1.0", " 7", 3234729357407797000L, 1234567890123456L)) {
+        for (bad in listOf<Any>(8.05647463244786E17, "8.05647463244786E17", "12a", "-5", "1.0", " 7", "", 3234729357407797000L, 1234567890123456L)) {
             val h = harness()
             val result = h.call(
                 "logsearch_get_context_events",
@@ -466,6 +467,15 @@ class LogSearchQueryToolsTest {
             assertTrue(result.isError == true, "$bad")
             assertEquals(0, h.requests.size, "$bad must not reach the API")
             assertTrue("sequence_number_str" in (result.content.first() as TextContent).text, "$bad")
+        }
+        // Here the sequence number is the path, so none at all is refused too: the query tools' paging
+        // one shares the rule above, and only there is leaving it out allowed.
+        for (missing in listOf(emptyMap(), mapOf("sequence_number" to null))) {
+            val h = harness()
+            val result = h.call("logsearch_get_context_events", missing + mapOf("timestamp" to "1", "log_key" to "lk1", "context_type" to "SURROUND"))
+            assertTrue(result.isError == true, "$missing")
+            assertEquals(0, h.requests.size, "$missing must not reach the API")
+            assertTrue("Missing required parameter 'sequence_number'" in (result.content.first() as TextContent).text, "$missing")
         }
     }
 
@@ -478,6 +488,70 @@ class LogSearchQueryToolsTest {
             mapOf("sequence_number" to 999999999999999L, "timestamp" to "1", "log_key" to "lk1", "context_type" to "SURROUND"),
         )
         assertEquals("/query/context/999999999999999", h.lastRequest.url.encodedPath)
+    }
+
+    /** The six tools that take sequence_number as a paging parameter, each with the least it needs to run. */
+    private val pagingTools = listOf(
+        "logsearch_query_log" to mapOf("log_key" to "lk1", "time_range" to "today"),
+        "logsearch_query_logs" to mapOf("log_keys" to listOf("lk1"), "time_range" to "today"),
+        "logsearch_query_logset" to mapOf("logset_id" to "ls1", "time_range" to "today"),
+        "logsearch_query_logsets_by_name" to mapOf("logset_name" to listOf("Firewall"), "time_range" to "today"),
+        "logsearch_audit_query_log" to mapOf("log_key" to "al1", "time_range" to "today"),
+        "logsearch_audit_query_logs" to mapOf("log_keys" to listOf("al1"), "time_range" to "today"),
+    )
+
+    private suspend fun pagingHarness() = mcpHarness(responseBody = """{"events":[]}""") {
+        registerLogSearchQueryTools(it)
+        registerLogSearchAuditTools(it)
+    }
+
+    @Test
+    fun `the paging sequence_number is a string on all six query tools, and every digit of it is sent`() = runBlocking {
+        // The same nineteen digits as logsearch_get_context_events takes: in 0.4.2 that tool's was a
+        // string and these six still declared an integer, which a client holding numbers as doubles
+        // rounds before this server sees it.
+        val h = pagingHarness()
+        val schemas = h.tools().associate { it.name to it.inputSchema.properties!! }
+        for ((tool, args) in pagingTools) {
+            assertEquals("string", schemas.getValue(tool)["sequence_number"]!!.jsonObject["type"]!!.jsonPrimitive.content, tool)
+
+            val result = h.call(tool, args + ("sequence_number" to "3234729357407797123"))
+            assertFalse(result.isError == true, "$tool: ${(result.content.first() as TextContent).text}")
+            assertEquals("3234729357407797123", h.lastRequest.url.parameters["sequence_number"], tool)
+        }
+    }
+
+    @Test
+    fun `a paging sequence_number that may not be the event's own is refused before any request, and one that can only be is sent`() = runBlocking {
+        // Through 0.4.2 a value that could not be read as a Long was left off the request without a
+        // word, so the query started from a different place; and a long JSON number was sent as it
+        // arrived, rounded or not. 8.05647463244786E17 is what a rounded number looks like once a
+        // client has written it out again, and 3234729357407797000 what it looks like written in full.
+        val notDigits = listOf<Any>(8.05647463244786E17, "8.05647463244786E17", "12a", "-5", "1.0", " 7", "", true, listOf("7"))
+        val tooLongANumber = listOf<Any>(3234729357407797000L, 1_000_000_000_000_000L)
+        val h = pagingHarness()
+        for ((tool, args) in pagingTools) {
+            for (bad in notDigits + tooLongANumber) {
+                val before = h.requests.size
+                val result = h.call(tool, args + ("sequence_number" to bad))
+                val text = (result.content.first() as TextContent).text
+                assertTrue(result.isError == true, "$tool with $bad")
+                assertEquals(before, h.requests.size, "$tool: $bad must not reach the API")
+                assertTrue("sequence_number_str" in text, "$tool with $bad: $text")
+                if (bad in tooLongANumber) assertTrue("rounded" in text, "$tool with $bad: the reason is given: $text")
+            }
+
+            // Fifteen digits is below 2^53 whatever they are, so nothing can have rounded it.
+            h.call(tool, args + ("sequence_number" to 999_999_999_999_999L))
+            assertEquals("999999999999999", h.lastRequest.url.parameters["sequence_number"], tool)
+
+            // Not sent at all, or sent as null: the query starts where it always did.
+            for (absent in listOf(args, args + ("sequence_number" to null))) {
+                val result = h.call(tool, absent)
+                assertFalse(result.isError == true, "$tool: ${(result.content.first() as TextContent).text}")
+                assertFalse("sequence_number" in h.lastRequest.url.parameters.names(), tool)
+            }
+        }
     }
 
     @Test

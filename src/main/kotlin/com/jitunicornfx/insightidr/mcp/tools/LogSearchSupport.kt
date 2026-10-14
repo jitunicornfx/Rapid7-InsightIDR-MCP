@@ -290,8 +290,63 @@ internal fun JsonObjectBuilder.queryResultParams() {
     integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to $LS_DEFAULT_PER_PAGE, which usually fits the response budget; larger pages are likely to be truncated. Ignored for statistic (calculate/groupby) queries, which cannot be paginated.", min = 1, max = LS_MAX_PER_PAGE.toLong(), default = LS_DEFAULT_PER_PAGE.toLong())
     booleanParam("most_recent_first", "When true, return the most recent events first. Defaults to false.")
     booleanParam("kvp_info", "When true, include parsed key-value-pair info for each returned log entry.")
-    integerParam("sequence_number", "Include entries in the 'from' millisecond with sequence numbers at/after this value.")
+    // A string, for the reason logsearch_get_context_events' is; see sequenceNumberOrNull. Through
+    // 0.4.2 this said "at/after this value", where spec 3.0.2 says "larger than the one specified".
+    stringParam(
+        "sequence_number",
+        "With this set, the results also include the entries received in the 'from' millisecond whose " +
+            "sequence numbers are larger than this one. Pass an event's sequence_number_str, as a string, " +
+            "digit for digit. Passed as a number it can be rounded before it gets here, and is then no " +
+            "longer that event's sequence number. Ignored for statistic (calculate/groupby) queries, " +
+            "which cannot be paginated.",
+    )
 }
+
+/**
+ * A sequence number as the API writes it: digits, and at most 32 of them, which bounds what goes into
+ * a path or a query string. Spec 3.0.2's own examples have nineteen.
+ */
+private val SEQUENCE_NUMBER = Regex("^[0-9]{1,32}$")
+
+/** Every whole number of this many digits is below 2^53 (9,007,199,254,740,992), so a double holds it exactly. */
+private const val MAX_EXACT_NUMBER_DIGITS = 15
+
+/**
+ * The digits of the `sequence_number` argument, or null when none was sent (absent or JSON null).
+ * One rule for both places it is taken: the path of logsearch_get_context_events
+ * ([requireSequenceNumber]) and the paging parameter of the six query tools ([queryResultQuery]).
+ *
+ * Spec 3.0.2's own example of one is 3234729357407797000: nineteen digits, past the 2^53 that a
+ * client holding tool arguments as doubles carries exactly, and already rounded in the example. The
+ * API returns sequence_number_str beside sequence_number on every event, and that is what is asked for.
+ *
+ * Present but not known to be those digits is refused, never left off. Until this was shared, the query
+ * tools read it with [longOrNull], so a number a client rewrote as 8.05E17 became null and the query
+ * was sent without it - starting from a different place, without a word - and a rounded nineteen-digit
+ * number was sent as it arrived.
+ */
+internal fun JsonObject.sequenceNumberOrNull(): String? {
+    val sent = elementOrNull("sequence_number") ?: return null
+    // Digits or nothing. A number a client rewrote as 8.05E17 is refused here, where the reason can be
+    // given, and is not sent on to be answered as some other entry or as a bare 400.
+    val digits = (sent as? kotlinx.serialization.json.JsonPrimitive)?.content
+    require(digits != null && SEQUENCE_NUMBER.matches(digits)) {
+        "'sequence_number' must be the digits of the event's sequence_number_str, passed as a string."
+    }
+    // A rounded number is still nothing but digits, so the check above cannot see one. What can be
+    // seen is how it arrived: as a JSON number of more digits than a double carries exactly, it
+    // may have been rounded on the way, and only a string is known to be the digits the API wrote.
+    val arrivedAsString = (sent as? kotlinx.serialization.json.JsonPrimitive)?.isString == true
+    require(arrivedAsString || digits.length <= MAX_EXACT_NUMBER_DIGITS) {
+        "'sequence_number' arrived as a JSON number too long to be sure it was not rounded on the way. " +
+            "Pass the event's sequence_number_str as a string."
+    }
+    return digits
+}
+
+/** [sequenceNumberOrNull], where the sequence number is required. */
+internal fun JsonObject.requireSequenceNumber(): String =
+    sequenceNumberOrNull() ?: throw IllegalArgumentException("Missing required parameter 'sequence_number'")
 
 /** Polling controls shared by all asynchronous query tools. */
 internal fun JsonObjectBuilder.pollingParams() {
@@ -362,7 +417,7 @@ internal fun queryResultQuery(args: JsonObject): Map<String, List<String>> = que
     "per_page" to perPage(args),
     "most_recent_first" to args.booleanOrNull("most_recent_first"),
     "kvp_info" to args.booleanOrNull("kvp_info"),
-    "sequence_number" to args.longOrNull("sequence_number"),
+    "sequence_number" to args.sequenceNumberOrNull(),
 )
 
 /** The `during` window built from `from`/`to`/`time_range`, or null when the caller gave none of them. */
