@@ -306,11 +306,13 @@ class Rapid7Client(
         // malformed header must not cost the caller the response - nor put API-chosen text into an
         // error message - so both uses of it are guarded, and the fallback is UTF-8.
         val charset = runCatching { charset() }.getOrNull() ?: Charsets.UTF_8
+        // Nothing about the body's format: this is every response, and a download is shown as the text
+        // it is and never read as JSON. In 0.4.2 the note called what was shown "not complete JSON".
         val notes = listOfNotNull(
             if (!cutOff) null else
                 "The API's response was larger than ${maxResponseBytes / (1024 * 1024)} MiB and was cut off " +
-                    "there, before rendering; what is shown is only its beginning, and is not complete " +
-                    "JSON. Ask for less: a shorter time window, a smaller 'limit' or page size, or a filter.",
+                    "there, before rendering; what is shown is only its beginning. Ask for less: a shorter " +
+                    "time window, a smaller 'limit' or page size, or a filter.",
             // A 429 only. The same headers on any other response are not an instruction to wait.
             if (status.value == HTTP_TOO_MANY_REQUESTS) rateLimitNote(retryWait(logSearch), logSearch) else null,
         )

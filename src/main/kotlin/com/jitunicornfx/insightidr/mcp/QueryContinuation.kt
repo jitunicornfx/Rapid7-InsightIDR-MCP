@@ -76,6 +76,27 @@ private val CONTINUATION_HINTS: Map<Pair<Int, String>, String> = mapOf(
 internal fun continuationHint(status: Int, errorCode: String?): String? =
     errorCode?.let { CONTINUATION_HINTS[status to it] }
 
+/**
+ * What a query tool says of a result that still carries a rel="Self" link: the query had not finished,
+ * and what the result holds is not its answer.
+ *
+ * Both halves are the spec's. Spec 3.0.2 says a query "is completed and requires no further polling"
+ * when its response has no link with rel "Self", and that a poll of one still running returns its
+ * progress, and "a partial calculation or some partial search results may be returned". In 0.4.2 a
+ * query tool whose wait ran out returned that body as a success with nothing said, and a partial count
+ * read like the count.
+ *
+ * Fixed text, like the hints above: it repeats nothing from the request or the response.
+ */
+internal const val UNFINISHED_QUERY_NOTE =
+    "The query had not finished when this result was returned: it still carries a rel=\"Self\" link, which " +
+        "per the Log Search spec a result carries only while its query is running, and until then what it " +
+        "holds may be partial search results or a partial calculation. Do not report it as the query's " +
+        "answer. To keep waiting, pass its \"id\" at once to logsearch_poll_query (logsearch_audit_poll_query " +
+        "for an audit query): the API discards a query that goes unpolled, and its spec says to poll at " +
+        "least every $CONTINUATION_POLL_SECONDS seconds. Or run the query again with a larger " +
+        "poll_timeout_ms (up to $LS_MAX_POLL_TIMEOUT_MS)."
+
 /** Closes the description of both poll tools, so the rule is read before the id is left to go stale. */
 internal const val CONTINUATION_POLL_GUIDANCE =
     "The API discards a query that is not polled regularly — the Log Search spec says at least every " +

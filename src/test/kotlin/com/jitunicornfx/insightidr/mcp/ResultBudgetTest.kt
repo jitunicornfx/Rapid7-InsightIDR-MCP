@@ -182,7 +182,8 @@ class ResultBudgetTest {
 
         val lastLine = fenced(text).lines().last()
         assertTrue(Regex("""^line-\d+ z+$""").matches(lastLine), "expected a whole final line, got: $lastLine")
-        assertTrue("NOT valid JSON" in text)
+        // A prefix of text that is not JSON can be, so the block is not called anything but a prefix.
+        assertTrue("PREFIX" in text)
         assertTrue("was not JSON" in text)
     }
 
@@ -193,6 +194,127 @@ class ResultBudgetTest {
 
         assertTrue(fenced(text).length <= 4_000)
         assertTrue("no top-level array to trim" in text)
+    }
+
+    // What a cut notice says about the response, and about the block it kept. It is in the server's
+    // own voice, outside the envelope, so each sentence of it has to be something the server found out.
+
+    private val noTrimFits =
+        "\nThe response had a top-level array, but it would not fit even with that array trimmed to its first entry.\n"
+
+    @Test
+    fun `a document with an array that no trim makes fit is not said to have no array`() {
+        // In 0.4.2 every document the trim gave up on was said to have "no top-level array to trim",
+        // these among them.
+        val next = """"links":[{"rel":"Next","href":"https://us.rest.logs.insight.rapid7.com/query/next-1"}]"""
+        val big = "m".repeat(250_000)
+        val bodies = mapOf(
+            "a first event over the budget on its own" to """{"events":[{"message":"$big"},{"message":"second"}],$next}""",
+            "one event, which the trim keeps or nothing" to """{"events":[{"message":"$big"}],$next}""",
+            "events that fit, beside a member that does not" to """{"events":[{"id":0},{"id":1}],"blob":"$big"}""",
+            "a bare array" to """["$big","second"]""",
+        )
+        for ((name, body) in bodies) {
+            val rendered = renderWithinBudget(body, ResultBudget(), ok = true)
+
+            assertEquals(BudgetStrategy.HARD_CUT, rendered.strategy, "precondition: $name was cut, not trimmed")
+            val notice = rendered.notice!!
+            assertTrue(noTrimFits in notice, "$name: $notice")
+            assertFalse("no top-level array" in notice, "$name: $notice")
+        }
+    }
+
+    @Test
+    fun `a document with no array the trim may take entries from is still said to have none`() {
+        val blob = """"blob":"${"b".repeat(250_000)}""""
+        // links is never trimmed, and an empty array has nothing in it to trim.
+        val bodies = listOf("{$blob}", """{$blob,"links":[{"rel":"Next","href":"https://x/next"}]}""", """{"events":[],$blob}""")
+        for (body in bodies) {
+            val notice = renderWithinBudget(body, ResultBudget(), ok = true).notice!!
+
+            assertTrue("\nThe response had no top-level array to trim.\n" in notice, notice)
+            assertFalse(noTrimFits in notice, notice)
+        }
+    }
+
+    @Test
+    fun `JSON the server cannot encode again is not said to be something other than JSON`() {
+        // Deeper than the encoder goes, so it is cut as the text it arrived as - and in 0.4.2 the
+        // notice said "The response was not JSON." of it.
+        val deep = """{"a":""".repeat(20_000) + "\"" + "x".repeat(100_000) + "\"" + "}".repeat(20_000)
+        val parsed = JsonCodec.compact.parseToJsonElement(deep)
+        assertTrue(isJson(parsed), "precondition: it is JSON")
+        assertTrue(runCatching { parsed.encoded() }.isFailure, "precondition: and it cannot be encoded")
+
+        val rendered = renderWithinBudget(deep, ResultBudget(maxChars = 50_000), ok = true)
+
+        assertEquals(deep.take(50_000), rendered.text, "the start of it, as it arrived")
+        val notice = rendered.notice!!
+        assertTrue(
+            "\nThe response was JSON, but this server could not encode it again to trim it, so it was cut as the " +
+                "text it arrived as.\n" in notice,
+            notice,
+        )
+        assertFalse("was not JSON" in notice, notice)
+    }
+
+    private val calledInvalid = "The block above is a PREFIX of the response and is NOT valid JSON"
+
+    @Test
+    fun `a cut block is called invalid JSON only when it is the start of a document this server encoded`() {
+        // One JSON object to a line, the first longer than the sample floor and the second longer than
+        // the rest of the budget: the line cut keeps the first line alone, and that IS valid JSON.
+        fun line(length: Int) = """{"message":"${"m".repeat(length)}"}"""
+        val lines = line(2_500) + "\n" + line(5_000) + "\n"
+        val budget = ResultBudget(maxChars = 3_000)
+        for (rawText in listOf(false, true)) {
+            val rendered = renderWithinBudget(lines, budget, ok = true, rawText = rawText)
+
+            assertEquals(line(2_500), rendered.text, "precondition: one whole line was kept")
+            val notice = rendered.notice!!
+            assertFalse(calledInvalid in notice, "rawText=$rawText: $notice")
+            assertTrue(" The block above is a PREFIX of the response — do not take it for the whole of it.\n" in notice, notice)
+        }
+
+        // The start of a long number is a number.
+        val number = "1" + "2".repeat(4_999)
+        val digits = renderWithinBudget(number, ResultBudget(maxChars = 2_000), ok = true)
+        assertEquals(number.take(2_000), digits.text, "precondition: parsed, and cut")
+        assertFalse(calledInvalid in digits.notice!!, digits.notice)
+
+        // The start of an object, an array or a string as this server encoded it ends before the
+        // character that would close it.
+        val big = "b".repeat(250_000)
+        for (body in listOf("""{"blob":"$big"}""", """["$big","second"]""", "\"$big\"")) {
+            val notice = renderWithinBudget(body, ResultBudget(), ok = true).notice!!
+            assertTrue(calledInvalid in notice, notice)
+        }
+    }
+
+    @Test
+    fun `text with Windows line endings is cut before the carriage return, and is as long as the notice says`() {
+        // A line cut kept the CR of the CRLF it ended at. Without its LF the envelope shows a CR
+        // escaped, so the block ended in \u000d and was five characters longer than the notice said.
+        val crlf = (0 until 400).joinToString("") { "entry $it ${"z".repeat(40)}\r\n" }
+        val lineCut = parseEnvelope(ApiResponse(200, true, crlf, "application/octet-stream").toToolText(ResultBudget(maxChars = 3_000), rawText = true))
+
+        assertFalse("\\u000d" in lineCut.body, lineCut.body.takeLast(60))
+        assertTrue(lineCut.body.endsWith("z".repeat(40)), "a whole last line")
+        assertTrue("was CUT to ${lineCut.body.length} to fit" in lineCut.after, lineCut.after)
+
+        // A cut that falls between the two characters of a CRLF.
+        val split = "a".repeat(2_999) + "\r\n" + "b".repeat(5_000)
+        val hardCut = parseEnvelope(ApiResponse(200, true, split, null).toToolText(ResultBudget(maxChars = 3_000), rawText = true))
+
+        assertEquals("a".repeat(2_999), hardCut.body)
+        assertTrue("was CUT to 2999 to fit" in hardCut.after, hardCut.after)
+
+        // A line is cut at only where it ends at the sample floor or past it, and a CRLF line ends at its CR.
+        val atFloor = "a".repeat(999) + "\r\n" + "b".repeat(5_000)
+        val floored = renderWithinBudget(atFloor, ResultBudget(maxChars = 2_000), ok = true, rawText = true)
+
+        assertFalse(floored.text.endsWith("\r"), "a CR without its LF")
+        assertTrue(floored.text.length >= ResultBudget.DEFAULT_SAMPLE_FLOOR_CHARS, "${floored.text.length} characters")
     }
 
     @Test
@@ -967,8 +1089,10 @@ class ResultBudgetTest {
     private fun cutOfWhole(whole: String, budget: ResultBudget): Pair<String, String?> {
         if (whole.length <= budget.maxChars) return whole to null
         var kept = whole.take(maxOf(budget.maxChars, budget.sampleFloorChars))
-        val lastBreak = kept.lastIndexOf('\n')
+        // A line ends before its break, and the break of a CRLF begins at its CR.
+        val lastBreak = kept.lastIndexOf('\n').let { if (it > 0 && kept[it - 1] == '\r') it - 1 else it }
         if (lastBreak >= budget.sampleFloorChars) kept = kept.substring(0, lastBreak)
+        if (kept.endsWith("\r")) kept = kept.dropLast(1)
         if (kept.isNotEmpty() && kept.last().isHighSurrogate()) kept = kept.dropLast(1)
         return kept to "This response was ${whole.length} characters and was CUT to ${kept.length} to fit"
     }
@@ -1149,13 +1273,15 @@ class ResultBudgetTest {
             { n -> "\u200B".repeat(40) + "ab ".repeat(n / 3 + 1).take(n - 240) },
             { n -> "x".repeat(n % 28) + ("entry " + "\u200B".repeat(3) + " ok ").repeat(n / 28) },
         )
-        // A body no rung can keep as a document, and how much of its encoding comes before the string:
-        // one bare token, a member of an object, and the first entry of an array - which the trim
-        // measures, finds is already too much to keep, and hands on to the cut.
-        val shapes = listOf<Pair<Int, (String) -> JsonElement>>(
-            1 to { text -> JsonPrimitive(text) },
-            12 to { text -> buildJsonObject { put("message", text) } },
-            2 to { text -> JsonArray(listOf(JsonPrimitive(text), JsonPrimitive("x"))) },
+        // A body no rung can keep as a document, how much of its encoding comes before the string, and
+        // what the notice says about why: one bare token, a member of an object, and the first entry of
+        // an array - which the trim measures, finds is already too much to keep, and hands on to the cut.
+        val noArray = "The response had no top-level array to trim."
+        val noTrimFits = "The response had a top-level array, but it would not fit even with that array trimmed to its first entry."
+        val shapes = listOf<Triple<Int, String, (String) -> JsonElement>>(
+            Triple(1, noArray) { text -> JsonPrimitive(text) },
+            Triple(12, noArray) { text -> buildJsonObject { put("message", text) } },
+            Triple(2, noTrimFits) { text -> JsonArray(listOf(JsonPrimitive(text), JsonPrimitive("x"))) },
         )
         val budgets = listOf(
             ResultBudget(maxChars = 3_000), // the limit decides how much a cut keeps
@@ -1164,7 +1290,7 @@ class ResultBudgetTest {
         )
         for (budget in budgets) {
             val keep = maxOf(budget.maxChars, budget.sampleFloorChars)
-            for ((before, shape) in shapes) for (lead in leads) for (straddler in straddlers) for (at in keep - 14..keep + 2) {
+            for ((before, why, shape) in shapes) for (lead in leads) for (straddler in straddlers) for (at in keep - 14..keep + 2) {
                 val raw = shape(lead(at - before) + straddler + " tail " + "y z ".repeat(1_500)).encoded()
                 val (data, lengths) = cutOfWholeEscapedEncoding(raw, budget)
 
@@ -1173,7 +1299,7 @@ class ResultBudgetTest {
                 val case = "limit ${budget.maxChars}, ${straddler.map { "%04x".format(it.code) }} at $at after $before"
                 assertEquals(data, rendered.text, case)
                 assertTrue(lengths!! in rendered.notice!!, "$case: ${rendered.notice}")
-                assertTrue("The response had no top-level array to trim." in rendered.notice, case)
+                assertTrue(why in rendered.notice, "$case: ${rendered.notice}")
                 // A compact encoding has no line to end on: the encoder writes a line feed as \n.
                 assertEquals(BudgetStrategy.HARD_CUT, rendered.strategy, case)
             }

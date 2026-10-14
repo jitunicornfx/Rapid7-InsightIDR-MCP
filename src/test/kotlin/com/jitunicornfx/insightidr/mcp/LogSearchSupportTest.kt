@@ -9,6 +9,7 @@ import com.jitunicornfx.insightidr.mcp.tools.isStatisticPaginationRejection
 import com.jitunicornfx.insightidr.mcp.tools.isStatisticResult
 import com.jitunicornfx.insightidr.mcp.tools.leqlObjectForPatch
 import com.jitunicornfx.insightidr.mcp.tools.nextPageLink
+import com.jitunicornfx.insightidr.mcp.tools.notingUnfinishedQuery
 import com.jitunicornfx.insightidr.mcp.tools.pollArgs
 import com.jitunicornfx.insightidr.mcp.tools.requireTimeWindow
 import com.jitunicornfx.insightidr.mcp.tools.withoutPagination
@@ -96,6 +97,16 @@ class LogSearchSupportTest {
             val allocated = threads.currentThreadAllocatedBytes - before
             assertTrue(allocated < 64 * 1024, "$name allocated $allocated bytes on a body it does not read")
         }
+    }
+
+    @Test
+    fun `the note on an unfinished query is added to what the client had to say, not put in its place`() {
+        val running = ApiResponse(200, true, """{"id":"q","links":[{"rel":"Self","href":"https://x/self"}]}""", "application/json", serverNote = "Earlier.")
+
+        val noted = running.notingUnfinishedQuery()
+
+        assertEquals("Earlier. $UNFINISHED_QUERY_NOTE", noted.serverNote)
+        assertEquals(running.copy(serverNote = null), noted.copy(serverNote = null), "and nothing else about it changes")
     }
 
     @Test

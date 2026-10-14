@@ -99,6 +99,30 @@ class RawTextDownloadTest {
     }
 
     @Test
+    fun `a download cut to its first entry is not called invalid JSON, which that entry is`() {
+        // The first entry is longer than the sample floor and the second runs past the budget, so the
+        // cut keeps the first line alone. Nobody parsed it, and in 0.4.2 the notice said it "is NOT valid JSON".
+        val first = """{"n":1,"message":"${"m".repeat(150_000)}"}"""
+        val (text, _) = download(first + "\n" + """{"n":2,"message":"${"m".repeat(100_000)}"}""" + "\n")
+        val envelope = parseEnvelope(text)
+
+        assertEquals(first, envelope.body, "precondition: one whole entry was kept")
+        assertFalse("NOT valid JSON" in envelope.after, envelope.after)
+        assertTrue("PREFIX" in envelope.after, envelope.after)
+    }
+
+    @Test
+    fun `a download with Windows line endings ends on a whole entry, not on an escaped carriage return`() {
+        val entries = (0 until 15_000).joinToString("") { """{"a":$it,"b":"x"}""" + "\r\n" }
+        val (text, _) = download(entries)
+        val envelope = parseEnvelope(text)
+
+        assertFalse(envelope.body.endsWith("\\u000d"), envelope.body.takeLast(60))
+        assertTrue(envelope.body.endsWith("\"b\":\"x\"}"), envelope.body.takeLast(60))
+        assertTrue("was CUT to ${envelope.body.length} to fit" in envelope.after, envelope.after)
+    }
+
+    @Test
     fun `an error from the download endpoint is still the API's JSON, with its hint`() {
         // Written compact, as text would show it, so that only a re-rendering puts a space after the colon.
         val (text, isError) = download(

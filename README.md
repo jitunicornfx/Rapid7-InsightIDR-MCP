@@ -324,7 +324,8 @@ see `INSIGHTIDR_LOG_SEARCH_BASE_URL` to target the unified route
   event to the named keys only when the query also has a `where()` that compares a key (or the
   request sets `kvp_info=true`); on its own it returned every event as an empty `{}` (measured
   2026-10-12), so the `query` descriptions say to pair it with a `where(key=...)`. A query still
-  running when the tool stops waiting leaves a continuation id to poll; the API discards one that is
+  running when the tool stops waiting comes back as the API sent it, with a note that what it holds
+  may be partial and is not the answer, and leaves a continuation id to poll; the API discards one that is
   not polled — its spec says at least every 20 seconds — and then answers HTTP 404, which comes back
   explained as "run the query again", not as a wrong id. A rate-limited call (HTTP 429) comes back
   with the wait the API asked for, read from its `Retry-After` header (or, for Log Search, from

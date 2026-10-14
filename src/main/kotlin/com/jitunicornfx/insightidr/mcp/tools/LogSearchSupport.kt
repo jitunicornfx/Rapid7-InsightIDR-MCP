@@ -131,6 +131,7 @@ private fun linkWithRel(body: String, rel: String): String? = try {
  * Follow query continuations until the query completes, the poll budget is exhausted, or no
  * `Self` continuation link is present. On timeout the last (in-progress) response is returned;
  * its body still contains the query `id`/`links` so the caller can resume via the poll tool.
+ * A query tool says so with [notingUnfinishedQuery].
  */
 internal suspend fun Rapid7Client.awaitQueryCompletion(
     initial: ApiResponse,
@@ -147,6 +148,23 @@ internal suspend fun Rapid7Client.awaitQueryCompletion(
         current = requestAbsolute(next)
     }
     return current
+}
+
+/**
+ * [this] with [UNFINISHED_QUERY_NOTE] beside whatever note it already has, when it is a success that
+ * still carries a rel="Self" link: a query that had not finished when the tool stopped waiting for it,
+ * or that the tool was told not to wait for. Nothing else about it changes.
+ *
+ * Every query tool but the spool calls it on what [awaitQueryCompletion] hands back. The spool does
+ * not: it reads the same link itself, and reports its run as INCOMPLETE.
+ *
+ * Not for an export, which the tool says by [exporting]: its 202 carries a rel="Self" link as well, to
+ * the export job (spec 3.0.2's example EventsContinueExportCSV), and that is read with the export
+ * tools, not polled as a query.
+ */
+internal fun ApiResponse.notingUnfinishedQuery(exporting: Boolean = false): ApiResponse {
+    if (!ok || exporting || continuationLink(body) == null) return this
+    return copy(serverNote = listOfNotNull(serverNote, UNFINISHED_QUERY_NOTE).joinToString(" "))
 }
 
 /**

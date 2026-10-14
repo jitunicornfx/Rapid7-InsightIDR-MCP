@@ -346,6 +346,99 @@ class LogSearchQueryToolsTest {
         assertTrue("cont-2" in (result.content.first() as TextContent).text)
     }
 
+    // A query still running when a tool hands back its result. The poll endpoint answers 200 both while
+    // a query runs and once it is done (spec 3.0.2), so what tells them apart is the rel="Self" link.
+
+    private val selfLink = "https://us.rest.logs.insight.rapid7.com/query/cont-5"
+
+    /** A statistic query part of the way through, in the shape of spec 3.0.2's StatsContinueInitial. */
+    private val running = """{"logs":["lk1"],"progress":60,"id":"cont-5","events":[],"partial":{"count":12},"links":[{"rel":"Self","href":"$selfLink"}]}"""
+
+    private fun textOf(result: io.modelcontextprotocol.kotlin.sdk.types.CallToolResult) = (result.content.first() as TextContent).text
+
+    @Test
+    fun `a query still running when the wait runs out comes back as it was, and is said to be unfinished`() = runBlocking {
+        // In 0.4.2 this was a success with nothing said, and its count of 12 read like the answer.
+        val h = harness(responses = listOf(HttpStatusCode.Accepted to running, HttpStatusCode.OK to running))
+        val result = h.call(
+            "logsearch_query_log",
+            mapOf("log_key" to "lk1", "query" to "calculate(count)", "time_range" to "today", "poll_timeout_ms" to 1_000),
+        )
+        val envelope = parseEnvelope(textOf(result))
+
+        assertEquals(3, h.requests.size, "precondition: polled until the time ran out")
+        assertFalse(result.isError == true)
+        assertEquals(
+            JsonCodec.compact.parseToJsonElement(running),
+            JsonCodec.compact.parseToJsonElement(envelope.body),
+            "what is returned is not changed",
+        )
+        assertTrue(UNFINISHED_QUERY_NOTE in envelope.after, envelope.after)
+        assertTrue("Do not report it as the query's answer" in envelope.after)
+        assertTrue("logsearch_poll_query" in envelope.after && "logsearch_audit_poll_query" in envelope.after)
+        assertFalse("had not finished" in envelope.body, "the note is the server's, and sits outside the envelope")
+    }
+
+    @Test
+    fun `every query tool that waits says so, whether it ran out of time or was told not to wait`() = runBlocking {
+        val calls = mapOf(
+            "logsearch_query_log" to mapOf("log_key" to "lk1", "time_range" to "today"),
+            "logsearch_query_logs" to mapOf("log_keys" to listOf("lk1"), "time_range" to "today"),
+            "logsearch_query_logsets_by_name" to mapOf("logset_name" to listOf("Firewall"), "time_range" to "today"),
+            "logsearch_query_logset" to mapOf("logset_id" to "ls1", "time_range" to "today"),
+            "logsearch_get_next_page" to mapOf("next_link" to "https://us.rest.logs.insight.rapid7.com/query/logs/lk1?next_page=true"),
+            "logsearch_poll_query" to mapOf("query_id" to "cont-5"),
+            "logsearch_get_context_events" to mapOf(
+                "sequence_number" to "7", "timestamp" to "1", "log_key" to "lk1", "context_type" to "SURROUND",
+            ),
+            "logsearch_run_saved_query" to mapOf("saved_query_id" to "sq1"),
+            "logsearch_run_saved_query_on_logs" to mapOf("log_keys" to "lk1", "saved_query_id" to "sq1"),
+        )
+        val h = harness(responses = listOf(HttpStatusCode.Accepted to running))
+        val waiting = h.tools().filter { "poll_timeout_ms" in it.inputSchema.properties!! }.map { it.name }.toSet()
+        assertEquals(waiting, calls.keys, "every tool here that waits for a query is called below")
+
+        for ((tool, args) in calls) {
+            for (stop in listOf("poll_timeout_ms" to 0, "wait_for_completion" to false)) {
+                val text = textOf(h.call(tool, args + stop))
+                assertTrue(UNFINISHED_QUERY_NOTE in parseEnvelope(text).after, "$tool with $stop: $text")
+            }
+        }
+    }
+
+    @Test
+    fun `a finished result, an export, and an error are not said to be an unfinished query`() = runBlocking {
+        // Finished: a Next link, and no Self link.
+        val done = harness(body = """{"events":[{"message":"done"}],"links":[{"rel":"Next","href":"$selfLink?page=2"}]}""")
+        val finished = textOf(done.call("logsearch_query_log", mapOf("log_key" to "lk1", "time_range" to "today")))
+        assertFalse(UNFINISHED_QUERY_NOTE in finished, finished)
+
+        // An export answers 202 with a Self link as well, to the export job, which is read with the export
+        // tools and not polled as a query: spec 3.0.2's example EventsContinueExportCSV.
+        val exportJob = "https://us.rest.logs.insight.rapid7.com/exports/a782e81a-1414-47c4-a8c6-8dfb16ebfc17"
+        val export = harness(
+            responses = listOf(
+                HttpStatusCode.Accepted to """{"logs":["lk1"],"progress":0,"id":"a782e81a-1414-47c4-a8c6-8dfb16ebfc17","events":[],"links":[{"rel":"Self","href":"$exportJob"}]}""",
+            ),
+        )
+        for ((tool, args) in listOf(
+            "logsearch_query_log" to mapOf("log_key" to "lk1", "time_range" to "today"),
+            "logsearch_query_logs" to mapOf("log_keys" to listOf("lk1"), "time_range" to "today"),
+        )) {
+            for (stop in listOf("poll_timeout_ms" to 0, "wait_for_completion" to false)) {
+                val text = textOf(export.call(tool, args + ("export_format" to "csv") + stop))
+                assertTrue("a782e81a" in text, "precondition: the export's 202 came back")
+                assertFalse(UNFINISHED_QUERY_NOTE in text, "$tool with $stop: $text")
+            }
+        }
+
+        // An error is the error, whatever its body holds.
+        val failing = harness(responses = listOf(HttpStatusCode.ServiceUnavailable to running))
+        val error = failing.call("logsearch_poll_query", mapOf("query_id" to "cont-5"))
+        assertTrue(error.isError == true)
+        assertFalse(UNFINISHED_QUERY_NOTE in textOf(error), textOf(error))
+    }
+
     @Test
     fun `query_logs posts logs and leql with a during window`() = runBlocking {
         val h = harness()

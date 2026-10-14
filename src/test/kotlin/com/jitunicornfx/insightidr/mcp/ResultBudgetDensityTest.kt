@@ -24,8 +24,19 @@ class ResultBudgetDensityTest {
 
     /** The line a cut notice carries for a body that held more than [ceiling] values. */
     private fun notParsed(ceiling: Int) =
-        "\nThe response was not parsed: as JSON it holds more than $ceiling values, more than this server " +
-            "reads into memory at once, so it was not checked for JSON.\n"
+        "\nThe response was not parsed: if it is JSON, it holds more than $ceiling values, more than this " +
+            "server reads into memory at once, so it was not checked for JSON.\n"
+
+    @Test
+    fun `a body counted over the value ceiling is not said to be JSON, which it was never checked for`() {
+        // Not JSON: an array that is never closed. Counted, it starts more than 1,000 values, and in
+        // 0.4.2 the notice said "as JSON it holds more than 1000 values" of it.
+        val body = "[" + "1,".repeat(3_000)
+        val rendered = renderWithinBudget(body, ResultBudget(maxChars = 4_000, parseCeilingValues = 1_000), ok = true)
+
+        assertTrue(notParsed(1_000) in rendered.notice!!, rendered.notice)
+        assertFalse("as JSON it holds" in rendered.notice!!, rendered.notice)
+    }
 
     /** 15,999,999 characters, one under the character ceiling: eight million values. */
     private fun eightMillionOnes(): String = "[" + "1,".repeat(7_999_998) + "1]"

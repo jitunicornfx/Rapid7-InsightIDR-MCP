@@ -1,14 +1,17 @@
 package com.jitunicornfx.insightidr.mcp
 
+import com.jitunicornfx.insightidr.mcp.testutil.parseEnvelope
 import com.jitunicornfx.insightidr.mcp.tools.registerLogSearchAuditTools
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
+import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class LogSearchAuditToolsTest {
@@ -69,6 +72,41 @@ class LogSearchAuditToolsTest {
         assertEquals(2, h.requests.size)
         assertEquals("/audit/query/cont-b", h.lastRequest.url.encodedPath)
         assertTrue(result.isError != true)
+    }
+
+    @Test
+    fun `an audit query still running when the tool returns is said to be unfinished, and an audit export is not`() = runBlocking {
+        val self = "https://us.rest.logs.insight.rapid7.com/audit/query/cont-c"
+        val running = """{"logs":["al1"],"progress":40,"id":"cont-c","events":[{"message":"one so far"}],"links":[{"rel":"Self","href":"$self"}]}"""
+        val calls = mapOf(
+            "logsearch_audit_query_log" to mapOf("log_key" to "al1", "time_range" to "today"),
+            "logsearch_audit_query_logs" to mapOf("log_keys" to listOf("al1"), "time_range" to "today"),
+            "logsearch_audit_poll_query" to mapOf("query_id" to "cont-c"),
+        )
+        val h = harness(responses = listOf(HttpStatusCode.Accepted to running))
+        val waiting = h.tools().filter { "poll_timeout_ms" in it.inputSchema.properties!! }.map { it.name }.toSet()
+        assertEquals(waiting, calls.keys, "every tool here that waits for a query is called below")
+
+        for ((tool, args) in calls) {
+            for (stop in listOf("poll_timeout_ms" to 0, "wait_for_completion" to false)) {
+                val text = (h.call(tool, args + stop).content.first() as TextContent).text
+                val envelope = parseEnvelope(text)
+                assertTrue("one so far" in envelope.body, "precondition: the partial result came back")
+                assertTrue(UNFINISHED_QUERY_NOTE in envelope.after, "$tool with $stop: $text")
+            }
+        }
+
+        val exportJob = "https://us.rest.logs.insight.rapid7.com/audit/exports/a782e81a-1414-47c4-a8c6-8dfb16ebfc17"
+        val export = harness(
+            responses = listOf(
+                HttpStatusCode.Accepted to """{"logs":["al1"],"progress":0,"id":"a782e81a","events":[],"links":[{"rel":"Self","href":"$exportJob"}]}""",
+            ),
+        )
+        for (tool in listOf("logsearch_audit_query_log", "logsearch_audit_query_logs")) {
+            val text = (export.call(tool, calls.getValue(tool) + ("export_format" to "csv") + ("poll_timeout_ms" to 0)).content.first() as TextContent).text
+            assertTrue("a782e81a" in text, "precondition: the export's 202 came back")
+            assertFalse(UNFINISHED_QUERY_NOTE in text, "$tool: $text")
+        }
     }
 
     @Test

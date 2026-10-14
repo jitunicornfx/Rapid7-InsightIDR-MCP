@@ -163,15 +163,31 @@ internal fun renderWithinBudget(raw: String, budget: ResultBudget, ok: Boolean, 
 
     renderAsDocument(element, raw.length, limit, budget)?.let { return it.saying(repeated) }
 
-    // Rung 4 — cut. The output is a prefix, not a JSON document; the notice says so.
+    // Rung 4 — cut. The output is a prefix of the document, not the document; the notice says so.
     // When the element cannot be encoded at all (nesting deep enough to overflow the encoder), the
     // fallback is the text as it arrived - escaped first, like every other path, and returned whole
-    // if that already fits.
+    // if that already fits. It is JSON all the same, and a cut notice says so: in 0.4.2 it said "not JSON".
     // The encoding is escaped as far as the cut can keep and the rest of it is counted, as
     // renderAsText does it: the same prefix, and the same length in the notice.
-    val compact = encodeUnescapedOrNull(JsonCodec.compact, element) ?: return renderAsText(raw, limit, budget, CutReason.NOT_JSON)
+    val compact = encodeUnescapedOrNull(JsonCodec.compact, element) ?: return renderAsText(raw, limit, budget, CutReason.NOT_ENCODABLE)
     val head = escapeInvisibleHead(compact, maxOf(limit, budget.sampleFloorChars))
-    return lineAwareCut(head, escapedLength(compact), limit, budget, CutReason.NOTHING_TO_TRIM).saying(repeated)
+    val reason = if (hasEntriesToTrim(element)) CutReason.NO_TRIM_FITS else CutReason.NOTHING_TO_TRIM
+    // The start of an object, an array or a string as the encoder wrote it ends before the character
+    // that closes it, so it is not JSON. The start of a number is a number.
+    val notJson = element !is JsonPrimitive || element.isString
+    return lineAwareCut(head, escapedLength(compact), limit, budget, reason, prefixIsNotJson = notJson).saying(repeated)
+}
+
+/**
+ * Whether [root] has an array the trim may take entries from - itself, or one of its top-level
+ * members - and that has entries in it. Said of a document the trim gave up on, so that one with such
+ * an array is not said to have none: in 0.4.2 every one of them was.
+ */
+private fun hasEntriesToTrim(root: JsonElement): Boolean = when (root) {
+    // Over the budget, so not `[]`.
+    is JsonArray -> true
+    is JsonObject -> trimCandidates(root).any { (_, array) -> array.isNotEmpty() }
+    else -> false
 }
 
 /** This body with [first] ahead of whatever notice it has. */
@@ -184,11 +200,20 @@ private fun BudgetedBody.saying(first: String?): BudgetedBody =
  * parsed has a reason of its own, and is not filed under what a parsed one turned out to be.
  */
 private enum class CutReason {
-    /** Parsed as JSON, and no rendering of it that is still a document fits. */
+    /** Parsed as JSON, no rendering of it that is still a document fits, and it has no array with entries to trim. */
     NOTHING_TO_TRIM,
 
-    /** Shown as text because it could not be rendered as JSON. */
+    /**
+     * Parsed as JSON, and it has an array with entries to trim, but no trim of it fits: it keeps at
+     * least the first entry, and drops only from the end. See [trimArray].
+     */
+    NO_TRIM_FITS,
+
+    /** Shown as text because [parseOrNull] did not read it as JSON. */
     NOT_JSON,
+
+    /** Parsed as JSON, and could not be encoded again, so it is shown as the text it arrived as. */
+    NOT_ENCODABLE,
 
     /** Longer than [ResultBudget.parseCeilingChars], so never parsed. Whether it was JSON is not known. */
     NOT_PARSED,
@@ -505,15 +530,19 @@ private fun trimLargestArray(root: JsonElement, limit: Int, budget: ResultBudget
     // almost nothing, the trim gives up and the body is cut mid-document - invalid JSON, and the
     // Next link at the end of it lost. Candidates are tried biggest first, so a body with two large
     // arrays still trims if either one can make it fit.
-    is JsonObject -> root.entries.asSequence()
-        .filter { it.key !in ResultBudget.NEVER_TRIM_KEYS }
-        .mapNotNull { entry -> (entry.value as? JsonArray)?.let { entry.key to it } }
+    is JsonObject -> trimCandidates(root)
         .map { (key, array) -> Triple(key, array, encodedLengthOrNull(JsonCodec.compact, array) ?: 0L) }
         .sortedByDescending { it.third }
         .firstNotNullOfOrNull { (key, array, _) -> trimArray(root, key, array, limit, budget) }
 
     else -> null
 }
+
+/** The top-level members of [root] that [trimLargestArray] may take entries from: its arrays, but for [ResultBudget.NEVER_TRIM_KEYS]. */
+private fun trimCandidates(root: JsonObject): Sequence<Pair<String, JsonArray>> =
+    root.entries.asSequence()
+        .filter { it.key !in ResultBudget.NEVER_TRIM_KEYS }
+        .mapNotNull { entry -> (entry.value as? JsonArray)?.let { entry.key to it } }
 
 /** Trim [array] - the root itself when [key] is null, else `root[key]` - so that the document fits. */
 private fun trimArray(root: JsonElement, key: String?, array: JsonArray, limit: Int, budget: ResultBudget): BudgetedBody? {
@@ -585,26 +614,42 @@ private fun truncationMarker(arrayKey: String, kept: Int, total: Int): JsonObjec
 /**
  * Truncate a body to the budget, preferring the last line boundary so a line-oriented body
  * (`logsearch_download_log_data` returns one log entry per line) ends on a complete record.
- * The result is a PREFIX, not valid JSON; the notice says so.
+ * The result is a PREFIX, and the notice says so.
  *
  * [head] is the start of the body as it is shown, escaped, and [totalLength] is the length of all of
  * it in that same form. A caller holding the whole body passes it and its length. One that never
  * built the rest passes at least what a cut can keep - `max(limit, sampleFloorChars)` characters, or
  * the whole body if that is shorter - and the length it counted.
+ *
+ * [prefixIsNotJson] is for a caller that knows the start of [head] cannot be a JSON document, and is
+ * the only way the notice comes to say so: a prefix of text that is not JSON, or was never read as
+ * JSON, can be, and a cut that keeps one whole line of one JSON object to a line is.
  */
-private fun lineAwareCut(head: String, totalLength: Long, limit: Int, budget: ResultBudget, reason: CutReason): BudgetedBody {
+private fun lineAwareCut(
+    head: String,
+    totalLength: Long,
+    limit: Int,
+    budget: ResultBudget,
+    reason: CutReason,
+    prefixIsNotJson: Boolean = false,
+): BudgetedBody {
     val target = minOf(maxOf(limit, budget.sampleFloorChars).toLong(), totalLength).toInt()
     var slice = head.substring(0, target)
-    val lastBreak = slice.lastIndexOf('\n')
+    // A line ends where its line break begins, and a CRLF begins at its CR. Ended after the CR, a cut
+    // kept a CR whose LF it had cut away, which the envelope then escapes as one standing alone: the
+    // block ended in \u000d, five characters longer than the notice said.
+    val lastBreak = slice.lastIndexOf('\n').let { if (it > 0 && slice[it - 1] == '\r') it - 1 else it }
     val strategy = if (lastBreak >= budget.sampleFloorChars) {
         slice = slice.substring(0, lastBreak)
         BudgetStrategy.LINE_CUT
     } else {
         BudgetStrategy.HARD_CUT
     }
-    // Never emit a dangling half of a surrogate pair — substring can split one.
+    // Never emit a dangling half of a surrogate pair or of a CRLF — substring can split either. A CR
+    // left in [head] is always half of one, since a CR on its own has already been escaped.
+    if (slice.endsWith('\r')) slice = slice.dropLast(1)
     if (slice.isNotEmpty() && slice.last().isHighSurrogate()) slice = slice.dropLast(1)
-    val notice = cutNotice(totalLength, slice.length, limit, reason, budget.parseCeilingChars, budget.parseCeilingValues)
+    val notice = cutNotice(totalLength, slice.length, limit, reason, prefixIsNotJson, budget.parseCeilingChars, budget.parseCeilingValues)
     return BudgetedBody(slice, notice, strategy)
 }
 
@@ -841,26 +886,40 @@ private fun droppedNotice(key: String?, kept: Int, total: Int, limit: Int): Stri
  * drawn from. A body over [parseCeiling] is cut without being parsed: observed 2026-10-12 with valid
  * JSON over a lowered ceiling, that line was "The response was not JSON.", of a body nobody had read.
  * One that holds more than [valueCeiling] values is not parsed either, and has a line of its own: it
- * can be a fraction of [parseCeiling] long, so "too large" would name a limit it never reached.
+ * can be a fraction of [parseCeiling] long, so "too large" would name a limit it never reached. And it
+ * may not be JSON at all, so what was counted is said of it only if it is.
+ *
+ * The block is called "NOT valid JSON" only when [prefixIsNotJson]. In 0.4.2 it was called that for
+ * every reason, of downloads nobody parsed among them, and of a block that was one whole JSON line.
  */
 private fun cutNotice(
     originalLength: Long,
     keptLength: Int,
     limit: Int,
     reason: CutReason,
+    prefixIsNotJson: Boolean,
     parseCeiling: Int,
     valueCeiling: Int,
 ): String =
     "$NOTICE_TAG This response was $originalLength characters and was CUT to $keptLength to fit " +
         "the $limit-character response budget (INSIGHTIDR_MAX_RESULT_CHARS). The block above is a " +
-        "PREFIX of the response and is NOT valid JSON — do not try to parse it as a whole document.\n" +
+        "PREFIX of the response" +
+        (
+            if (prefixIsNotJson) " and is NOT valid JSON — do not try to parse it as a whole document.\n"
+            else " — do not take it for the whole of it.\n"
+        ) +
         when (reason) {
             CutReason.NOTHING_TO_TRIM -> "The response had no top-level array to trim.\n"
+            CutReason.NO_TRIM_FITS ->
+                "The response had a top-level array, but it would not fit even with that array trimmed to its first entry.\n"
             CutReason.NOT_JSON -> "The response was not JSON.\n"
+            CutReason.NOT_ENCODABLE ->
+                "The response was JSON, but this server could not encode it again to trim it, so it was cut as the " +
+                    "text it arrived as.\n"
             CutReason.NOT_PARSED ->
                 "The response was too large to parse (over $parseCeiling characters), so it was not checked for JSON.\n"
             CutReason.TOO_MANY_VALUES ->
-                "The response was not parsed: as JSON it holds more than $valueCeiling values, more than this " +
+                "The response was not parsed: if it is JSON, it holds more than $valueCeiling values, more than this " +
                     "server reads into memory at once, so it was not checked for JSON.\n"
             CutReason.RAW_TEXT ->
                 "The response is downloaded content, shown as the text it arrived as; it was not read as JSON.\n"

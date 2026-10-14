@@ -63,7 +63,7 @@ fun Server.registerLogSearchAuditTools(client: Rapid7Client) {
             ) + timeWindowQuery(args) + queryResultQuery(args),
             wait = wait,
             timeout = timeout,
-        ).toToolResult()
+        ).notingUnfinishedQuery(exporting = args.stringOrNull("export_format") != null).toToolResult()
     }
 
     apiTool(
@@ -97,7 +97,7 @@ fun Server.registerLogSearchAuditTools(client: Rapid7Client) {
             jsonBody = body,
             wait = wait,
             timeout = timeout,
-        ).toToolResult()
+        ).notingUnfinishedQuery(exporting = args.stringOrNull("export_format") != null).toToolResult()
     }
 
     apiTool(
@@ -119,7 +119,7 @@ fun Server.registerLogSearchAuditTools(client: Rapid7Client) {
             query = query("time_range" to args.stringOrNull("time_range")),
             base = ApiBase.LOG_SEARCH,
         )
-        client.awaitQueryCompletion(initial, wait, timeout).toToolResult()
+        client.awaitQueryCompletion(initial, wait, timeout).notingUnfinishedQuery().toToolResult()
     }
 
     apiTool(

@@ -1,5 +1,6 @@
 package com.jitunicornfx.insightidr.mcp
 
+import com.jitunicornfx.insightidr.mcp.testutil.parseEnvelope
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.ContentType
@@ -158,6 +159,24 @@ class Rapid7ClientTest {
         assertTrue(response.ok)
         assertEquals(100_000, response.body.length, "exactly the limit, not the 5 MB that was on offer")
         assertTrue("cut off" in response.serverNote.orEmpty(), "and the model is told: ${response.serverNote}")
+        client.close()
+    }
+
+    @Test
+    fun `a download cut off at the read limit is not called JSON, which nobody read it as`() = runBlocking {
+        // logsearch_download_log_data and download_attachment are shown as text and never read as JSON.
+        // In 0.4.2 the note said what was shown "is not complete JSON" of both.
+        val entries = "2026-10-13T00:00:00Z entry\n".repeat(10_000).toByteArray()
+        val engine = MockEngine {
+            respond(io.ktor.utils.io.ByteReadChannel(entries), HttpStatusCode.OK, headersOf(HttpHeaders.ContentType, "application/octet-stream"))
+        }
+        val client = Rapid7Client(config, engine, maxResponseBytes = 100_000)
+
+        val response = client.request(HttpMethod.Get, "/download/logs/lk1", base = Rapid7Client.ApiBase.LOG_SEARCH, accept = "*/*")
+        val after = parseEnvelope(response.toToolText(ResultBudget(), rawText = true)).after
+
+        assertTrue("cut off" in after, "precondition: cut off, and said to be: $after")
+        assertFalse("JSON" in after, after)
         client.close()
     }
 
