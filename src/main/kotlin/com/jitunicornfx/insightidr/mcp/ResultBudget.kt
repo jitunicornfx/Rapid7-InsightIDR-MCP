@@ -457,7 +457,7 @@ private fun String.digitsEnd(from: Int): Int {
  * text, allocating nothing: measured the same day on 15,200,000 characters of events, 12 to 15 ms,
  * where rendering that body took 370 to 500.
  */
-private fun hasValueAfterArrayEnd(text: String): Boolean {
+internal fun hasValueAfterArrayEnd(text: String): Boolean {
     var i = 0
     // What was read last, whitespace aside, was a `]` outside a string.
     var closed = false

@@ -103,14 +103,13 @@ fun Server.registerLogSearchSpoolTools(client: Rapid7Client, spool: SpoolStore =
 
 /**
  * The spool tool's contact with the disk, gathered in one place so tests can make it fail. A full
- * disk, an unwritable manifest and an unencodable event cannot be provoked reliably on a developer
- * machine, and they are exactly the cases where the summary must not overstate what was saved.
+ * disk and an unwritable manifest cannot be provoked reliably on a developer machine, and they are
+ * exactly the cases where the summary must not overstate what was saved.
  */
 internal class SpoolIo(
     val open: (Path) -> Writer = { file ->
         Files.newBufferedWriter(file, StandardCharsets.UTF_8, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING)
     },
-    val encode: (JsonElement) -> String? = ::encodeEventOrNull,
     val freeSpace: (SpoolStore) -> Long? = { it.usableSpace() },
     val writeManifest: (SpoolStore, Path, String) -> Unit = { store, file, json -> store.writePrivate(file, json) },
 )
@@ -300,8 +299,8 @@ integerParam(
                     break@loop
                 }
                 pages++
-                val events = eventsArray(response.body)
-                if (events == null) {
+                val page = eventsPage(response.body)
+                if (page == null) {
                     // Two different things, and only one of them is about what the API sent. A page
                     // this server declined to read was not found to be unparseable.
                     status = if (holdsMoreValuesThan(response.body)) {
@@ -315,6 +314,17 @@ integerParam(
                     complete = false
                     break@loop
                 }
+                if (page.repeatsKey) {
+                    // Read as a tree, the page has only the last member under each key. Written from
+                    // that, the file would hold one `events` and not the other, or the run would follow
+                    // one `links` and not the other, and nothing would say which the API meant.
+                    status = "INCOMPLETE — page $pages was not written: its top-level object repeats a key, and " +
+                        "this server reads only the last member under a key, so which events and links the " +
+                        "page holds is not known"
+                    complete = false
+                    break@loop
+                }
+                val events = page.events
                 if (events.isEmpty()) {
                     emptyPages++
                     if (emptyPages >= SPOOL_MAX_EMPTY_PAGES) {
@@ -336,18 +346,18 @@ integerParam(
                     emptyPages = 0
                 }
 
-                for (event in events) {
-                    if (samples.size < sampleCount) {
-                        // Escaped BEFORE it is shortened: an escape is six times what it replaces, so
-                        // 2,000 zero-width characters cut first would still come out as 12,000.
-                        io.encode(event)?.let { samples += escapeInvisible(it).take(SPOOL_SAMPLE_EVENT_CHARS).dropLoneSurrogate() }
-                    }
-                    eventTimestamp(event)?.let {
+                // What is written is each event's own text, taken from the body; the tree is read only
+                // for its timestamp. See eventsPage for why the two are the same events in the same order.
+                val spans = page.spans()
+                var index = 0
+                while (spans.next()) {
+                    if (samples.size < sampleCount) samples += sampleOf(page.body, spans.from, spans.to)
+                    eventTimestamp(events.getOrNull(index++))?.let {
                         if (firstTimestamp == null) firstTimestamp = it
                         lastTimestamp = it
                     }
                     try {
-                        writer.write(event)
+                        writer.write(page.body, spans.from, spans.to)
                     } catch (e: IOException) {
                         status = writeFailure(e)
                         complete = false
@@ -487,7 +497,6 @@ integerParam(
                 path = writer.path,
                 manifestWritten = manifestWritten,
                 events = writer.flushedEvents,
-                skipped = writer.skipped,
                 bytes = writer.sizeOnDisk(),
                 pages = pages,
                 status = status,
@@ -511,13 +520,13 @@ integerParam(
 // ---------------------------------------------------------------------------
 
 /**
- * Streams events to an NDJSON file, one compact JSON object per line.
+ * Streams events to an NDJSON file, one compact JSON event per line, each as the API wrote it; see
+ * [writeEvent].
  *
  * NDJSON rather than one JSON document because a partial file must stay usable: a truncated JSON
  * array is unparseable in its entirety, whereas NDJSON loses at most the final line and every
  * preceding line is still a complete, valid object. It also keeps memory constant (nothing beyond
- * the current page is held) and the line invariant is guaranteed by the encoder, which escapes any
- * newline inside a string value as `\n`.
+ * the current page is held), and [writeEvent] keeps each event on its line.
  *
  * The file is created lazily on the first event, so a zero-event run leaves nothing behind.
  */
@@ -533,23 +542,15 @@ private class SpoolWriter(private val store: SpoolStore, private val label: Stri
     var flushedEvents: Long = 0
         private set
 
-    /** Events that could not be encoded, and so were left out rather than written as something else. */
-    var skipped: Long = 0
-        private set
-
     var path: Path? = null
         private set
 
     private var writer: Writer? = null
 
-    fun write(event: JsonElement) {
-        val line = io.encode(event)
-        if (line == null) {
-            skipped++
-            return
-        }
+    /** Write the event that is [body] from [from] until [to], and the line break after it. */
+    fun write(body: String, from: Int, to: Int) {
         val target = writer ?: openLazily()
-        target.write(line)
+        writeEvent(body, from, to, target)
         target.write("\n")
         events++
     }
@@ -593,16 +594,97 @@ private class SpoolWriter(private val store: SpoolStore, private val label: Stri
 }
 
 /**
- * One event as a compact JSON line, or null if it cannot be encoded (in practice: nesting deep enough
- * to overflow the encoder's stack). Null, not a `{}` placeholder — an empty object in the file is
- * indistinguishable from a real event, and would be counted as one.
+ * Write the event that is [body] from [from] until [to] to [out], as the API wrote it.
+ *
+ * What is written is the event's own text, taken from the page, and not a tree read from that text
+ * and written out again. Observed 2026-10-13 on 0.4.2 through this tool, the encoder wrote `1.50` as
+ * `1.5`, `1e5` as `100000.0`, `-0` as `0` and `123456789012345678901234567890` as
+ * `1.2345678901234568E29`; kept only the last of two members under one key, in the place of the
+ * first; wrote `\u00e9` and `\/` as the characters they stand for; and could not write an event
+ * nested 20,000 objects deep at all, so it was left out, and as the only event of its run it left a
+ * summary that began "No events matched". Of the others nothing said anything at all.
+ *
+ * Two things are changed, neither of them what the event reads as, and both to keep an event on its
+ * line: whitespace between tokens is left out, and a control character written raw inside a string,
+ * which RFC 8259 does not allow there and the parser accepts, is written as the escape the encoder
+ * wrote for it, which reads as the same character. Every other character is written as it arrived.
+ * An invisible character the API sent raw is in the file raw, as the encoder left it, and one it sent
+ * as an escape is still an escape. It is the sample in the summary, in the conversation, that has
+ * them all escaped; see [sampleOf].
+ *
+ * Only for the text of a value in a body that is JSON: see [eventsPage].
  */
-internal fun encodeEventOrNull(event: JsonElement): String? = try {
-    JsonCodec.compact.encodeToString(JsonElement.serializer(), event)
-} catch (_: StackOverflowError) {
-    null
-} catch (_: Exception) {
-    null
+private fun writeEvent(body: String, from: Int, to: Int, out: Writer) {
+    // Where the characters not yet written start.
+    var run = from
+    var inString = false
+    var i = from
+    while (i < to) {
+        val c = body[i]
+        if (inString) {
+            when {
+                // An escape is written as it was sent, whatever it is an escape for.
+                c == '\\' -> i++
+                c == '"' -> inString = false
+                c < ' ' -> {
+                    out.write(body, run, i - run)
+                    out.write(controlEscape(c))
+                    run = i + 1
+                }
+            }
+        } else if (c == '"') {
+            inString = true
+        } else if (c.isJsonSpace()) {
+            out.write(body, run, i - run)
+            run = i + 1
+        }
+        i++
+    }
+    out.write(body, run, to - run)
+}
+
+/** The escape kotlinx.serialization 1.11.0 writes for a control character, read from its `ESCAPE_STRINGS`. */
+private fun controlEscape(c: Char): String = when (c) {
+    '\t' -> "\\t"
+    '\b' -> "\\b"
+    '\n' -> "\\n"
+    '\r' -> "\\r"
+    '\u000C' -> "\\f"
+    else -> "\\u" + c.code.toString(16).padStart(4, '0')
+}
+
+/**
+ * What the summary shows of the event that is [body] from [from] until [to]: the text [writeEvent]
+ * writes, with invisible characters escaped, cut to [SPOOL_SAMPLE_EVENT_CHARS].
+ *
+ * Escaped BEFORE it is shortened: an escape is six times what it replaces, so 2,000 zero-width
+ * characters cut first would still come out as 12,000. And no more of the event is copied than the
+ * sample can show, since escaping never shortens: one event can be most of a page, and the spool
+ * holds no second copy of a page.
+ */
+internal fun sampleOf(body: String, from: Int, to: Int): String {
+    val head = FirstChars(SPOOL_SAMPLE_EVENT_CHARS)
+    writeEvent(body, from, to, head)
+    return escapeInvisibleHead(head.toString(), SPOOL_SAMPLE_EVENT_CHARS).take(SPOOL_SAMPLE_EVENT_CHARS).dropLoneSurrogate()
+}
+
+/** A [Writer] that keeps the first [max] characters written to it and drops the rest. */
+private class FirstChars(private val max: Int) : Writer() {
+    private val kept = StringBuilder()
+
+    override fun write(cbuf: CharArray, off: Int, len: Int) {
+        kept.appendRange(cbuf, off, off + minOf(len, max - kept.length))
+    }
+
+    override fun write(str: String, off: Int, len: Int) {
+        kept.append(str, off, off + minOf(len, max - kept.length))
+    }
+
+    override fun flush() = Unit
+
+    override fun close() = Unit
+
+    override fun toString(): String = kept.toString()
 }
 
 /**
@@ -619,17 +701,128 @@ private fun writeFailure(e: IOException): String {
 // Reading the response
 // ---------------------------------------------------------------------------
 
+private const val EVENTS = "events"
+
 /**
- * The `events` array of a Log Search result, or null when the body is not a parseable result - which
- * includes one that holds too many values to be read; see [holdsMoreValuesThan].
+ * One page of a Log Search result as the spool reads it: its [events] as a tree, for what the run
+ * decides from them, and the [body] they were read from, which is what it writes.
  */
-internal fun eventsArray(body: String): JsonArray? = try {
-    // A completed result with no matches may omit `events` entirely; treat that as zero events.
-    parseWithinCeiling(body)?.jsonObject?.let { root -> root["events"]?.jsonArray ?: JsonArray(emptyList()) }
+internal class EventsPage(
+    val body: String,
+    val events: JsonArray,
+    /** Just after the `[` that opens `events` in [body], or -1 when the page has no `events`. */
+    private val eventsFrom: Int,
+    /**
+     * Whether the page's top-level object repeats a key, so that it has more members in [body] than
+     * in the tree. Then the tree has the members the parser kept, and which of them the API meant is
+     * not known.
+     */
+    val repeatsKey: Boolean,
+) {
+    /** Where the text of each event is in [body], in order. */
+    fun spans() = EventSpans(body, eventsFrom)
+}
+
+/** The events of a page one at a time: after a [next] that returns true, the text of one is [from] until [to]. */
+internal class EventSpans(private val body: String, private var at: Int) {
+    var from = -1
+        private set
+    var to = -1
+        private set
+
+    fun next(): Boolean {
+        if (at < 0) return false
+        at = afterSpace(body, at)
+        if (body[at] == ',') at = afterSpace(body, at + 1)
+        if (body[at] == ']') {
+            at = -1
+            return false
+        }
+        from = at
+        to = afterValue(body, at)
+        at = to
+        return true
+    }
+}
+
+/**
+ * The page of events that [body] is, or null when it is not one: when it is not JSON, when its top
+ * level is not an object or its `events` not an array, and when it holds too many values to be read
+ * ([holdsMoreValuesThan]).
+ *
+ * Not JSON includes what only resembles it, which the parser accepts, found as the response budget
+ * finds it ([isJson], [hasValueAfterArrayEnd]). Observed 2026-10-13 on 0.4.2 through the spool tool:
+ * an event of `{"level":WARN}` was written to the file as `{"level":"WARN"}`, `{"ok":True}` as
+ * `{"ok":"True"}`, `{"n":0010}` as `{"n":10}`, and a page of `{"events":[{"id":1}]{"id":2}]}` as two
+ * events, each in a run that was COMPLETE. Now a page like that is not written, and the run stops at it.
+ *
+ * The events are written from their own text, found here by reading the body as JSON is written. The
+ * body is JSON: past the parse, those two checks are where the parser and RFC 8259 part (see
+ * [hasValueAfterArrayEnd] for how that was checked). And the tree keeps an object's members in the
+ * order it read them, so the `events` member in the text is the one at the place the tree has it,
+ * and its entries are the tree's, one for one. The exception is an object that repeats a key, which
+ * has fewer members in the tree than in the text: at the top level of the page that is
+ * [EventsPage.repeatsKey], and inside an event it loses nothing, because its text is what is written.
+ */
+internal fun eventsPage(body: String): EventsPage? = try {
+    (parseWithinCeiling(body)?.takeIf { isJson(it) && !hasValueAfterArrayEnd(body) } as? JsonObject)?.let { readPage(body, it) }
 } catch (_: StackOverflowError) {
     null
 } catch (_: Exception) {
     null
+}
+
+/** [body], which is JSON, read alongside [root], the tree parsed from it. */
+private fun readPage(body: String, root: JsonObject): EventsPage {
+    // A completed result with no matches may omit `events` entirely; treat that as zero events.
+    val events = root[EVENTS]?.jsonArray ?: JsonArray(emptyList())
+    val place = root.keys.indexOf(EVENTS)
+    var members = 0
+    var eventsFrom = -1
+    // Past the `{` that opens the page.
+    var at = afterSpace(body, 0) + 1
+    while (true) {
+        at = afterSpace(body, at)
+        if (body[at] == ',') at = afterSpace(body, at + 1)
+        if (body[at] == '}') break
+        // A key, its colon, and the value after them.
+        at = afterSpace(body, afterSpace(body, afterString(body, at + 1)) + 1)
+        if (members++ == place) eventsFrom = at + 1
+        at = afterValue(body, at)
+    }
+    return EventsPage(body, events, eventsFrom, repeatsKey = members > root.size)
+}
+
+/** The index of the first character from [from] on that is not whitespace between tokens. */
+private fun afterSpace(text: String, from: Int): Int {
+    var i = from
+    while (i < text.length && text[i].isJsonSpace()) i++
+    return i
+}
+
+/**
+ * The index just after the value that starts at [from] in [text], which is JSON. A string is read as
+ * [holdsMoreValuesThan] reads one, which is as the parser does; with strings skipped, an object or an
+ * array ends at the bracket that brings the count of open ones back to none.
+ */
+private fun afterValue(text: String, from: Int): Int {
+    var i = from
+    when (text[i]) {
+        '"' -> return afterString(text, i + 1)
+        '{', '[' -> {
+            var open = 0
+            while (i < text.length) {
+                when (text[i++]) {
+                    '"' -> i = afterString(text, i)
+                    '{', '[' -> open++
+                    '}', ']' -> if (--open == 0) return i
+                }
+            }
+        }
+        // A number, true, false or null: up to whatever may follow a value.
+        else -> while (i < text.length && text[i] != ',' && text[i] != '}' && text[i] != ']' && !text[i].isJsonSpace()) i++
+    }
+    return i
 }
 
 /** Whether the body is a statistic (calculate/groupby) result rather than a page of events. */
@@ -641,7 +834,7 @@ internal fun isStatisticResult(body: String): Boolean = try {
     false
 }
 
-private fun eventTimestamp(event: JsonElement): Long? = try {
+private fun eventTimestamp(event: JsonElement?): Long? = try {
     (event as? JsonObject)?.longOrNull("timestamp")
 } catch (_: Exception) {
     null
@@ -674,7 +867,6 @@ private fun spoolSummary(
     path: Path?,
     manifestWritten: Boolean,
     events: Long,
-    skipped: Long,
     bytes: Long,
     pages: Int,
     status: String,
@@ -703,7 +895,6 @@ private fun spoolSummary(
         append("  format:    NDJSON — one compact JSON event per line, in API order\n")
     }
     append("  events:    $events    pages: $pages    size: ${mib(bytes)}\n")
-    if (skipped > 0) append("  skipped:   $skipped event(s) could not be encoded and are NOT in the file\n")
     if (firstTimestamp != null || lastTimestamp != null) {
         append("  time span: $firstTimestamp .. $lastTimestamp (first/last event 'timestamp')\n")
     }
@@ -766,7 +957,6 @@ private fun writeManifest(
         put("spool_file", path.fileName.toString())
         put("format", "ndjson")
         put("events", writer.flushedEvents)
-        if (writer.skipped > 0) put("skipped_events", writer.skipped)
         put("pages", pages)
         put("bytes", writer.sizeOnDisk())
         put("status", status)

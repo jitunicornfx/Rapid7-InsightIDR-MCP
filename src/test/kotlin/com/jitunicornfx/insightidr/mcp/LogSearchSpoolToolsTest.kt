@@ -2,7 +2,9 @@ package com.jitunicornfx.insightidr.mcp
 
 import com.jitunicornfx.insightidr.mcp.testutil.parseEnvelope
 import com.jitunicornfx.insightidr.mcp.tools.SpoolIo
+import com.jitunicornfx.insightidr.mcp.tools.eventsPage
 import com.jitunicornfx.insightidr.mcp.tools.registerLogSearchSpoolTools
+import com.jitunicornfx.insightidr.mcp.tools.sampleOf
 import io.ktor.http.HttpStatusCode
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import kotlinx.coroutines.runBlocking
@@ -15,6 +17,7 @@ import kotlinx.serialization.json.long
 import java.io.File
 import java.io.IOException
 import java.io.Writer
+import java.lang.management.ManagementFactory
 import java.nio.file.Files
 import java.nio.file.attribute.AclEntry
 import java.nio.file.attribute.AclEntryPermission
@@ -25,7 +28,9 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.condition.EnabledOnOs
 import org.junit.jupiter.api.condition.OS
 
@@ -276,6 +281,229 @@ class LogSearchSpoolToolsTest {
         assertFalse("folded" in serverAuthored(text))
     }
 
+    // -----------------------------------------------------------------------------------------
+    // What the file records is what the API sent.
+    // -----------------------------------------------------------------------------------------
+
+    @Test
+    fun `each event is written to the file as the API wrote it`() = runBlocking {
+        // Observed 2026-10-13 on 0.4.2, each was read into a tree and written out again: 1.50 as 1.5,
+        // 1e5 as 100000.0, 0.00001 as 1.0E-5, -0 as 0, the two long integers as doubles, only the
+        // second of the two members under "k", in the place of the first, and each escape as the
+        // character it stands for. The fifth event could not be written at all and was left out.
+        val sent = listOf(
+            """{"id":1,"timestamp":1760000000001,"score":1.50,"ratio":1e5,"tiny":0.00001,"zero":-0}""",
+            """{"id":2,"timestamp":1760000000002,"big":123456789012345678901234567890,"low":-98765432109876543210}""",
+            """{"id":3,"timestamp":1760000000003,"k":"first","n":1,"k":"second"}""",
+            """{"id":4,"timestamp":1760000000004,"m":"caf\u00e9 \u202e \ud83d\ude00 \/ \"q\" \\ \u000a"}""",
+            """{"id":5,"timestamp":1760000000005,"deep":""" + """{"a":""".repeat(20_000) + "1.50" + "}".repeat(20_000) + "}",
+        )
+        val h = harness(listOf(HttpStatusCode.OK to page(sent.joinToString(","))))
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs("sample_events" to 5)))
+
+        assertEquals(sent, linesOnDisk())
+        assertTrue(text.startsWith("Spooled 5 events"), text)
+        assertTrue("time span: 1760000000001 .. 1760000000005 " in text, text)
+        val manifest = manifest()
+        assertTrue(manifest["complete"]!!.jsonPrimitive.boolean)
+        assertEquals(5L, manifest["events"]!!.jsonPrimitive.long)
+        assertEquals(1760000000005L, manifest["last_timestamp"]!!.jsonPrimitive.long)
+        // The sample in the summary is the same text, as far as a sample goes.
+        assertEquals((sent.take(4) + sent[4].take(2_000)).joinToString("\n"), parseEnvelope(text).body)
+    }
+
+    @Test
+    fun `an event nested deeper than the encoder could write is in the file, and not left out`() = runBlocking {
+        // Observed 2026-10-13 on 0.4.2: the encoder ran out of stack on each, so neither was written,
+        // and with nothing else in the run the summary began "No events matched, so no file was written."
+        // Objects, because the parser reads them without recursing, and arrays it does not: an event
+        // nested 2,000 arrays deep made a page that could not be parsed, with this change and without it.
+        val sent = listOf(
+            """{"id":1,"deep":""" + """{"a":""".repeat(20_000) + "0.50" + "}".repeat(20_000) + "}",
+            """{"id":2,"deep":""" + """{"a":""".repeat(50_000) + "0.50" + "}".repeat(50_000) + "}",
+        )
+        val h = harness(listOf(HttpStatusCode.OK to page(sent.joinToString(","))))
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
+
+        assertEquals(sent, spooled().singleOrNull()?.readLines()?.filter { it.isNotBlank() }, text.take(1_000))
+        assertTrue(text.startsWith("Spooled 2 events"), text.take(1_000))
+        assertFalse("No events matched" in text)
+    }
+
+    @Test
+    fun `a page with whitespace between its tokens is spooled an event to a line, with its strings as they were`() = runBlocking {
+        // Every way JSON has of spacing tokens, line breaks among them. None of it is part of an
+        // event, and on one line of NDJSON a line break would end the event in the middle.
+        val body = """
+            {
+              "events" : [
+                {
+                  "id" : 1 ,
+                  "m" : "a  b\t{ [\"x\" ]} , : \\" ,
+                  "q" : "say \"hi there\" " ,
+                  "score" : 1.50
+                } ,
+                [ 1 , 2.0 ] , "text" , null , { } , [ ]
+              ] ,
+              "links" : [ ]
+            }
+        """.trimIndent().replace("\n", "\r\n\t ")
+        val h = harness(listOf(HttpStatusCode.OK to body))
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
+
+        val lines = listOf(
+            """{"id":1,"m":"a  b\t{ [\"x\" ]} , : \\","q":"say \"hi there\" ","score":1.50}""",
+            "[1,2.0]", "\"text\"", "null", "{}", "[]",
+        )
+        assertEquals(lines, linesOnDisk())
+        assertEquals(lines.take(3).joinToString("\n"), parseEnvelope(text).body, "and the sample is an event to a line too")
+    }
+
+    @Test
+    fun `a control character sent raw inside a string is escaped, so that its event stays on one line`() = runBlocking {
+        // RFC 8259 does not allow one there and the parser accepts it. The encoder escaped every one,
+        // and so does the spool still; DEL is not one of them, and neither encoder nor spool escapes it.
+        val raw = "a\tb\nc\rd" + Char(0) + "e" + Char(0x1B) + "f" + Char(0x0C) + "g\bh" + Char(0x1F) + "i" + Char(0x7F) + "j"
+        val h = harness(listOf(HttpStatusCode.OK to page("{\"id\":1,\"m\":\"$raw\",\"score\":1.50},{\"id\":2}")))
+        h.call("logsearch_spool_query_to_file", spoolArgs())
+
+        val escaped = """a\tb\nc\rd\u0000e\u001bf\fg\bh\u001fi""" + Char(0x7F) + "j"
+        assertEquals(listOf("""{"id":1,"m":"$escaped","score":1.50}""", """{"id":2}"""), linesOnDisk())
+    }
+
+    @Test
+    fun `an invisible character is in the file as the API sent it, and escaped in the sample`() = runBlocking {
+        // The file is data for whoever reads it next, and holds what the API sent: an escape stays an
+        // escape, and a character sent raw is written raw, as the encoder wrote it. What goes into the
+        // conversation is the sample, and that has every one escaped.
+        val asEscape = """{"id":1,"m":"x\u202ey"}"""
+        val asSent = "{\"id\":2,\"m\":\"x" + Char(0x202E) + "y\"}"
+        val h = harness(listOf(HttpStatusCode.OK to page("$asEscape,$asSent")))
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
+
+        assertEquals(listOf(asEscape, asSent), linesOnDisk())
+        assertEquals(listOf(asEscape, """{"id":2,"m":"x\u202ey"}""").joinToString("\n"), parseEnvelope(text).body)
+        assertFalse(Char(0x202E) in text)
+    }
+
+    @Test
+    fun `a page that only resembles JSON is not written, and the run stops at it`() = runBlocking {
+        // Observed 2026-10-13 on 0.4.2: each was read as JSON, and its events were written as what the
+        // API had not sent - WARN and True in quotes, 0010 as 10, and an array read on past its end as
+        // two events - in a run that was COMPLETE.
+        val bodies = listOf(
+            """{"events":[{"id":1,"level":WARN}]}""",
+            """{"events":[{"id":1,"n":0010}]}""",
+            """{"events":[{"id":1,"ok":True}]}""",
+            """{"events":[{"id":1}]{"id":2}]}""",
+        )
+        for (body in bodies) {
+            val h = harness(listOf(HttpStatusCode.OK to body))
+            val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
+
+            assertEquals(emptyList<File>(), spooled(), body)
+            assertTrue("INCOMPLETE — page 1 returned a body that could not be parsed as JSON" in text, text)
+        }
+    }
+
+    @Test
+    fun `a page whose top level repeats a key is not written, and the run stops at it`() = runBlocking {
+        // Read as a tree, a page has only the last member under each key. Observed 2026-10-13 on 0.4.2:
+        // the file had the second "events" and not the first, and the run was COMPLETE.
+        val h = harness(
+            listOf(
+                HttpStatusCode.OK to page("""{"id":1}""", NEXT_1),
+                HttpStatusCode.OK to """{"events":[{"id":2}],"events":[{"id":3}]}""",
+            ),
+        )
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
+
+        assertEquals(listOf("""{"id":1}"""), linesOnDisk(), "the page before it is in the file")
+        val status = "INCOMPLETE — page 2 was not written: its top-level object repeats a key, and this server " +
+            "reads only the last member under a key, so which events and links the page holds is not known"
+        assertEquals(status, text.substringAfter("status:").lineSequence().first().trim())
+        assertEquals(status, manifest()["status"]!!.jsonPrimitive.content)
+        assertFalse(manifest()["complete"]!!.jsonPrimitive.boolean)
+        assertFalse("resume_from_next_link" in text, "the same page would come back")
+    }
+
+    @Test
+    fun `a repeated links member is not read as the end of the results`() = runBlocking {
+        // The first links offers a next page and the second does not. Read as a tree, this was the
+        // last page, and the run COMPLETE.
+        val h = harness(listOf(HttpStatusCode.OK to """{"events":[{"id":1}],"links":[{"rel":"Next","href":"$NEXT_1"}],"links":[]}"""))
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
+
+        assertEquals(emptyList<File>(), spooled())
+        assertTrue("INCOMPLETE — page 1 was not written: its top-level object repeats a key" in text, text)
+        assertFalse("No events matched" in text, text)
+    }
+
+    @Test
+    fun `a key repeated below the top level of a page is written as it was sent`() = runBlocking {
+        // Inside an event its text is what is written, so nothing is lost, and a member like meta is
+        // not one the run reads.
+        val h = harness(listOf(HttpStatusCode.OK to """{"meta":{"a":1,"a":2},"events":[{"id":1,"k":1,"k":2.50}]}"""))
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
+
+        assertEquals(listOf("""{"id":1,"k":1,"k":2.50}"""), linesOnDisk())
+        assertTrue("COMPLETE — the API offered no further pages" in text, text)
+    }
+
+    @Test
+    fun `a page is read as the events the parser reads from it, one for one`() {
+        val pages = listOf(
+            """{"events":[]}""",
+            """{"other":1}""",
+            """{}""",
+            """{"events":[1,-2.5e3,0,true,false,null,"s",{},[],[[]],{"a":{}}]}""",
+            // Brackets, braces, commas, colons and quotes inside strings, and escapes before a quote.
+            """{"events":["]","}",",",":","\"","\\","\\\"]",{"k":"\\\\"},[["[",{"]":"}"}]],"{\"events\":[9]}"]}""",
+            // An `events` further in, and one in a string, before the one that is the page's.
+            """{"a":{"events":[7]},"b":"\"events\":[8]","c":[{"events":[6]}],"events":[{"id":1},{"id":2}],"links":[]}""",
+            // The key written with an escape is the same key.
+            """{"ev\u0065nts":[{"id":1}]}""",
+            "{ \"x\" : 1 ,\r\n\t\"events\" :\n[ 1 ,\t{ \"a\" : [ ] } , \"y\" ]\n, \"z\" : null }",
+        )
+        for (body in pages) {
+            val page = assertNotNull(eventsPage(body), body)
+            assertFalse(page.repeatsKey, body)
+            val spans = page.spans()
+            val texts = buildList { while (spans.next()) add(body.substring(spans.from, spans.to)) }
+            assertEquals(page.events.toList(), texts.map { JsonCodec.compact.parseToJsonElement(it) }, body)
+            assertTrue(texts.none { it.isEmpty() || it.first().isWhitespace() || it.last().isWhitespace() }, "$body: $texts")
+        }
+
+        for (body in listOf("""{"events":[1],"events":[2]}""", """{"links":[],"events":[],"links":[]}""")) {
+            assertEquals(true, eventsPage(body)?.repeatsKey, body)
+        }
+        for (body in listOf("""{"events":[{"a":1,"a":2}]}""", """{"x":{"a":1,"a":2},"events":[]}""")) {
+            assertEquals(false, eventsPage(body)?.repeatsKey, body)
+        }
+        for (body in listOf("""{"events":[WARN]}""", """{"events":[1]2]}""", """{"events":{}}""", """{"events":null}""", "[1]", "\"x\"", "", "{")) {
+            assertEquals(null, eventsPage(body), body)
+        }
+    }
+
+    @Test
+    fun `the sample of an event copies no more of it than the sample shows`() {
+        // One event can be most of a page, and the spool holds no second copy of a page.
+        val body = """{"events":[{"m":"${"x".repeat(4_000_000)}"}]}"""
+        val spans = assertNotNull(eventsPage(body)).spans()
+        assertTrue(spans.next())
+        assertEquals("""{"m":"""" + "x".repeat(1_994), sampleOf(body, spans.from, spans.to))
+
+        val threads = ManagementFactory.getThreadMXBean() as? com.sun.management.ThreadMXBean
+        assumeTrue(
+            threads != null && threads.isThreadAllocatedMemorySupported && threads.isThreadAllocatedMemoryEnabled,
+            "this JVM does not count what a thread allocates",
+        )
+        val before = threads!!.currentThreadAllocatedBytes
+        sampleOf(body, spans.from, spans.to)
+        val allocated = threads.currentThreadAllocatedBytes - before
+        assertTrue(allocated < 256 * 1024, "a sample of 2,000 characters allocated $allocated bytes")
+    }
+
     @Test
     fun `a statistic result writes no file and returns the result inline`() = runBlocking {
         val h = harness(listOf(HttpStatusCode.OK to """{"statistics":{"count":5}}"""))
@@ -507,22 +735,6 @@ class LogSearchSpoolToolsTest {
         assertTrue("INCOMPLETE" in text, "was: $text")
         assertTrue("Spooled 2 events" in text)
         assertFalse(manifest()["complete"]!!.jsonPrimitive.boolean)
-    }
-
-    @Test
-    fun `an event that cannot be encoded is counted as skipped, not written as an empty object`() = runBlocking {
-        val h = harness(
-            listOf(HttpStatusCode.OK to page("""{"id":1},{"id":2,"poison":true},{"id":3}""")),
-            io = SpoolIo(encode = { event ->
-                if ((event as JsonObject).containsKey("poison")) null else event.toString()
-            }),
-        )
-        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
-
-        assertEquals(listOf("""{"id":1}""", """{"id":3}"""), linesOnDisk(), "no {} placeholder posing as an event")
-        assertTrue("Spooled 2 events" in text)
-        assertTrue("1 event(s) could not be encoded" in text)
-        assertEquals(1L, manifest()["skipped_events"]!!.jsonPrimitive.long)
     }
 
     @Test

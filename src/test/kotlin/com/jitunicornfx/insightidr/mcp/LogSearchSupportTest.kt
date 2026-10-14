@@ -4,7 +4,7 @@ import com.jitunicornfx.insightidr.mcp.Rapid7Client.ApiResponse
 import com.jitunicornfx.insightidr.mcp.tools.LS_DEFAULT_POLL_TIMEOUT_MS
 import com.jitunicornfx.insightidr.mcp.tools.LS_MAX_POLL_TIMEOUT_MS
 import com.jitunicornfx.insightidr.mcp.tools.continuationLink
-import com.jitunicornfx.insightidr.mcp.tools.eventsArray
+import com.jitunicornfx.insightidr.mcp.tools.eventsPage
 import com.jitunicornfx.insightidr.mcp.tools.isStatisticPaginationRejection
 import com.jitunicornfx.insightidr.mcp.tools.isStatisticResult
 import com.jitunicornfx.insightidr.mcp.tools.leqlObjectForPatch
@@ -67,7 +67,7 @@ class LogSearchSupportTest {
 
         assertEquals("https://x/next", nextPageLink(body))
         assertEquals("https://x/self", continuationLink(body))
-        assertEquals(MAX_PARSED_VALUES - 10, eventsArray(body)!!.size)
+        assertEquals(MAX_PARSED_VALUES - 10, eventsPage(body)!!.events.size)
         assertTrue(isStatisticResult("""{"statistics":{"count":1},"events":[""" + "1,".repeat(MAX_PARSED_VALUES - 13) + "1" + linksAfterEvents))
     }
 
@@ -81,7 +81,7 @@ class LogSearchSupportTest {
         val readers = mapOf<String, (String) -> Any?>(
             "continuationLink" to ::continuationLink,
             "nextPageLink" to ::nextPageLink,
-            "eventsArray" to ::eventsArray,
+            "eventsPage" to ::eventsPage,
             "isStatisticResult" to { body -> isStatisticResult(body).takeIf { it } },
         )
         for ((name, read) in readers) assertNull(read(dense), name)
