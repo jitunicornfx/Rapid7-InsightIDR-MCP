@@ -180,6 +180,9 @@ java {
 
 tasks.test {
     useJUnitPlatform()
+    // Gradle's own default, written down. Several tests prove that a rendering fits "the heap a test
+    // worker has", and say of themselves that in a larger heap they would prove nothing.
+    maxHeapSize = "512m"
     // Always refresh the coverage report after the tests run.
     finalizedBy(tasks.jacocoTestReport)
 }
