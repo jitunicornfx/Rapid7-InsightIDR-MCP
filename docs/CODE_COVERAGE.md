@@ -76,7 +76,7 @@ line-by-line highlighting.
 ## Current baseline
 
 Measured 2026-10-13 with every task re-run and the Gradle build cache off (Gradle 9.8.1, Kotlin
-2.4.21, JDK 25): **95.2% line / 94.9% method / 82.4% branch** across **610 tests**, none skipped.
+2.4.21, JDK 25): **95.5% line / 94.7% method / 84.3% branch** across **648 tests**, none skipped.
 Every tool-domain source file - all v1/v2 IDR domains, the SIEM Alerts API tools, all Log Search
 domains, `Rapid7Client`, `Config`, `ToolSupport` and `LogSearchSupport` - sits at **93-100% line
 coverage**. The files that decide what a response looks like when it reaches the model are at
