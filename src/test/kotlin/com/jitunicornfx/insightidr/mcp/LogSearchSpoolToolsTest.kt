@@ -434,7 +434,50 @@ class LogSearchSpoolToolsTest {
         val status = text.substringAfter("status:").lineSequence().first().trim()
         assertTrue(status.startsWith("INCOMPLETE — page 1 is JSON but not a page of events"), status)
         assertFalse("could not be read as JSON" in status, "it was read: $status")
-        assertTrue("run the same query with logsearch_query_logs" in status, status)
+        // At the spool's own page size: logsearch_query_logs defaults to 100, so the same arguments alone
+        // would show a fifth of a 500-event page.
+        assertTrue("run the same query with logsearch_query_logs and per_page = 500;" in status, status)
+    }
+
+    @Test
+    fun `a later page whose link fails validation is not looked at by query, and the link is not shown`() = runBlocking {
+        // Re-running the query shows page 1, not page 2. The link that returned page 2 was followed - it is
+        // on a Rapid7 host - but it is too long to offer, and it is the API's text, not the server's.
+        val long = "$NEXT_1?" + "a".repeat(5_000)
+        val h = harness(
+            listOf(
+                HttpStatusCode.OK to page("""{"id":1}""", long),
+                HttpStatusCode.OK to "<html>x</html>",
+            ),
+        )
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
+
+        assertEquals(2, h.requests.size, "the link was followed")
+        val status = text.substringAfter("status:").lineSequence().first().trim()
+        assertTrue(status.startsWith("INCOMPLETE — page 2 could not be read as JSON"), status)
+        assertTrue(
+            status.endsWith(
+                "The link that returned that page failed validation, so it is not shown, and there is no link " +
+                    "to resume this run from",
+            ),
+            status,
+        )
+        assertFalse("logsearch_query_logs" in status, "that would show page 1: $status")
+        assertFalse("aaaaaaaaaa" in serverAuthored(text), "the link is the API's text")
+        assertFalse("aaaaaaaaaa" in manifest()["status"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `a resumed run's first page is looked at with the link it was resumed from`() = runBlocking {
+        // Page 1 of a resumed run did not come from this tool's own query, so re-running it is no way to see it.
+        val h = harness(listOf(HttpStatusCode.OK to "<html>x</html>"))
+        val text = textOf(h.call("logsearch_spool_query_to_file", mapOf("resume_from_next_link" to NEXT_1)))
+
+        assertEquals(NEXT_1, h.requests.single().url.toString())
+        val status = text.substringAfter("status:").lineSequence().first().trim()
+        assertTrue(status.startsWith("INCOMPLETE — page 1 could not be read as JSON"), status)
+        assertTrue("fetch it with logsearch_get_next_page, next_link = $NEXT_1;" in status, status)
+        assertFalse("logsearch_query_logs" in status, status)
     }
 
     @Test

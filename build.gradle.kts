@@ -255,7 +255,8 @@ tasks.shadowJar {
  * lists in a META-INF/services file must be listed in the fat jar's copy of that file. 0.4.2's jar fails
  * it: it lists one of the three TerminalInterfaceProvider implementations and misses two (checked
  * 2026-10-13). Only runtime jars are compared: this project has no service files of its own. A jar
- * that fails is deleted, so that the jar left in build/libs is never one the check rejected.
+ * that fails is deleted, so that the jar left in build/libs is not one the check rejected; if it cannot
+ * be deleted (something holds it open), the failure says so.
  */
 tasks.register("verifyShadowJarServiceFiles") {
     group = "verification"
@@ -287,9 +288,11 @@ tasks.register("verifyShadowJarServiceFiles") {
             }
         }
         if (missing.isNotEmpty()) {
-            fatJar.get().asFile.delete()
+            val jar = fatJar.get().asFile
+            // A jar something holds open (a running server, on Windows) may not delete; that is said, not hidden.
+            val fate = if (jar.delete() || !jar.exists()) "and was deleted" else "and could NOT be deleted: do not use ${jar.name}"
             throw GradleException(
-                "The fat jar dropped service providers, and was deleted:\n  " + missing.joinToString("\n  "),
+                "The fat jar dropped service providers, $fate:\n  " + missing.joinToString("\n  "),
             )
         }
         logger.lifecycle("verifyShadowJarServiceFiles: ${listed.size} service files, no provider missing.")

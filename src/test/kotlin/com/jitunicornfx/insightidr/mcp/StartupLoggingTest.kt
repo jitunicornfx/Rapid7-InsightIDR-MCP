@@ -7,13 +7,16 @@ import io.ktor.http.HttpStatusCode
 import com.jitunicornfx.insightidr.mcp.tools.registerLogSearchManagementTools
 import io.modelcontextprotocol.kotlin.sdk.client.Client
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
 import java.io.ByteArrayOutputStream
 import java.io.PrintStream
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
@@ -65,29 +68,57 @@ class StartupLoggingTest {
         assertEquals(emptyList(), registryLines, "registering 146 tools and calling one wrote these lines")
     }
 
-    @Test
-    fun `every tool call leaves one line on stderr, naming the tool and nothing it was given`() {
-        // The SDK wrote two INFO lines per call through the logger this file quiets. Without a line of
-        // the server's own, nothing on its side would record which tools were called.
+    /** Runs [block] with System.err captured, and returns what reached it. */
+    private fun stderrOf(block: suspend () -> Unit): String {
         val realErr = System.err
         val captured = ByteArrayOutputStream()
         System.setErr(PrintStream(captured, true, "UTF-8"))
         try {
-            runBlocking {
-                val h = mcpHarness(status = HttpStatusCode.NotFound, responseBody = "{}") { registerLogSearchManagementTools(it) }
-                h.call("logsearch_get_log", mapOf("log_id" to "zz-argument-value"))
-                h.call("logsearch_list_logs")
-            }
+            runBlocking { block() }
         } finally {
             System.setErr(realErr)
         }
-        val lines = captured.toString("UTF-8").lines().filter { "tool call:" in it }
+        return captured.toString("UTF-8")
+    }
+
+    private fun toolCallLines(stderr: String) = stderr.lines().filter { "tool call:" in it }
+
+    @Test
+    fun `every tool call leaves one line on stderr, naming the tool and nothing it was given`() {
+        // The SDK wrote two INFO lines per call through the logger this file quiets. Without a line of
+        // the server's own, nothing on its side would record which tools were called.
+        val stderr = stderrOf {
+            val h = mcpHarness(
+                responses = listOf(HttpStatusCode.NotFound to "{}", HttpStatusCode.OK to "{\"logs\": []}"),
+            ) { registerLogSearchManagementTools(it) }
+            h.call("logsearch_get_log", mapOf("log_id" to "zz-argument-value"))
+            h.call("logsearch_list_logs")
+        }
 
         assertEquals(
-            listOf("$NOTICE_TAG tool call: logsearch_get_log -> error", "$NOTICE_TAG tool call: logsearch_list_logs -> error"),
-            lines,
+            listOf("$NOTICE_TAG tool call: logsearch_get_log -> error", "$NOTICE_TAG tool call: logsearch_list_logs -> ok"),
+            toolCallLines(stderr),
         )
-        assertFalse("zz-argument-value" in captured.toString("UTF-8"), "an argument is the caller's, not the log's")
+        assertFalse("zz-argument-value" in stderr, "an argument is the caller's, not the log's")
+    }
+
+    @Test
+    fun `a call that is cancelled, or ends in an Error, leaves its line too`() {
+        // The SDK's lines were written before a tool ran, so they recorded these calls. A call cut off at
+        // the client's tool timeout may already have reached the API, which makes it the one to keep.
+        val stderr = stderrOf {
+            assertFailsWith<CancellationException> {
+                runTool("zz_cancelled", JsonObject(emptyMap())) { throw CancellationException("client timeout") }
+            }
+            assertFailsWith<StackOverflowError> {
+                runTool("zz_failed", JsonObject(emptyMap())) { throw StackOverflowError() }
+            }
+        }
+
+        assertEquals(
+            listOf("$NOTICE_TAG tool call: zz_cancelled -> cancelled", "$NOTICE_TAG tool call: zz_failed -> failed"),
+            toolCallLines(stderr),
+        )
     }
 
     @Test

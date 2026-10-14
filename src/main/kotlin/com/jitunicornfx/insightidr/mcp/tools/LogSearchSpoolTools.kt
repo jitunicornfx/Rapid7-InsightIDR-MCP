@@ -269,15 +269,21 @@ integerParam(
         // still unread — a run that completes has none.
         var lastFollowedHref: String? = null
 
-        // How to see a page the run stopped at. The link that returned it is the API's own, so it is
-        // named only when it passes the checks a resume link does; the first page of a run that was
-        // not resumed came from this tool's own request, which logsearch_query_logs makes too.
-        fun howToLookAt(pageHref: String?): String =
-            pageHref?.let { client.safeResumeLink(it) }?.let {
+        // How to see the page a run stopped at. Only the first page of a run that was not resumed came
+        // from this tool's own request, which logsearch_query_logs makes too at the same per_page. Every
+        // other page came from a link, which is the API's own (or the caller's), so it is named only when
+        // it passes the checks a resume link does. Re-running the query would show page 1, not that page.
+        fun howToLookAt(pageHref: String?): String {
+            if (pageHref == null) {
+                return ". To look at that page, run the same query with logsearch_query_logs and per_page = " +
+                    "$perPage; there is no link to resume this run from"
+            }
+            return client.safeResumeLink(pageHref)?.let {
                 ". To look at that page, fetch it with logsearch_get_next_page, next_link = $it; there is no " +
                     "link to resume this run from"
-            } ?: ". To look at that page, run the same query with logsearch_query_logs; there is no link to " +
-                "resume this run from"
+            } ?: ". The link that returned that page failed validation, so it is not shown, and there is no " +
+                "link to resume this run from"
+        }
         var resumeHref: String? = null
         var offeredLink: String? = null
         var pages = 0

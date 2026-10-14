@@ -632,10 +632,31 @@ fun Server.apiTool(
             destructiveHint = if (readOnly) null else destructive,
             openWorldHint = true,
         ),
-    ) { request ->
+    ) { request -> runTool(name, request.arguments ?: JsonObject(emptyMap()), handler) }
+}
+
+/**
+ * One call of [handler], as [apiTool] makes it: an exception becomes an error result, and the call
+ * leaves one line on stderr however it ends - `ok`, `error`, `cancelled`, or `failed` when an Error
+ * escapes every catch below.
+ *
+ * The SDK wrote two lines of its own at INFO before running a tool, and simplelogger.properties quiets
+ * that logger for the 438 lines it wrote at startup; without this, nothing on the server's side would
+ * record which tools were called. Written in `finally`, so a call cut off by the client's timeout - the
+ * one most worth knowing about, since its request may already have reached the API - is recorded too.
+ * The tool's name is this server's own, and nothing from the arguments or the result is in the line.
+ */
+internal suspend fun runTool(
+    name: String,
+    args: JsonObject,
+    handler: suspend (args: JsonObject) -> CallToolResult,
+): CallToolResult {
+    var outcome = "failed"
+    try {
         val result = try {
-            handler(request.arguments ?: JsonObject(emptyMap()))
+            handler(args)
         } catch (e: CancellationException) {
+            outcome = "cancelled"
             throw e
         } catch (e: IllegalArgumentException) {
             if (e.thrownByThisServer()) {
@@ -649,11 +670,9 @@ fun Server.apiTool(
         } catch (e: Exception) {
             errorResult(unexpectedFailureText(name, e))
         }
-        // One line per call, on stderr. The SDK wrote two of its own at INFO, and simplelogger.properties
-        // quiets that logger for the 440 lines it wrote at startup; without this, nothing on the server's
-        // side would record which tools were called. The tool's name is this server's own, and nothing
-        // from the arguments or the result is in the line.
-        System.err.println("$NOTICE_TAG tool call: $name -> ${if (result.isError == true) "error" else "ok"}")
-        result
+        outcome = if (result.isError == true) "error" else "ok"
+        return result
+    } finally {
+        System.err.println("$NOTICE_TAG tool call: $name -> $outcome")
     }
 }
