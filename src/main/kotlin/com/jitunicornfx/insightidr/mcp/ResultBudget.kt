@@ -147,7 +147,11 @@ internal fun renderWithinBudget(raw: String, budget: ResultBudget, ok: Boolean, 
     }
 
     // Not JSON at all.
-    val element = parseOrNull(raw) ?: return renderAsText(raw, limit, budget, CutReason.NOT_JSON)
+    val read = read(raw)
+    if (read !is Tree) {
+        return renderAsText(raw, limit, budget, if (read == NotRead.TOO_DEEP) CutReason.NOT_READABLE else CutReason.NOT_JSON)
+    }
+    val element = read.element
 
     // A key that an object repeats has one member in the tree and more than one in the text. Every
     // rendering from here on is of the tree, so each of them says what it cannot show.
@@ -173,7 +177,8 @@ internal fun renderWithinBudget(raw: String, budget: ResultBudget, ok: Boolean, 
     val head = escapeInvisibleHead(compact, maxOf(limit, budget.sampleFloorChars))
     val reason = if (hasEntriesToTrim(element)) CutReason.NO_TRIM_FITS else CutReason.NOTHING_TO_TRIM
     // The start of an object, an array or a string as the encoder wrote it ends before the character
-    // that closes it, so it is not JSON. The start of a number is a number.
+    // that closes it, so it is not JSON. The start of a number is usually one (not when the cut ends on
+    // '.', 'e' or a sign), and then the notice says only that the block is a prefix.
     val notJson = element !is JsonPrimitive || element.isString
     return lineAwareCut(head, escapedLength(compact), limit, budget, reason, prefixIsNotJson = notJson).saying(repeated)
 }
@@ -209,7 +214,7 @@ private enum class CutReason {
      */
     NO_TRIM_FITS,
 
-    /** Shown as text because [parseOrNull] did not read it as JSON. */
+    /** Shown as text because [read] found it is not JSON. */
     NOT_JSON,
 
     /** Parsed as JSON, and could not be encoded again, so it is shown as the text it arrived as. */
@@ -220,6 +225,9 @@ private enum class CutReason {
 
     /** More values than [ResultBudget.parseCeilingValues], so never parsed. Whether it was JSON is not known. */
     TOO_MANY_VALUES,
+
+    /** Nested more deeply than the parser goes, so never read. Whether it was JSON is not known. */
+    NOT_READABLE,
 
     /** Text by design, so never parsed: see `rawText` on [renderWithinBudget]. Whether it was JSON is not known. */
     RAW_TEXT,
@@ -276,15 +284,25 @@ private fun renderAsDocument(element: JsonElement, sizeHint: Int, limit: Int, bu
  * [raw] as a JSON tree, or null when it is not JSON - which the parser alone does not settle: see
  * [isJson] for what it takes for a value, and [hasValueAfterArrayEnd] for where it ends an array.
  */
-private fun parseOrNull(raw: String): JsonElement? = try {
+private fun read(raw: String): Read = try {
     JsonCodec.compact.parseToJsonElement(raw)
         .takeIf { isJson(it) && !hasValueAfterArrayEnd(raw) }
-        ?.let(::withNumbersAsWritten)
+        ?.let { Tree(withNumbersAsWritten(it)) }
+        ?: NotRead.NOT_JSON
 } catch (_: StackOverflowError) {
-    null
+    // The parser recurses, so JSON nested deeply enough is never read. That says nothing about whether
+    // it is JSON, and a notice must not say it is not.
+    NotRead.TOO_DEEP
 } catch (_: Exception) {
-    null
+    NotRead.NOT_JSON
 }
+
+/** What [read] made of a body: its tree, or why there is none. */
+private sealed interface Read
+
+private class Tree(val element: JsonElement) : Read
+
+private enum class NotRead : Read { NOT_JSON, TOO_DEEP }
 
 /**
  * [root] with every number in it held so that it is written back as the text the API sent.
@@ -911,8 +929,12 @@ private fun cutNotice(
         when (reason) {
             CutReason.NOTHING_TO_TRIM -> "The response had no top-level array to trim.\n"
             CutReason.NO_TRIM_FITS ->
-                "The response had a top-level array, but it would not fit even with that array trimmed to its first entry.\n"
+                "The response had a top-level array that can be trimmed, but even with only its first entry kept " +
+                    "(one array is trimmed at a time), the response was still over the budget.\n"
             CutReason.NOT_JSON -> "The response was not JSON.\n"
+            CutReason.NOT_READABLE ->
+                "The response could not be read as JSON: it is nested more deeply than this server's parser " +
+                    "goes, so it was not checked for JSON.\n"
             CutReason.NOT_ENCODABLE ->
                 "The response was JSON, but this server could not encode it again to trim it, so it was cut as the " +
                     "text it arrived as.\n"

@@ -315,8 +315,8 @@ internal fun JsonObjectBuilder.queryResultParams() {
         "With this set, the results also include the entries received in the 'from' millisecond whose " +
             "sequence numbers are larger than this one. Pass an event's sequence_number_str, as a string, " +
             "digit for digit. Passed as a number it can be rounded before it gets here, and is then no " +
-            "longer that event's sequence number. Ignored for statistic (calculate/groupby) queries, " +
-            "which cannot be paginated.",
+            "longer that event's sequence number. A statistic (calculate/groupby) query cannot be " +
+            "paginated and is run without it, but the value is checked all the same.",
     )
 }
 

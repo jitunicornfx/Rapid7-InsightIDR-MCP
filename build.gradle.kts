@@ -235,7 +235,7 @@ tasks.shadowJar {
     // (gradleup.com/shadow/configuration/merging/#handling-duplicates-strategy), so up to 0.4.2
     // mergeServiceFiles() merged nothing. Three runtime jars (mordant-jvm-jna, -ffm and -graal-ffi) each
     // carry META-INF/services/com.github.ajalt.mordant.terminal.TerminalInterfaceProvider; the jar kept
-    // the first and listed one provider where the plain classpath lists three. Only the paths that a
+    // the first and listed one provider where the plain classpath lists three (checked 2026-10-13). Only the paths that a
     // transformer handles now let every copy through. Every other path keeps EXCLUDE (first copy wins).
     // Per-file rules like these stop shadowJar being taken from the build cache (same page).
     filesMatching("META-INF/services/**") { duplicatesStrategy = DuplicatesStrategy.INCLUDE }
@@ -253,8 +253,9 @@ tasks.shadowJar {
 /**
  * Checks the built fat jar against the runtime jars it was built from: every provider that any of them
  * lists in a META-INF/services file must be listed in the fat jar's copy of that file. 0.4.2's jar fails
- * it (one of the three TerminalInterfaceProvider lines). Only runtime jars are compared: this project
- * has no service files of its own.
+ * it: it lists one of the three TerminalInterfaceProvider implementations and misses two (checked
+ * 2026-10-13). Only runtime jars are compared: this project has no service files of its own. A jar
+ * that fails is deleted, so that the jar left in build/libs is never one the check rejected.
  */
 tasks.register("verifyShadowJarServiceFiles") {
     group = "verification"
@@ -286,7 +287,10 @@ tasks.register("verifyShadowJarServiceFiles") {
             }
         }
         if (missing.isNotEmpty()) {
-            throw GradleException("The fat jar dropped service providers:\n  " + missing.joinToString("\n  "))
+            fatJar.get().asFile.delete()
+            throw GradleException(
+                "The fat jar dropped service providers, and was deleted:\n  " + missing.joinToString("\n  "),
+            )
         }
         logger.lifecycle("verifyShadowJarServiceFiles: ${listed.size} service files, no provider missing.")
     }

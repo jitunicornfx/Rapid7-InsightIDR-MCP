@@ -188,6 +188,11 @@ class QueryContinuationTest {
             assertTrue(description.endsWith(CONTINUATION_POLL_GUIDANCE), description)
         }
         assertTrue("run the query again with a larger poll_timeout_ms" in CONTINUATION_POLL_GUIDANCE)
+        // The note on an unfinished result names the poll tools' own parameter, and says that a larger
+        // poll_timeout_ms does nothing unless the query is run waiting: with wait_for_completion=false,
+        // the tool returns at once whatever the timeout.
+        assertTrue("with query_id set to this result's \"id\"" in UNFINISHED_QUERY_NOTE, UNFINISHED_QUERY_NOTE)
+        assertTrue("wait_for_completion left on (the default) and a larger poll_timeout_ms" in UNFINISHED_QUERY_NOTE)
         // Each names the other as where the other family's ids belong.
         assertTrue("Not for audit queries: their ids are only valid on logsearch_audit_poll_query." in ordinary, ordinary)
         assertTrue("an id from any other query is only valid on logsearch_poll_query." in audit, audit)

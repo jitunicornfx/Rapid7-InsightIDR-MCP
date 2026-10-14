@@ -633,7 +633,7 @@ fun Server.apiTool(
             openWorldHint = true,
         ),
     ) { request ->
-        try {
+        val result = try {
             handler(request.arguments ?: JsonObject(emptyMap()))
         } catch (e: CancellationException) {
             throw e
@@ -649,5 +649,11 @@ fun Server.apiTool(
         } catch (e: Exception) {
             errorResult(unexpectedFailureText(name, e))
         }
+        // One line per call, on stderr. The SDK wrote two of its own at INFO, and simplelogger.properties
+        // quiets that logger for the 440 lines it wrote at startup; without this, nothing on the server's
+        // side would record which tools were called. The tool's name is this server's own, and nothing
+        // from the arguments or the result is in the line.
+        System.err.println("$NOTICE_TAG tool call: $name -> ${if (result.isError == true) "error" else "ok"}")
+        result
     }
 }

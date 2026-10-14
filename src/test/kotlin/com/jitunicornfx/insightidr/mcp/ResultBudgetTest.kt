@@ -200,7 +200,8 @@ class ResultBudgetTest {
     // own voice, outside the envelope, so each sentence of it has to be something the server found out.
 
     private val noTrimFits =
-        "\nThe response had a top-level array, but it would not fit even with that array trimmed to its first entry.\n"
+        "\nThe response had a top-level array that can be trimmed, but even with only its first entry kept " +
+            "(one array is trimmed at a time), the response was still over the budget.\n"
 
     @Test
     fun `a document with an array that no trim makes fit is not said to have no array`() {
@@ -950,6 +951,18 @@ class ResultBudgetTest {
     }
 
     @Test
+    fun `JSON nested too deeply to read is not said to be something other than JSON`() {
+        // 100,000 arrays, one inside the next: RFC 8259 JSON, and deeper than the parser recurses. It was
+        // cut under "The response was not JSON." The values in it are well under the ceiling.
+        val deep = "[".repeat(100_000) + "]".repeat(100_000)
+        val rendered = renderWithinBudget(deep, ResultBudget(maxChars = 4_000), ok = true)
+
+        val notice = rendered.notice!!
+        assertTrue("could not be read as JSON: it is nested more deeply than this server's parser goes" in notice, notice)
+        assertFalse("The response was not JSON." in notice, notice)
+    }
+
+    @Test
     fun `the keys named are the ones the missing members were under, not only the key that was repeated`() {
         // The member that lost held an object, so two members are gone: it, and the one inside it. Only
         // "a" was repeated, and the line used to read "Keys repeated: a, x."
@@ -1277,7 +1290,8 @@ class ResultBudgetTest {
         // what the notice says about why: one bare token, a member of an object, and the first entry of
         // an array - which the trim measures, finds is already too much to keep, and hands on to the cut.
         val noArray = "The response had no top-level array to trim."
-        val noTrimFits = "The response had a top-level array, but it would not fit even with that array trimmed to its first entry."
+        val noTrimFits = "The response had a top-level array that can be trimmed, but even with only its first entry kept " +
+            "(one array is trimmed at a time), the response was still over the budget."
         val shapes = listOf<Triple<Int, String, (String) -> JsonElement>>(
             Triple(1, noArray) { text -> JsonPrimitive(text) },
             Triple(12, noArray) { text -> buildJsonObject { put("message", text) } },

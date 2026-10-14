@@ -111,7 +111,8 @@ which would pass vacuously elsewhere: an elevated token whose files belong to th
 whose ACL shuts out its own owner. Those two tests are marked Windows-only.
 
 One more exception is by JVM, not by platform. The tests that measure how much a rendering allocates
-(in `ResultBudgetTest`, `ResultBudgetDensityTest`, `ValueCeilingTest` and `LogSearchSupportTest`) need
+(in `ResultBudgetTest`, `ResultBudgetDensityTest`, `ValueCeilingTest`, `LogSearchSupportTest` and
+`LogSearchSpoolToolsTest`) need
 per-thread allocation counting, and are reported as skipped on a JVM that does not have it. On the JDK
 used here they run, and they rest on the 512 MB heap that `build.gradle.kts` gives the test worker.
 

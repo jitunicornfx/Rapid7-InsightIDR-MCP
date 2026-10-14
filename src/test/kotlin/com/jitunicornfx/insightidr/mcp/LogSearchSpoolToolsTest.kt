@@ -230,7 +230,7 @@ class LogSearchSpoolToolsTest {
         val lines = spooled().single().readLines().filter { it.isNotBlank() }
         assertEquals(2, lines.size)
         lines.forEach { JsonCodec.compact.parseToJsonElement(it).jsonObject }
-        assertTrue("could not be parsed as JSON" in text)
+        assertTrue("could not be read as JSON" in text)
     }
 
     @Test
@@ -249,9 +249,9 @@ class LogSearchSpoolToolsTest {
         val lines = spooled().single().readLines().filter { it.isNotBlank() }
         assertEquals(2, lines.size, "the page before it is on disk, whole")
         lines.forEach { JsonCodec.compact.parseToJsonElement(it).jsonObject }
-        assertTrue("INCOMPLETE — page 2 was not read: as JSON it holds more than 1000000 values" in text, text)
+        assertTrue("INCOMPLETE — page 2 was not read: if it is JSON, it holds more than 1000000 values" in text, text)
         assertTrue("(${dense.length} characters)" in text, text)
-        assertFalse("could not be parsed as JSON" in text)
+        assertFalse("could not be read as JSON" in text)
         assertEquals(text.substringAfter("status:").lineSequence().first().trim(), manifest()["status"]!!.jsonPrimitive.content)
     }
 
@@ -262,8 +262,8 @@ class LogSearchSpoolToolsTest {
 
         assertTrue(spooled().isEmpty(), "nothing was read, so nothing was written")
         assertEquals(1, h.requests.size, "a Next link in a page that was not read is not followed")
-        assertTrue("INCOMPLETE — page 1 was not read: as JSON it holds more than 1000000 values" in text, text)
-        assertFalse("could not be parsed as JSON" in text)
+        assertTrue("INCOMPLETE — page 1 was not read: if it is JSON, it holds more than 1000000 values" in text, text)
+        assertFalse("could not be read as JSON" in text)
         assertFalse("No events matched" in text, text)
     }
 
@@ -402,8 +402,39 @@ class LogSearchSpoolToolsTest {
             val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
 
             assertEquals(emptyList<File>(), spooled(), body)
-            assertTrue("INCOMPLETE — page 1 returned a body that could not be parsed as JSON" in text, text)
+            assertTrue("INCOMPLETE — page 1 could not be read as JSON" in text, text)
         }
+    }
+
+    @Test
+    fun `a page one of whose links repeats a key is not written, and the run stops at it`() = runBlocking {
+        // A link is read as a tree too, so it has only its last rel. Before, a page whose one link said
+        // "Next" and then "Prev" was written and the run reported COMPLETE, its next page never read.
+        val next2 = "https://us.rest.logs.insight.rapid7.com/query/logs/lk1?sequence_number=2"
+        val h = harness(
+            listOf(
+                HttpStatusCode.OK to page("""{"id":1}""", NEXT_1),
+                HttpStatusCode.OK to """{"events":[{"id":2}],"links":[{"rel":"Next","href":"$next2","rel":"Prev"}]}""",
+            ),
+        )
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
+
+        assertEquals(listOf("""{"id":1}"""), linesOnDisk(), "the page before it is in the file, and nothing of it")
+        val status = text.substringAfter("status:").lineSequence().first().trim()
+        assertTrue(status.startsWith("INCOMPLETE — page 2 was not written: an entry of its links repeats a key"), status)
+        assertTrue("fetch it with logsearch_get_next_page, next_link = $NEXT_1" in status, status)
+        assertFalse(manifest()["complete"]!!.jsonPrimitive.boolean)
+    }
+
+    @Test
+    fun `a page that is JSON but not a page of events is called that, and the first page is looked at by query`() = runBlocking {
+        val h = harness(listOf(HttpStatusCode.OK to """{"events":5}"""))
+        val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
+
+        val status = text.substringAfter("status:").lineSequence().first().trim()
+        assertTrue(status.startsWith("INCOMPLETE — page 1 is JSON but not a page of events"), status)
+        assertFalse("could not be read as JSON" in status, "it was read: $status")
+        assertTrue("run the same query with logsearch_query_logs" in status, status)
     }
 
     @Test
@@ -419,8 +450,10 @@ class LogSearchSpoolToolsTest {
         val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
 
         assertEquals(listOf("""{"id":1}"""), linesOnDisk(), "the page before it is in the file")
-        val status = "INCOMPLETE — page 2 was not written: its top-level object repeats a key, and this server " +
-            "reads only the last member under a key, so which events and links the page holds is not known"
+        val status = "INCOMPLETE — page 2 was not written: its top-level object repeats a key, and read as JSON " +
+            "only the last member under a key is kept, so this server cannot be sure it has the page's events and " +
+            "next-page link as the API sent them. To look at that page, fetch it with logsearch_get_next_page, " +
+            "next_link = $NEXT_1; there is no link to resume this run from"
         assertEquals(status, text.substringAfter("status:").lineSequence().first().trim())
         assertEquals(status, manifest()["status"]!!.jsonPrimitive.content)
         assertFalse(manifest()["complete"]!!.jsonPrimitive.boolean)
@@ -533,7 +566,7 @@ class LogSearchSpoolToolsTest {
         val unreadText = textOf(unread.call("logsearch_spool_query_to_file", spoolArgs()))
 
         assertTrue(spooled().isEmpty())
-        assertTrue("INCOMPLETE — page 1 returned a body that could not be parsed as JSON" in unreadText, unreadText)
+        assertTrue("INCOMPLETE — page 1 could not be read as JSON" in unreadText, unreadText)
         assertFalse("No events matched" in unreadText, unreadText)
         assertTrue(unreadText.startsWith("No events were written, so there is no file.\n"), unreadText)
 
@@ -940,7 +973,7 @@ class LogSearchSpoolToolsTest {
         )
         val text = textOf(h.call("logsearch_spool_query_to_file", spoolArgs()))
 
-        assertTrue("could not be parsed as JSON" in text)
+        assertTrue("could not be read as JSON" in text)
         assertTrue("text/html" in text, "the bare media type is useful and safe")
         assertFalse("IGNORE PREVIOUS" in text)
     }

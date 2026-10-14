@@ -92,10 +92,10 @@ internal const val UNFINISHED_QUERY_NOTE =
     "The query had not finished when this result was returned: it still carries a rel=\"Self\" link, which " +
         "per the Log Search spec a result carries only while its query is running, and until then what it " +
         "holds may be partial search results or a partial calculation. Do not report it as the query's " +
-        "answer. To keep waiting, pass its \"id\" at once to logsearch_poll_query (logsearch_audit_poll_query " +
-        "for an audit query): the API discards a query that goes unpolled, and its spec says to poll at " +
-        "least every $CONTINUATION_POLL_SECONDS seconds. Or run the query again with a larger " +
-        "poll_timeout_ms (up to $LS_MAX_POLL_TIMEOUT_MS)."
+        "answer. To keep waiting, call logsearch_poll_query (logsearch_audit_poll_query for an audit query) " +
+        "at once with query_id set to this result's \"id\": the API discards a query that goes unpolled, and " +
+        "its spec says to poll at least every $CONTINUATION_POLL_SECONDS seconds. Or run the query again with " +
+        "wait_for_completion left on (the default) and a larger poll_timeout_ms (up to $LS_MAX_POLL_TIMEOUT_MS)."
 
 /** Closes the description of both poll tools, so the rule is read before the id is left to go stale. */
 internal const val CONTINUATION_POLL_GUIDANCE =

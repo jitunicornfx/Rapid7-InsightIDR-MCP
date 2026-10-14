@@ -4,6 +4,7 @@ import com.jitunicornfx.insightidr.mcp.testutil.InMemoryTransport
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpStatusCode
+import com.jitunicornfx.insightidr.mcp.tools.registerLogSearchManagementTools
 import io.modelcontextprotocol.kotlin.sdk.client.Client
 import io.modelcontextprotocol.kotlin.sdk.types.Implementation
 import kotlinx.coroutines.coroutineScope
@@ -13,6 +14,7 @@ import java.io.ByteArrayOutputStream
 import java.io.PrintStream
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
@@ -61,6 +63,31 @@ class StartupLoggingTest {
 
         val registryLines = stderr.lines().filter { "FeatureRegistry[Tool]" in it }
         assertEquals(emptyList(), registryLines, "registering 146 tools and calling one wrote these lines")
+    }
+
+    @Test
+    fun `every tool call leaves one line on stderr, naming the tool and nothing it was given`() {
+        // The SDK wrote two INFO lines per call through the logger this file quiets. Without a line of
+        // the server's own, nothing on its side would record which tools were called.
+        val realErr = System.err
+        val captured = ByteArrayOutputStream()
+        System.setErr(PrintStream(captured, true, "UTF-8"))
+        try {
+            runBlocking {
+                val h = mcpHarness(status = HttpStatusCode.NotFound, responseBody = "{}") { registerLogSearchManagementTools(it) }
+                h.call("logsearch_get_log", mapOf("log_id" to "zz-argument-value"))
+                h.call("logsearch_list_logs")
+            }
+        } finally {
+            System.setErr(realErr)
+        }
+        val lines = captured.toString("UTF-8").lines().filter { "tool call:" in it }
+
+        assertEquals(
+            listOf("$NOTICE_TAG tool call: logsearch_get_log -> error", "$NOTICE_TAG tool call: logsearch_list_logs -> error"),
+            lines,
+        )
+        assertFalse("zz-argument-value" in captured.toString("UTF-8"), "an argument is the caller's, not the log's")
     }
 
     @Test

@@ -268,6 +268,16 @@ integerParam(
         // repeating itself. The link to RESUME from is set only when the run stops early with a page
         // still unread — a run that completes has none.
         var lastFollowedHref: String? = null
+
+        // How to see a page the run stopped at. The link that returned it is the API's own, so it is
+        // named only when it passes the checks a resume link does; the first page of a run that was
+        // not resumed came from this tool's own request, which logsearch_query_logs makes too.
+        fun howToLookAt(pageHref: String?): String =
+            pageHref?.let { client.safeResumeLink(it) }?.let {
+                ". To look at that page, fetch it with logsearch_get_next_page, next_link = $it; there is no " +
+                    "link to resume this run from"
+            } ?: ". To look at that page, run the same query with logsearch_query_logs; there is no link to " +
+                "resume this run from"
         var resumeHref: String? = null
         var offeredLink: String? = null
         var pages = 0
@@ -300,27 +310,38 @@ integerParam(
                 }
                 pages++
                 val page = eventsPage(response.body)
-                if (page == null) {
-                    // Two different things, and only one of them is about what the API sent. A page
-                    // this server declined to read was not found to be unparseable.
-                    status = if (holdsMoreValuesThan(response.body)) {
-                        "INCOMPLETE — page $pages was not read: as JSON it holds more than $MAX_PARSED_VALUES " +
-                            "values, which is more than this server reads into memory at once " +
-                            "(${response.body.length} characters); a smaller per_page puts fewer events in a page"
-                    } else {
-                        "INCOMPLETE — page $pages returned a body that could not be parsed as JSON " +
-                            "(${response.body.length} characters, content-type ${safeMediaType(response.contentType)})"
-                    }
-                    complete = false
-                    break@loop
-                }
-                if (page.repeatsKey) {
-                    // Read as a tree, the page has only the last member under each key. Written from
-                    // that, the file would hold one `events` and not the other, or the run would follow
-                    // one `links` and not the other, and nothing would say which the API meant.
-                    status = "INCOMPLETE — page $pages was not written: its top-level object repeats a key, and " +
-                        "this server reads only the last member under a key, so which events and links the " +
-                        "page holds is not known"
+                if (page == null || page.repeatsKey || page.linksRepeatKey) {
+                    // Different things, and not all of them about what the API sent: a page this server
+                    // declined to read was not found to be unreadable, and one that is JSON but not a
+                    // page of events was read. Each says so, and all of them say how to look at the page:
+                    // it cannot be resumed past, because its next-page link is in it.
+                    status = "INCOMPLETE — page $pages " + when {
+                        // Read as a tree, a page has only the last member under each key: the file could
+                        // hold one `events` and not the other, or the run follow one `links` and not the
+                        // other, and nothing would say which the API meant. Which key repeated is not
+                        // known here, so nothing is said about which it was.
+                        page != null && page.repeatsKey ->
+                            "was not written: its top-level object repeats a key, and read as JSON only the last " +
+                                "member under a key is kept, so this server cannot be sure it has the page's " +
+                                "events and next-page link as the API sent them"
+                        // The same one level down: a link with two rels, or two hrefs, is read as its last.
+                        page != null ->
+                            "was not written: an entry of its links repeats a key, and read as JSON only the last " +
+                                "member under a key is kept, so this server cannot be sure it has the page's " +
+                                "next-page link as the API sent it"
+                        else -> when (whyNotAPage(response.body)) {
+                            UnreadPage.TOO_MANY_VALUES ->
+                                "was not read: if it is JSON, it holds more than $MAX_PARSED_VALUES values, which is " +
+                                    "more than this server reads into memory at once (${response.body.length} " +
+                                    "characters); a smaller per_page puts fewer events in a page"
+                            UnreadPage.NOT_A_PAGE ->
+                                "is JSON but not a page of events (its top level is not an object, or its events " +
+                                    "member is not an array), so nothing from it was written"
+                            UnreadPage.NOT_JSON ->
+                                "could not be read as JSON (${response.body.length} characters, content-type " +
+                                    "${safeMediaType(response.contentType)}), so none of its events were written"
+                        }
+                    } + howToLookAt(if (pages == 1) resumeLink else lastFollowedHref)
                     complete = false
                     break@loop
                 }
@@ -661,6 +682,10 @@ private fun controlEscape(c: Char): String = when (c) {
  * characters cut first would still come out as 12,000. And no more of the event is copied than the
  * sample can show, since escaping never shortens: one event can be most of a page, and the spool
  * holds no second copy of a page.
+ *
+ * Text shaped like an envelope marker but written with JSON escapes stays escaped here, so the
+ * envelope's defusal, which reads letters, does not see it. In 0.4.2 the sample was decoded first. It
+ * is the envelope's one-time id that fences the sample, as it fences every body shown as text.
  */
 internal fun sampleOf(body: String, from: Int, to: Int): String {
     val head = FirstChars(SPOOL_SAMPLE_EVENT_CHARS)
@@ -702,6 +727,7 @@ private fun writeFailure(e: IOException): String {
 // ---------------------------------------------------------------------------
 
 private const val EVENTS = "events"
+private const val LINKS = "links"
 
 /**
  * One page of a Log Search result as the spool reads it: its [events] as a tree, for what the run
@@ -718,6 +744,8 @@ internal class EventsPage(
      * not known.
      */
     val repeatsKey: Boolean,
+    /** Whether an entry of the page's `links` repeats a key, so that a link may not be the one the API sent. */
+    val linksRepeatKey: Boolean = false,
 ) {
     /** Where the text of each event is in [body], in order. */
     fun spans() = EventSpans(body, eventsFrom)
@@ -757,7 +785,8 @@ internal class EventSpans(private val body: String, private var at: Int) {
  * events, each in a run that was COMPLETE. Now a page like that is not written, and the run stops at it.
  *
  * The events are written from their own text, found here by reading the body as JSON is written. The
- * body is JSON: past the parse, those two checks are where the parser and RFC 8259 part (see
+ * body is JSON: past the parse, those two checks are where the parser and RFC 8259 part, apart from
+ * a control character sent raw inside a string, which [writeEvent] escapes (see
  * [hasValueAfterArrayEnd] for how that was checked). And the tree keeps an object's members in the
  * order it read them, so the `events` member in the text is the one at the place the tree has it,
  * and its entries are the tree's, one for one. The exception is an object that repeats a key, which
@@ -777,8 +806,11 @@ private fun readPage(body: String, root: JsonObject): EventsPage {
     // A completed result with no matches may omit `events` entirely; treat that as zero events.
     val events = root[EVENTS]?.jsonArray ?: JsonArray(emptyList())
     val place = root.keys.indexOf(EVENTS)
+    val linksPlace = root.keys.indexOf(LINKS)
     var members = 0
     var eventsFrom = -1
+    var linksFrom = -1
+    var linksTo = -1
     // Past the `{` that opens the page.
     var at = afterSpace(body, 0) + 1
     while (true) {
@@ -787,10 +819,41 @@ private fun readPage(body: String, root: JsonObject): EventsPage {
         if (body[at] == '}') break
         // A key, its colon, and the value after them.
         at = afterSpace(body, afterSpace(body, afterString(body, at + 1)) + 1)
-        if (members++ == place) eventsFrom = at + 1
-        at = afterValue(body, at)
+        val member = members++
+        if (member == place) eventsFrom = at + 1
+        val end = afterValue(body, at)
+        if (member == linksPlace) {
+            linksFrom = at
+            linksTo = end
+        }
+        at = end
     }
-    return EventsPage(body, events, eventsFrom, repeatsKey = members > root.size)
+    val repeatsKey = members > root.size
+    // Only once the top level repeats nothing are the places the tree's, and the links found its own.
+    val links = root[LINKS]
+    val linksRepeatKey = !repeatsKey && links != null && linksFrom >= 0 &&
+        repeatedKeys(body.substring(linksFrom, linksTo), links) != null
+    return EventsPage(body, events, eventsFrom, repeatsKey = repeatsKey, linksRepeatKey = linksRepeatKey)
+}
+
+/** Why [eventsPage] read no page from a body, which is what the run's status says of it. */
+internal enum class UnreadPage { TOO_MANY_VALUES, NOT_JSON, NOT_A_PAGE }
+
+/**
+ * Why [body] is not a page [eventsPage] can read. Asked only when it was not one, so the body is read
+ * a second time only on the way to stopping the run. NOT_JSON includes JSON nested more deeply than
+ * the parser goes, which is why the status says "could not be read as JSON" and not "is not JSON".
+ */
+internal fun whyNotAPage(body: String): UnreadPage {
+    if (holdsMoreValuesThan(body)) return UnreadPage.TOO_MANY_VALUES
+    val json = try {
+        parseWithinCeiling(body)?.takeIf { isJson(it) && !hasValueAfterArrayEnd(body) }
+    } catch (_: StackOverflowError) {
+        null
+    } catch (_: Exception) {
+        null
+    }
+    return if (json == null) UnreadPage.NOT_JSON else UnreadPage.NOT_A_PAGE
 }
 
 /** The index of the first character from [from] on that is not whitespace between tokens. */
