@@ -1,6 +1,8 @@
 import java.time.Instant
 import java.time.temporal.ChronoUnit
 import java.util.concurrent.TimeUnit
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.ValueSource
@@ -228,4 +230,64 @@ tasks.shadowJar {
     archiveClassifier.set("all")
     archiveVersion.set(project.version.toString())
     mergeServiceFiles()
+
+    // Shadow's default duplicatesStrategy is EXCLUDE, applied BEFORE any transformer sees a file
+    // (gradleup.com/shadow/configuration/merging/#handling-duplicates-strategy), so up to 0.4.2
+    // mergeServiceFiles() merged nothing. Three runtime jars (mordant-jvm-jna, -ffm and -graal-ffi) each
+    // carry META-INF/services/com.github.ajalt.mordant.terminal.TerminalInterfaceProvider; the jar kept
+    // the first and listed one provider where the plain classpath lists three. Only the paths that a
+    // transformer handles now let every copy through. Every other path keeps EXCLUDE (first copy wins).
+    // Per-file rules like these stop shadowJar being taken from the build cache (same page).
+    filesMatching("META-INF/services/**") { duplicatesStrategy = DuplicatesStrategy.INCLUDE }
+    // Shadow 9.6.1 also applies its KotlinModuleMetadataTransformer by default. With nothing relocated it
+    // copies each .kotlin_module file unchanged and keeps ONE copy per path (the last it is given), so it
+    // cannot merge two files of the same name. WARN rather than INCLUDE, so that a clash is logged. On
+    // 2026-10-13 no two runtime jars carried the same .kotlin_module path.
+    filesMatching("**/*.kotlin_module") { duplicatesStrategy = DuplicatesStrategy.WARN }
+    // INCLUDE writes a duplicated file twice when no transformer consumes it; refuse such a jar.
+    failOnDuplicateEntries = true
+
+    finalizedBy("verifyShadowJarServiceFiles")
+}
+
+/**
+ * Checks the built fat jar against the runtime jars it was built from: every provider that any of them
+ * lists in a META-INF/services file must be listed in the fat jar's copy of that file. 0.4.2's jar fails
+ * it (one of the three TerminalInterfaceProvider lines). Only runtime jars are compared: this project
+ * has no service files of its own.
+ */
+tasks.register("verifyShadowJarServiceFiles") {
+    group = "verification"
+    description = "Checks that the fat jar lists every service provider its runtime jars list."
+
+    val fatJar = tasks.shadowJar.flatMap { it.archiveFile }
+    val runtimeJars: FileCollection = configurations.runtimeClasspath.get()
+    inputs.file(fatJar)
+    inputs.files(runtimeJars)
+
+    doLast {
+        // A provider-configuration file lists one class name per line; '#' starts a comment.
+        fun providers(zip: ZipFile, entry: ZipEntry): Set<String> =
+            zip.getInputStream(entry).use { it.readBytes().toString(Charsets.UTF_8) }
+                .lineSequence().map { it.substringBefore('#').trim() }.filter { it.isNotEmpty() }.toSet()
+
+        val listed = sortedMapOf<String, MutableSet<String>>()
+        runtimeJars.files.filter { it.isFile && it.name.endsWith(".jar") }.forEach { jar ->
+            ZipFile(jar).use { zip ->
+                zip.entries().asSequence()
+                    .filter { !it.isDirectory && it.name.startsWith("META-INF/services/") }
+                    .forEach { entry -> listed.getOrPut(entry.name) { sortedSetOf() } += providers(zip, entry) }
+            }
+        }
+        val missing = ZipFile(fatJar.get().asFile).use { zip ->
+            listed.flatMap { (name, wanted) ->
+                val present = zip.getEntry(name)?.let { providers(zip, it) }.orEmpty()
+                (wanted - present).map { "$name does not list $it" }
+            }
+        }
+        if (missing.isNotEmpty()) {
+            throw GradleException("The fat jar dropped service providers:\n  " + missing.joinToString("\n  "))
+        }
+        logger.lifecycle("verifyShadowJarServiceFiles: ${listed.size} service files, no provider missing.")
+    }
 }
