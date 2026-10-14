@@ -293,8 +293,8 @@ integerParam(
                     // a running query that goes unpolled (see QueryContinuation.kt for what was measured).
                     status = "INCOMPLETE — the query was still running when the time allowed for it ran out; " +
                         "resume at once to keep waiting for it, because the API discards a query that goes " +
-                        "unpolled (its spec says to poll every $CONTINUATION_POLL_SECONDS seconds), or run it " +
-                        "again with a larger max_duration_ms"
+                        "unpolled (its spec says to poll every $CONTINUATION_POLL_SECONDS seconds). A larger " +
+                        "max_duration_ms lets one call wait longer, up to ${LS_MAX_POLL_TIMEOUT_MS / 1000} seconds"
                     complete = false
                     resumeHref = self
                     break@loop

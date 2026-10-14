@@ -46,7 +46,9 @@ fun Server.registerAttachmentTools(client: Rapid7Client, uploads: UploadPolicy =
         inputSchema = toolSchema("rrn") { stringParam("rrn", "The RRN of the attachment to download.") },
     ) { args ->
         val rrn = args.requireString("rrn")
-        client.requestV1(HttpMethod.Get, "/idr/v1/attachments/${seg(rrn)}").toToolResult()
+        // The file somebody attached, as it was uploaded: content, never an API document. A JSON
+        // attachment read as one would be re-rendered, and its keys could reach a server notice.
+        client.requestV1(HttpMethod.Get, "/idr/v1/attachments/${seg(rrn)}").toToolResult(rawText = true)
     }
 
     apiTool(

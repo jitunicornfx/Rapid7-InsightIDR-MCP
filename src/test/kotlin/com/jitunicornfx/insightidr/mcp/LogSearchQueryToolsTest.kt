@@ -455,7 +455,9 @@ class LogSearchQueryToolsTest {
     @Test
     fun `get_context_events refuses a sequence number that is not digits, before any request`() = runBlocking {
         // 8.05647463244786E17 is what a rounded number looks like once a client has written it out again.
-        for (bad in listOf<Any>(8.05647463244786E17, "8.05647463244786E17", "12a", "-5", "1.0", " 7")) {
+        // And a number of nineteen digits may be one a client rounded and wrote out in full: it is all
+        // digits, so only the fact that it did not arrive as a string gives it away.
+        for (bad in listOf<Any>(8.05647463244786E17, "8.05647463244786E17", "12a", "-5", "1.0", " 7", 3234729357407797000L, 1234567890123456L)) {
             val h = harness()
             val result = h.call(
                 "logsearch_get_context_events",
@@ -465,6 +467,17 @@ class LogSearchQueryToolsTest {
             assertEquals(0, h.requests.size, "$bad must not reach the API")
             assertTrue("sequence_number_str" in (result.content.first() as TextContent).text, "$bad")
         }
+    }
+
+    @Test
+    fun `get_context_events still takes a number short enough to have arrived intact`() = runBlocking {
+        // Fifteen digits is below 2^53 whatever they are, so nothing can have rounded it.
+        val h = harness()
+        h.call(
+            "logsearch_get_context_events",
+            mapOf("sequence_number" to 999999999999999L, "timestamp" to "1", "log_key" to "lk1", "context_type" to "SURROUND"),
+        )
+        assertEquals("/query/context/999999999999999", h.lastRequest.url.encodedPath)
     }
 
     @Test

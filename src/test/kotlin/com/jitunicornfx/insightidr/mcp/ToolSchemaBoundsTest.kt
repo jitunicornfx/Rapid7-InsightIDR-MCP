@@ -89,8 +89,8 @@ class ToolSchemaBoundsTest {
             "logsearch_audit_query_logs.query", "logsearch_spool_query_to_file.query",
         )
         // These take LEQL, or a body with LEQL in it, on endpoints where it was not measured: creating
-        // a saved query, detection rule or metric writes to the tenant, the download answered 406 to
-        // everything, and the alert tools' "leql" clause belongs to a different API altogether.
+        // a saved query, detection rule or metric writes to the tenant, the download was tried with
+        // nothing but a where(), and the alert tools' "leql" clause belongs to a different API altogether.
         val notMeasured = setOf(
             "logsearch_create_saved_query.statement", "logsearch_replace_saved_query.statement",
             "logsearch_update_saved_query.statement", "logsearch_download_log_data.query",

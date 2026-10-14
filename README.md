@@ -307,7 +307,7 @@ see `INSIGHTIDR_LOG_SEARCH_BASE_URL` to target the unified route
 (`https://<region>.api.insight.rapid7.com/log_search`) instead.
 
 - **Query log data** (async queries auto-poll to completion; disable with `wait_for_completion=false`;
-  `per_page` defaults to 100, which fits the response budget, and paginated results expose a
+  `per_page` defaults to 100, which usually fits the response budget, and paginated results expose a
   `rel: "Next"` link — pass its href to `logsearch_get_next_page` for the next page. Statistic
   queries — those using `calculate()` or `groupby()` — can't be paginated; the server detects the
   API's "pagination not supported" rejection and transparently re-runs them without pagination, so
@@ -368,8 +368,8 @@ Above it the server degrades in steps, each one lossier than the last:
    `data`, …). The result is still **valid, parseable JSON**, and carries an `_mcp_truncated` object
    recording how many entries were returned and dropped. The `links` array is never trimmed, so the
    `rel: "Next"` href always survives and pagination keeps working.
-3. **Cut** — for a response with no trimmable array, one that isn't JSON at all (a raw log
-   download), or one too large to read as JSON: longer than 16,000,000 characters, or holding more
+3. **Cut** — for a response with no trimmable array, one that isn't JSON at all, or one too large
+   to read as JSON: longer than 16,000,000 characters, or holding more
    than 1,000,000 JSON values. The cut prefers a line boundary, so line-oriented output ends on a
    whole record.
 
@@ -380,8 +380,9 @@ trimmed below a floor, so the diagnostic you need to fix a failing call always s
 Apart from that a response is shown as the API sent it. Text that only resembles JSON is shown as
 text, not rewritten into JSON; numbers keep the digits they were written with; and when an object
 repeats a key — read as JSON, only the last member under a key survives — a notice says how many
-members are missing. A log download (`logsearch_download_log_data`) is log entries, one to a line,
-and is always shown as text, never read as a document.
+members are missing. Downloaded content is always shown as text and never read as a document: a
+log download (`logsearch_download_log_data`), which is log entries one to a line, and an attachment
+(`download_attachment`), which is whatever was uploaded.
 
 ### Repeated Context links
 

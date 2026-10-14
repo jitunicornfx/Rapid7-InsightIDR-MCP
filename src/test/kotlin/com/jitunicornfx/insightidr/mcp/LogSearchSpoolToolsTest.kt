@@ -461,6 +461,8 @@ class LogSearchSpoolToolsTest {
         // But only at once: the API discards a running query that goes unpolled, and "resume" alone
         // sent a model back to a 404 half a minute later.
         assertTrue("resume at once" in text && "larger max_duration_ms" in text, text)
+        // And the larger wait has a ceiling of its own, which the advice must not hide.
+        assertTrue("up to 120 seconds" in text, text)
     }
 
     // -----------------------------------------------------------------------------------------

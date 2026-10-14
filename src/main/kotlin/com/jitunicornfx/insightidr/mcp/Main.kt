@@ -42,9 +42,9 @@ const val STREAMABLE_HTTP_PATH = "/mcp"
 const val LEGACY_SSE_PATH = "/sse"
 
 /**
- * Where the legacy transport used to live, and the only URL 0.3.x clients know. Kept for one release
- * so that an unattended self-update does not strand them; new configurations should use
- * [STREAMABLE_HTTP_PATH]. Remove together with its README note.
+ * Where the legacy transport used to live, and the only URL 0.3.x clients know. Kept so that an
+ * unattended self-update does not strand them, and to be removed in a later release; new
+ * configurations should use [STREAMABLE_HTTP_PATH]. Remove together with its README note.
  */
 const val DEPRECATED_ROOT_SSE_PATH = "/"
 

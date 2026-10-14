@@ -115,7 +115,7 @@ class ResultBudgetDensityTest {
     }
 
     @Test
-    fun `a download of one JSON object to a line is still said not to be JSON`() {
+    fun `text of one JSON object to a line, when no tool has said it is a download, is said not to be JSON`() {
         // 12,000 values in it, and it is not a document: the parser reads the first line and refuses the
         // rest. So the first line is all that is counted, and the notice says what was found by parsing
         // rather than what a count of the whole text would have feared.

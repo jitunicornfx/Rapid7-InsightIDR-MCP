@@ -556,8 +556,9 @@ internal fun ApiResponse.toToolText(budget: ResultBudget = ResultBudget.active, 
  * [budget] defaults to the process-wide value installed at startup, so all existing call sites are
  * bounded without change; tests pass an explicit budget to exercise the ladder hermetically.
  *
- * [rawText] is for the one endpoint that answers in text by design, the download of log entries. Its
- * body is shown as it arrived and is never read as an API document.
+ * [rawText] is for an endpoint that answers with content, not with an API document: the download of
+ * log entries, and the download of an attachment. The body is shown as it arrived and is never read
+ * as a document.
  */
 fun ApiResponse.toToolResult(budget: ResultBudget = ResultBudget.active, rawText: Boolean = false): CallToolResult =
     CallToolResult(content = listOf(TextContent(toToolText(budget, rawText))), isError = !ok)

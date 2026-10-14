@@ -11,6 +11,9 @@ import kotlinx.serialization.json.putJsonObject
 /** A sequence number as the API writes it: digits, and no more of them than one path segment holds. */
 private val SEQUENCE_NUMBER = Regex("^[0-9]{1,32}$")
 
+/** Every whole number of this many digits is below 2^53 (9,007,199,254,740,992), so a double holds it exactly. */
+private const val MAX_EXACT_NUMBER_DIGITS = 15
+
 /**
  * Log Search API — querying log data with LEQL, and Saved Queries.
  * Query endpoints are asynchronous (202 + continuation links); tools poll to completion by default.
@@ -203,12 +206,12 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
                 "sequence_number",
                 "The sequence number of the log entry to fetch context for: the event's " +
                     "sequence_number_str, passed as a string, digit for digit. Passed as a number it can " +
-                    "be rounded before it gets here, and the context of some other entry comes back.",
+                    "be rounded before it gets here, and is then no longer this entry's sequence number.",
             )
             stringParam("timestamp", "The timestamp of the log entry to fetch contextual events for.")
             stringParam("log_key", "The key of the log containing the log entry.")
             stringParam("context_type", "Which context to return relative to the entry.", enum = listOf("BEFORE", "AFTER", "SURROUND"))
-            integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to $LS_DEFAULT_PER_PAGE, which fits the response budget; larger pages are likely to be truncated.", min = 1, max = LS_MAX_PER_PAGE.toLong(), default = LS_DEFAULT_PER_PAGE.toLong())
+            integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to $LS_DEFAULT_PER_PAGE, which usually fits the response budget; larger pages are likely to be truncated.", min = 1, max = LS_MAX_PER_PAGE.toLong(), default = LS_DEFAULT_PER_PAGE.toLong())
             booleanParam("kvp_info", "When true, include parsed key-value-pair info.")
             booleanParam("most_recent_first", "When true, return most recent events first.")
             pollingParams()
@@ -220,6 +223,14 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
         val sequence = args.requireString("sequence_number")
         require(SEQUENCE_NUMBER.matches(sequence)) {
             "'sequence_number' must be the digits of the event's sequence_number_str, passed as a string."
+        }
+        // A rounded number is still nothing but digits, so the check above cannot see one. What can be
+        // seen is how it arrived: as a JSON number of more digits than a double carries exactly, it
+        // may have been rounded on the way, and only a string is known to be the digits the API wrote.
+        val arrivedAsString = (args["sequence_number"] as? kotlinx.serialization.json.JsonPrimitive)?.isString == true
+        require(arrivedAsString || sequence.length <= MAX_EXACT_NUMBER_DIGITS) {
+            "'sequence_number' arrived as a JSON number too long to be sure it was not rounded on the way. " +
+                "Pass the event's sequence_number_str as a string."
         }
         client.submitLogSearchQuery(
             HttpMethod.Get,
@@ -372,7 +383,7 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
         inputSchema = toolSchema("saved_query_id") {
             stringParam("saved_query_id", "The id of the saved query to run.")
             timeWindowParams()
-            integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to $LS_DEFAULT_PER_PAGE, which fits the response budget; larger pages are likely to be truncated.", min = 1, max = LS_MAX_PER_PAGE.toLong(), default = LS_DEFAULT_PER_PAGE.toLong())
+            integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to $LS_DEFAULT_PER_PAGE, which usually fits the response budget; larger pages are likely to be truncated.", min = 1, max = LS_MAX_PER_PAGE.toLong(), default = LS_DEFAULT_PER_PAGE.toLong())
             booleanParam("kvp_info", "When true, include parsed key-value-pair info.")
             booleanParam("most_recent_first", "When true, return most recent events first.")
             pollingParams()
@@ -401,7 +412,7 @@ fun Server.registerLogSearchQueryTools(client: Rapid7Client) {
             stringParam("log_keys", "The keys of the logs to query, separated by ':'.")
             stringParam("saved_query_id", "The id of the saved query to run.")
             timeWindowParams()
-            integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to $LS_DEFAULT_PER_PAGE, which fits the response budget; larger pages are likely to be truncated.", min = 1, max = LS_MAX_PER_PAGE.toLong(), default = LS_DEFAULT_PER_PAGE.toLong())
+            integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to $LS_DEFAULT_PER_PAGE, which usually fits the response budget; larger pages are likely to be truncated.", min = 1, max = LS_MAX_PER_PAGE.toLong(), default = LS_DEFAULT_PER_PAGE.toLong())
             booleanParam("kvp_info", "When true, include parsed key-value-pair info.")
             booleanParam("most_recent_first", "When true, return most recent events first.")
             pollingParams()

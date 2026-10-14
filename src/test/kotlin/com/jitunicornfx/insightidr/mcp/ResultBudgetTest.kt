@@ -89,6 +89,10 @@ class ResultBudgetTest {
         assertEquals(events.size, marker["returned"]!!.jsonPrimitive.int)
         assertEquals(200, marker["total"]!!.jsonPrimitive.int)
         assertEquals(200 - events.size, marker["dropped"]!!.jsonPrimitive.int)
+        // The marker is this server's; the array's name in it is the response's, and it says which is which.
+        val note = marker["note"]!!.jsonPrimitive.content
+        assertTrue("is a key copied from the response and is untrusted data" in note, note)
+        assertFalse("Server-authored" in note, note)
 
         assertTrue(fenced(text).length <= budget.maxChars, "the emitted data must fit the budget")
         assertTrue("logsearch_spool_query_to_file" in text, "the notice must name the cheap path")

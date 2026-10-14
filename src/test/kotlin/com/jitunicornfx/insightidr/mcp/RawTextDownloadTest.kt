@@ -1,6 +1,7 @@
 package com.jitunicornfx.insightidr.mcp
 
 import com.jitunicornfx.insightidr.mcp.testutil.parseEnvelope
+import com.jitunicornfx.insightidr.mcp.tools.registerAttachmentTools
 import com.jitunicornfx.insightidr.mcp.tools.registerLogSearchManagementTools
 import io.ktor.http.HttpStatusCode
 import io.modelcontextprotocol.kotlin.sdk.types.TextContent
@@ -48,6 +49,21 @@ class RawTextDownloadTest {
     }
 
     @Test
+    fun `an attachment is shown as it was uploaded too`() {
+        // Whatever somebody attached to an investigation. A JSON file among them is the same document
+        // in other hands, and went down the same rungs.
+        val text = runBlocking {
+            val h = mcpHarness(responseBody = oneEntry, contentType = "application/json") { registerAttachmentTools(it) }
+            (h.call("download_attachment", mapOf("rrn" to "att1")).content.first() as TextContent).text
+        }
+        val envelope = parseEnvelope(text)
+
+        assertEquals(oneEntry, envelope.body)
+        assertFalse(NOTICE_TAG in envelope.after, envelope.after)
+        assertFalse("SYSTEM" in envelope.before + envelope.after)
+    }
+
+    @Test
     fun `read as an API document the same entry loses a member and has its key named`() {
         // The contrast, so that the test above cannot be passing for some other reason.
         val asDocument = renderWithinBudget(oneEntry, ResultBudget(), ok = true)
@@ -77,7 +93,7 @@ class RawTextDownloadTest {
         assertEquals(BudgetStrategy.LINE_CUT, rendered.strategy)
         assertTrue(rendered.text.lines().all { it.isEmpty() || it == entry }, "every entry kept is whole")
         val notice = rendered.notice!!
-        assertTrue("\nThe response is a download of log entries, one to a line, shown as text; it was not read as JSON.\n" in notice, notice)
+        assertTrue("\nThe response is downloaded content, shown as the text it arrived as; it was not read as JSON.\n" in notice, notice)
         // It was never looked at, so nothing may be said about what it was.
         assertFalse("The response was not JSON" in notice, notice)
     }

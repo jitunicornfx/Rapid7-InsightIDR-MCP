@@ -45,8 +45,9 @@ package com.jitunicornfx.insightidr.mcp
  * not said anywhere in this server. Events that are not JSON were not tried.
  *
  * NOT measured: a saved query's statement, the download endpoint's query, and the LEQL inside
- * detection rules and metrics. Creating those writes to the tenant, and the download answered 406 to
- * everything. Their descriptions therefore say nothing about clause order.
+ * detection rules and metrics. Creating those writes to the tenant, and the download was tried with
+ * nothing but a where() (2026-10-13, accepted). Their descriptions therefore say nothing about
+ * clause order.
  */
 internal const val LEQL_CLAUSE_ORDER = "select() where() groupby() calculate() having() sort() limit() timeslice()"
 

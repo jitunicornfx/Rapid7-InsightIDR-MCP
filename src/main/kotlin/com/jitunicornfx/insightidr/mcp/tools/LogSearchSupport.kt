@@ -287,7 +287,7 @@ internal fun JsonObjectBuilder.leqlQueryParam(lead: String) {
 
 /** Pagination / result-shaping parameters shared by the query endpoints. */
 internal fun JsonObjectBuilder.queryResultParams() {
-    integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to $LS_DEFAULT_PER_PAGE, which fits the response budget; larger pages are likely to be truncated. Ignored for statistic (calculate/groupby) queries, which cannot be paginated.", min = 1, max = LS_MAX_PER_PAGE.toLong(), default = LS_DEFAULT_PER_PAGE.toLong())
+    integerParam("per_page", "Number of log entries per page, up to $LS_MAX_PER_PAGE. Defaults to $LS_DEFAULT_PER_PAGE, which usually fits the response budget; larger pages are likely to be truncated. Ignored for statistic (calculate/groupby) queries, which cannot be paginated.", min = 1, max = LS_MAX_PER_PAGE.toLong(), default = LS_DEFAULT_PER_PAGE.toLong())
     booleanParam("most_recent_first", "When true, return the most recent events first. Defaults to false.")
     booleanParam("kvp_info", "When true, include parsed key-value-pair info for each returned log entry.")
     integerParam("sequence_number", "Include entries in the 'from' millisecond with sequence numbers at/after this value.")
