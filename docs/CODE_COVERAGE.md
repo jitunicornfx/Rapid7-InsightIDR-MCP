@@ -31,8 +31,8 @@ Coverage is wired into the Gradle build — you don't need to install anything b
 - `test` is `finalizedBy(jacocoTestReport)`, so **every test run refreshes the coverage report**.
 - `jacocoTestReport` produces both **XML** (`xml.required = true`, consumed by SonarQube) and **HTML**
   (`html.required = true`).
-- A `jacocoTestCoverageVerification` task exists with a `minimum` of `0.00` — a placeholder gate you can
-  raise once meaningful tests exist (see [Enforcing a threshold](#enforcing-a-minimum-threshold)).
+- A `jacocoTestCoverageVerification` task exists with a `minimum` of `0.00`: the gate is wired but
+  not enforced (see [Enforcing a threshold](#enforcing-a-minimum-threshold)).
 - SonarQube is pointed at the JaCoCo XML via `sonar.coverage.jacoco.xmlReportPaths`.
 
 Tests live under `src/test/kotlin/` mirroring the main package (`com.jitunicornfx.insightidr.mcp`),
@@ -75,12 +75,15 @@ line-by-line highlighting.
 
 ## Current baseline
 
-Measured 2026-09-21 on a clean build with the Gradle build cache off: **94.5% line / 94.3% method /
-77.8% branch** across **478 tests**, none skipped. Every tool-domain source file - all v1/v2 IDR
-domains, the SIEM Alerts API tools, all Log Search domains, `Rapid7Client`, `Config`, `ToolSupport`
-and `LogSearchSupport` - sits at **92-100% line coverage**. The full **146-tool** inventory is verified
-by listing tools through an in-process MCP client, and `ToolSchemaBoundsTest` reads every tool's
-schema the same way.
+Measured 2026-10-13 with every task re-run and the Gradle build cache off (Gradle 9.8.1, Kotlin
+2.4.21, JDK 25): **95.2% line / 94.9% method / 82.4% branch** across **610 tests**, none skipped.
+Every tool-domain source file - all v1/v2 IDR domains, the SIEM Alerts API tools, all Log Search
+domains, `Rapid7Client`, `Config`, `ToolSupport` and `LogSearchSupport` - sits at **93-100% line
+coverage**. The files that decide what a response looks like when it reaches the model are at
+**97-100%**: `ResultBudget`, `RepeatedKeys` and `ValueCeiling` for the body, `RateLimit` and
+`QueryContinuation` for what is said about a 429 or a refused continuation. The full **146-tool**
+inventory is verified by listing tools through an in-process MCP client, and `ToolSchemaBoundsTest`
+reads every tool's schema the same way.
 
 The files below the rest, and why:
 
@@ -106,6 +109,11 @@ with the other platform's answer passed in. The exceptions are two cases only Wi
 which would pass vacuously elsewhere: an elevated token whose files belong to the Administrators group
 (the answer `Privacy.of` is handed in place of a real elevated run), and an existing spool directory
 whose ACL shuts out its own owner. Those two tests are marked Windows-only.
+
+One more exception is by JVM, not by platform. The tests that measure how much a rendering allocates
+(in `ResultBudgetTest`, `ResultBudgetDensityTest`, `ValueCeilingTest` and `LogSearchSupportTest`) need
+per-thread allocation counting, and are reported as skipped on a JVM that does not have it. On the JDK
+used here they run, and they rest on the 512 MB heap that `build.gradle.kts` gives the test worker.
 
 ### How the tests themselves are checked
 
@@ -217,8 +225,9 @@ val engine = MockEngine { request ->
 }
 ```
 
-To make `Rapid7Client` testable this way, allow injecting the Ktor `HttpClient` (or the engine) so a
-test can pass a `MockEngine`-backed client. That one seam unlocks coverage of all ~50 tool handlers.
+`Rapid7Client` takes the engine as a constructor argument for exactly this
+(`Rapid7Client(config, engine)`), and `McpTestHarness.kt` wraps it with an in-process MCP client. That
+one seam is what the tests of all 146 tools go through.
 
 Registration wiring can be covered with an in-process MCP client (`kotlin-sdk-client`, already a
 `testImplementation` dependency): start the server over an in-memory/stdio transport and assert
