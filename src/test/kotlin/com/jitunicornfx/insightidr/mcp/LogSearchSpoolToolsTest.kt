@@ -422,7 +422,9 @@ class LogSearchSpoolToolsTest {
         assertEquals(listOf("""{"id":1}"""), linesOnDisk(), "the page before it is in the file, and nothing of it")
         val status = text.substringAfter("status:").lineSequence().first().trim()
         assertTrue(status.startsWith("INCOMPLETE — page 2 was not written: an entry of its links repeats a key"), status)
-        assertTrue("fetch it with logsearch_get_next_page, next_link = $NEXT_1" in status, status)
+        assertTrue("pass its page_link to logsearch_get_next_page as next_link" in status, status)
+        assertTrue("  page_link: $NEXT_1\n" in serverAuthored(text), text)
+        assertEquals(NEXT_1, manifest()["page_link"]!!.jsonPrimitive.content)
         assertFalse(manifest()["complete"]!!.jsonPrimitive.boolean)
     }
 
@@ -436,7 +438,30 @@ class LogSearchSpoolToolsTest {
         assertFalse("could not be read as JSON" in status, "it was read: $status")
         // At the spool's own page size: logsearch_query_logs defaults to 100, so the same arguments alone
         // would show a fifth of a 500-event page.
-        assertTrue("run the same query with logsearch_query_logs and per_page = 500;" in status, status)
+        assertTrue(
+            "run the same query with logsearch_query_logs and per_page = 500 (its time_range is relative and is " +
+                "measured again when the query runs, so the page may not come back the same);" in status,
+            status,
+        )
+        assertFalse("page_link" in text, "there is no link to give: $text")
+    }
+
+    @Test
+    fun `a first page from a fixed from and to is looked at by query with no word about a relative range`() = runBlocking {
+        val h = harness(listOf(HttpStatusCode.OK to """{"events":5}"""))
+        val args = mapOf<String, Any?>(
+            "log_keys" to listOf("lk1"),
+            "query" to "where(x)",
+            "from" to 1_700_000_000_000L,
+            "to" to 1_700_003_600_000L,
+        )
+        val text = textOf(h.call("logsearch_spool_query_to_file", args))
+
+        val status = text.substringAfter("status:").lineSequence().first().trim()
+        assertTrue(
+            "run the same query with logsearch_query_logs and per_page = 500; there is no link to resume" in status,
+            status,
+        )
     }
 
     @Test
@@ -465,6 +490,8 @@ class LogSearchSpoolToolsTest {
         assertFalse("logsearch_query_logs" in status, "that would show page 1: $status")
         assertFalse("aaaaaaaaaa" in serverAuthored(text), "the link is the API's text")
         assertFalse("aaaaaaaaaa" in manifest()["status"]!!.jsonPrimitive.content)
+        assertFalse("page_link" in text, text.take(2_000))
+        assertFalse(manifest().containsKey("page_link"))
     }
 
     @Test
@@ -476,8 +503,29 @@ class LogSearchSpoolToolsTest {
         assertEquals(NEXT_1, h.requests.single().url.toString())
         val status = text.substringAfter("status:").lineSequence().first().trim()
         assertTrue(status.startsWith("INCOMPLETE — page 1 could not be read as JSON"), status)
-        assertTrue("fetch it with logsearch_get_next_page, next_link = $NEXT_1;" in status, status)
+        assertTrue("pass its page_link to logsearch_get_next_page as next_link;" in status, status)
+        assertFalse(NEXT_1 in status, "a link is kept out of the status, as the resume link is: $status")
+        // Nothing was written, so there is no sample and no envelope: all of it is the server's own text.
+        assertTrue("  page_link: $NEXT_1\n" in text, text)
         assertFalse("logsearch_query_logs" in status, status)
+    }
+
+    @Test
+    fun `a resumed run that stops at a later page offers that page's own link, not the one it was resumed from`() = runBlocking {
+        // The resume link fetches the run's page 1, which was read and written.
+        val h = harness(
+            listOf(
+                HttpStatusCode.OK to page("""{"id":1}""", NEXT_2),
+                HttpStatusCode.OK to "<html>x</html>",
+            ),
+        )
+        val text = textOf(h.call("logsearch_spool_query_to_file", mapOf("resume_from_next_link" to NEXT_1)))
+
+        assertEquals(listOf(NEXT_1, NEXT_2), h.requests.map { it.url.toString() })
+        val status = text.substringAfter("status:").lineSequence().first().trim()
+        assertTrue(status.startsWith("INCOMPLETE — page 2 could not be read as JSON"), status)
+        assertTrue("  page_link: $NEXT_2\n" in serverAuthored(text), text)
+        assertEquals(NEXT_2, manifest()["page_link"]!!.jsonPrimitive.content)
     }
 
     @Test
@@ -495,10 +543,11 @@ class LogSearchSpoolToolsTest {
         assertEquals(listOf("""{"id":1}"""), linesOnDisk(), "the page before it is in the file")
         val status = "INCOMPLETE — page 2 was not written: its top-level object repeats a key, and read as JSON " +
             "only the last member under a key is kept, so this server cannot be sure it has the page's events and " +
-            "next-page link as the API sent them. To look at that page, fetch it with logsearch_get_next_page, " +
-            "next_link = $NEXT_1; there is no link to resume this run from"
+            "next-page link as the API sent them. To look at that page, pass its page_link to " +
+            "logsearch_get_next_page as next_link; there is no link to resume this run from"
         assertEquals(status, text.substringAfter("status:").lineSequence().first().trim())
         assertEquals(status, manifest()["status"]!!.jsonPrimitive.content)
+        assertEquals(NEXT_1, manifest()["page_link"]!!.jsonPrimitive.content)
         assertFalse(manifest()["complete"]!!.jsonPrimitive.boolean)
         assertFalse("resume_from_next_link" in text, "the same page would come back")
     }
