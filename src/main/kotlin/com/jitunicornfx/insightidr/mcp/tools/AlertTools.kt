@@ -408,6 +408,30 @@ fun Server.registerAlertActionTools(client: Rapid7Client) {
     }
 }
 
+/**
+ * Said beside a 404 from get_alert_process_trees asked without force_refresh, after the status line's
+ * generic "the id/RRN may be wrong".
+ *
+ * Without force_refresh the endpoint returns only trees generated before ("the cached version is
+ * returned if available", spec 39.10.0). The spec's 404 reads "Process tree doesn't exist, or you don't
+ * have the privileges to access it"; it does not say that a tree never generated counts as not existing,
+ * or that an alert that does not exist gets the same 404 with an empty body - both of which the API does.
+ * Measured 2026-11-06 on one tenant: 32 of 32 alerts sampled had no tree, of every age from minutes to
+ * 9 weeks, open and closed, handled by an analyst or not; two of them got a tree at once from
+ * force_refresh=true, the tenant kept it, and the plain call then returned it. With force_refresh=true,
+ * a made-up alert RRN and an ad_admin alert (no process data) were still 404.
+ *
+ * Only for a first-page request: a page past the last one, or size=0, is also a 404 with an empty body
+ * (measured the same day, on an alert whose tree exists), and there the note would send the model to
+ * regenerate a tree it already has.
+ */
+internal const val PROCESS_TREE_NOT_GENERATED_NOTE =
+    "A 404 from this endpoint is also what the API answers when no process tree has been generated for " +
+        "the alert yet: without force_refresh it returns only trees it has already generated, and often " +
+        "none has been. Call get_alert_process_trees again with force_refresh=true to generate them (slower; " +
+        "the tenant keeps what it generates). If that is 404 too, the alert does not exist, has no process " +
+        "data to build a tree from, or this API key cannot see it."
+
 /** Registers the SIEM Alerts "Process Tree" tools. */
 fun Server.registerAlertProcessTreeTools(client: Rapid7Client) {
 
@@ -417,7 +441,11 @@ fun Server.registerAlertProcessTreeTools(client: Rapid7Client) {
         readOnly = true,
         inputSchema = toolSchema("alert_rrn", "process_tree_rrn") {
             stringParam("alert_rrn", ALERT_RRN_DESC)
-            stringParam("process_tree_rrn", "The Rapid7 Resource Name (RRN) of the process tree.")
+            stringParam(
+                "process_tree_rrn",
+                "The Rapid7 Resource Name (RRN) of the process tree, as returned in the `rrn` of a " +
+                    "get_alert_process_trees result.",
+            )
             booleanParam("force_refresh", "If true, regenerate the tree instead of returning a cached version (expensive).")
             integerParam("branch", "The branch number to generate the process tree with.")
         },
@@ -436,23 +464,42 @@ fun Server.registerAlertProcessTreeTools(client: Rapid7Client) {
 
     apiTool(
         name = "get_alert_process_trees",
-        description = "Retrieve all process trees for a SIEM alert.",
+        description = "Retrieve all process trees for a SIEM alert. Without force_refresh the API returns only " +
+            "trees it has already generated, and answers 404 when there are none, which is common; " +
+            "force_refresh=true generates them, and the tenant keeps what it generates.",
         readOnly = true,
         inputSchema = toolSchema("alert_rrn") {
             stringParam("alert_rrn", ALERT_RRN_DESC)
-            booleanParam("force_refresh", "If true, regenerate the trees instead of returning cached versions (expensive).")
+            booleanParam(
+                "force_refresh",
+                "If true, generate the trees now: slower (the API calls it expensive), and the trees generated " +
+                    "are kept and returned to later calls. Without it, only trees generated before are " +
+                    "returned, and a 404 can mean none has been.",
+            )
             integerParam("branch", "The branch number to generate the process trees with.")
             pagingParams(minSize = 0)
         },
     ) { args ->
         val alertRrn = args.requireString("alert_rrn")
-        client.request(
+        val forceRefresh = args.booleanOrNull("force_refresh")
+        val response = client.request(
             HttpMethod.Post,
             "$AT/alerts/${seg(alertRrn)}/process_trees/latest",
             query = pagingQuery(args) + query(
-                "force_refresh" to args.booleanOrNull("force_refresh"),
+                "force_refresh" to forceRefresh,
                 "branch" to args.intOrNull("branch"),
             ),
-        ).toToolResult()
+        )
+        // Only without force_refresh: with it, a 404 means no tree could be generated, and the note's
+        // next step would only repeat the call that just failed. And only for the first page: a page past
+        // the last one, or size=0, is a 404 too, for an alert whose trees exist.
+        val firstPage = (args.intOrNull("index") ?: 0) == 0 && (args.intOrNull("size")?.let { it > 0 } ?: true)
+        if (response.status == 404 && forceRefresh != true && firstPage) {
+            response.copy(
+                serverNote = listOfNotNull(response.serverNote, PROCESS_TREE_NOT_GENERATED_NOTE).joinToString(" "),
+            ).toToolResult()
+        } else {
+            response.toToolResult()
+        }
     }
 }

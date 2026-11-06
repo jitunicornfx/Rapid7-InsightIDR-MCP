@@ -1,5 +1,6 @@
 package com.jitunicornfx.insightidr.mcp
 
+import com.jitunicornfx.insightidr.mcp.tools.PROCESS_TREE_NOT_GENERATED_NOTE
 import com.jitunicornfx.insightidr.mcp.tools.registerAlertActionTools
 import com.jitunicornfx.insightidr.mcp.tools.registerAlertProcessTreeTools
 import com.jitunicornfx.insightidr.mcp.tools.registerAlertTools
@@ -257,6 +258,59 @@ class AlertToolsTest {
         assertEquals(HttpMethod.Post, h.lastRequest.method)
         assertEquals("/idr/at/alerts/rrnA/process_trees/latest", h.lastRequest.url.encodedPath)
         assertEquals("10", h.lastRequest.url.parameters["size"])
+    }
+
+    @Test
+    fun `a 404 for process trees asked without force_refresh says no tree may have been generated yet`() = runBlocking {
+        // Measured 2026-11-06: the API answers 404 with an empty body both for an alert that does not exist
+        // and for one whose tree has not been generated, which was every alert sampled. The status line
+        // alone said only that the RRN might be wrong.
+        val h = harness(status = io.ktor.http.HttpStatusCode.NotFound, body = "")
+
+        for (args in listOf(mapOf("alert_rrn" to "rrnA"), mapOf("alert_rrn" to "rrnA", "force_refresh" to false))) {
+            val result = h.call("get_alert_process_trees", args)
+            assertTrue(result.isError == true)
+            assertTrue("$NOTICE_TAG $PROCESS_TREE_NOT_GENERATED_NOTE" in textOf(result), textOf(result))
+        }
+
+        // With force_refresh a 404 means no tree could be generated: the note would send the model back to
+        // the call that just failed.
+        val refreshed = h.call("get_alert_process_trees", mapOf("alert_rrn" to "rrnA", "force_refresh" to true))
+        assertTrue(refreshed.isError == true)
+        assertEquals("true", h.lastRequest.url.parameters["force_refresh"])
+        assertFalse(PROCESS_TREE_NOT_GENERATED_NOTE in textOf(refreshed), textOf(refreshed))
+    }
+
+    @Test
+    fun `a 404 for a page past the first is not said to mean no tree was generated`() = runBlocking {
+        // Measured 2026-11-06 on an alert whose tree exists: index=1 and size=0 are both 404 with an empty
+        // body. The note would send the model to regenerate a tree it already has.
+        val h = harness(status = io.ktor.http.HttpStatusCode.NotFound, body = "")
+
+        for (paging in listOf(mapOf("index" to 1), mapOf("index" to 5, "size" to 1), mapOf("size" to 0))) {
+            val text = textOf(h.call("get_alert_process_trees", mapOf("alert_rrn" to "rrnA") + paging))
+            assertFalse(PROCESS_TREE_NOT_GENERATED_NOTE in text, "$paging: $text")
+        }
+        for (paging in listOf(mapOf("index" to 0), mapOf("size" to 1), mapOf("index" to 0, "size" to 20))) {
+            val text = textOf(h.call("get_alert_process_trees", mapOf("alert_rrn" to "rrnA") + paging))
+            assertTrue(PROCESS_TREE_NOT_GENERATED_NOTE in text, "the first page: $paging: $text")
+        }
+    }
+
+    @Test
+    fun `the process-tree note is not added to a success or to another error`() = runBlocking {
+        for (status in listOf(io.ktor.http.HttpStatusCode.OK, io.ktor.http.HttpStatusCode.Forbidden)) {
+            val h = harness(status = status, body = """{"process_trees":[]}""")
+            val text = textOf(h.call("get_alert_process_trees", mapOf("alert_rrn" to "rrnA")))
+            assertFalse(PROCESS_TREE_NOT_GENERATED_NOTE in text, "HTTP ${status.value}: $text")
+        }
+    }
+
+    @Test
+    fun `the process-trees tool says that without force_refresh only trees generated before come back`() = runBlocking {
+        val tool = harness().tools().single { it.name == "get_alert_process_trees" }
+        assertTrue("force_refresh=true" in tool.description.orEmpty(), tool.description)
+        assertTrue("404" in tool.description.orEmpty(), tool.description)
     }
 
     @Test
