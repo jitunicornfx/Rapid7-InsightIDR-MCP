@@ -19,7 +19,7 @@ plugins {
 }
 
 group = "com.jitunicornfx.insightidr"
-version = "0.4.5"
+version = "0.4.6"
 
 // ---------------------------------------------------------------------------
 // Build-time server identity
