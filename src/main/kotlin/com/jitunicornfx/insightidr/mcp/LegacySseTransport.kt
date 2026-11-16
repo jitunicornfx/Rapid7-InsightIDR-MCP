@@ -20,13 +20,17 @@ import java.util.concurrent.ConcurrentHashMap
  * path removes the ambiguity. Otherwise this mirrors the SDK helper: one [Server] per connection, a
  * session map keyed by the transport's session id, entries removed when the server closes.
  *
- * Requires the Ktor `SSE` plugin to be installed (done by `mcpStreamableHttp`, which therefore has to
- * be called first: installing the plugin twice throws).
+ * Requires the Ktor `SSE` plugin to be installed (done by `mcpStreamableHttp`, which is therefore
+ * called first).
+ *
+ * The SDK deprecated [SseServerTransport] in 0.16.0 in favour of Streamable HTTP. It still works, and
+ * clients configured for `/sse` and `/` still depend on it, so it stays until those paths are retired.
  *
  * Ported from the InsightVM server. Unlike the SDK's `mcp {}` it applies no Host/Origin check of its
  * own — [installTransportSecurity] has already made those checks, ahead of routing, with knowledge of
  * the allow-list and the bind address that the SDK's localhost-only check does not have.
  */
+@Suppress("DEPRECATION")
 fun Route.legacySseTransport(
     path: String,
     maxRequestBodySize: Long = HttpSecurity.DEFAULT_MAX_BODY_BYTES,

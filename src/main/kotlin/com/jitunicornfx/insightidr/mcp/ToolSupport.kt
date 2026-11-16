@@ -8,18 +8,34 @@ import io.modelcontextprotocol.kotlin.sdk.types.TextContent
 import io.modelcontextprotocol.kotlin.sdk.types.ToolAnnotations
 import io.modelcontextprotocol.kotlin.sdk.types.ToolSchema
 import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.*
 import java.security.SecureRandom
 
-/** Shared JSON encoder/decoder instances. */
+/**
+ * Shared JSON encoder/decoder instances.
+ *
+ * Since 1.12.0 kotlinx.serialization refuses JSON nested deeper than 400 levels by default, with a
+ * `JsonDecodingException`, the exception malformed input gets. API responses are data, not ours to
+ * cap, and this server already contains the depth it can afford by catching `StackOverflowError`
+ * where it parses and walks trees. So the limit is lifted, and a body is JSON exactly as deep as the
+ * parser can read it - which is not without end: a few thousand levels of arrays overflow, as they
+ * did in 1.11.0. Since 1.12.0 arrays count towards the depth of 200 at which the reader switches to
+ * its stackless mode, and the switch happens only if an object lands on exactly that level, so objects
+ * nested thousands deep below arrays can overflow where 1.11.0 read them (checked 2026-11-16 with 50
+ * arrays and 180 objects above 5,000 more objects). Such a body is reported as not JSON.
+ */
+@OptIn(ExperimentalSerializationApi::class)
 object JsonCodec {
     val pretty: Json = Json {
         prettyPrint = true
         prettyPrintIndent = "  "
         encodeDefaults = false
+        maxNestingDepth = Int.MAX_VALUE
     }
     val compact: Json = Json {
         encodeDefaults = false
+        maxNestingDepth = Int.MAX_VALUE
     }
 }
 

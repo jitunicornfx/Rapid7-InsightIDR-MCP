@@ -194,8 +194,12 @@ stream exists is dropped rather than queued. The server waits two seconds before
 update to give the client time; a client that never opens the stream never hears. The
 `insightidr_server_info` tool always has the current answer.
 
-Sessions last until the client ends them or the server restarts; an abandoned session is not yet
-expired on a timer.
+A Streamable HTTP session (`/mcp`) that goes 8 hours without a request is closed, and its id then
+answers `404`, upon which the MCP specification has the client start a new one (not every client does).
+Opening an event stream counts as activity, keeping one open does not, and it closes with its session.
+At most 10,000 are open at once, and a new one beyond that is refused with `503`; a client that never
+ends its sessions holds each of them for those 8 hours. A legacy SSE session (`/sse`, `/`) has no timer
+and no cap: it ends when the server finds its event stream closed, or when the server restarts.
 
 Run `--help` to see all options. You can also run during development with
 `./gradlew run --args="--stdio"`.

@@ -455,17 +455,21 @@ private fun String.digitsEnd(from: Int): Int {
 
 /**
  * Whether [text], which has parsed, has the start of a value after a `]`: something JSON never has,
- * and the parser reads as one more entry of the array that the `]` should have ended.
+ * and that the parser, up to kotlinx.serialization 1.11.0, read as one more entry of the array that
+ * the `]` should have ended.
  *
  * Read from `JsonTreeReader.readArray` in kotlinx.serialization 1.11.0: after an entry it takes a `,`
  * or a `]`, and after either it goes round again for as long as a value can begin, where the object
- * reader beside it stops at a `}`. Observed 2026-10-12 through [renderWithinBudget]: `[1]2]` came back
+ * reader beside it stops at a `}`. Since 1.13.0 it stops at the `]` and such a text does not parse at
+ * all (checked 2026-11-16), so this no longer finds anything in a text that has parsed. It is kept
+ * because it costs one pass and is what stands between a parser that reads past a `]` again and a
+ * page reported as what the API sent. Observed 2026-10-12 through [renderWithinBudget]: `[1]2]` came back
  * as the array 1, 2, `["a"]"b"]` as "a", "b", and `{"events":[{"id":1}]{"id":2}]}` as a document whose
  * `events` held both objects. The tree is well formed by then, so [isJson] has nothing to find in it,
  * and nothing said the body was not what the API sent.
  *
- * In a text that has parsed, what follows a `]` outside a quoted string is a `,`, another `]`, a `}`,
- * the end of the text, or a value the array went on to. Only the last is looked for, and it is all
+ * In a text that parsed under 1.11.0, what followed a `]` outside a quoted string was a `,`, another
+ * `]`, a `}`, the end of the text, or a value the array went on to. Only the last is looked for, and it is all
  * that has to be: with no such `]`, the arrays and objects the parser built are the ones JSON has.
  * Checked 2026-10-13 through [renderWithinBudget] against a reader written from RFC 8259: every text
  * of seven tokens out of `[ ] { } , :`, a number and two strings, and 1,500,000 documents of up to

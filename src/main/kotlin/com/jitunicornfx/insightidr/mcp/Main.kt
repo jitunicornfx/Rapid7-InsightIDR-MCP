@@ -31,6 +31,8 @@ import kotlinx.io.asSource
 import kotlinx.io.buffered
 import java.io.File
 import java.io.PrintStream
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
 
 private const val DEFAULT_HTTP_HOST = "127.0.0.1"
 private const val DEFAULT_HTTP_PORT = 3001
@@ -58,6 +60,24 @@ const val DEPRECATED_ROOT_SSE_PATH = "/"
  * `insightidr_server_info` — a request the client makes — is the authoritative answer.
  */
 internal const val HTTP_NOTIFY_GRACE_MILLIS = 2_000L
+
+/**
+ * How long a Streamable HTTP session may sit idle before the SDK closes it; its id then answers 404 and
+ * the client has to initialize again. The SDK's default is 30 minutes, which a person reading a long
+ * investigation between tool calls easily exceeds. Expiry is still wanted — without it abandoned
+ * sessions are never freed — so it is set to a working day rather than switched off.
+ */
+internal val HTTP_SESSION_IDLE_TIMEOUT: Duration = 8.hours
+
+/**
+ * The most Streamable HTTP sessions open at once; the SDK refuses more with 503. Each session holds a
+ * whole [Server] with every tool registered, so the cap bounds what a flood of `initialize` requests
+ * can hold. It is the SDK's default, kept large on purpose: a client that never ends its sessions
+ * (one per run of a script, say) keeps each for [HTTP_SESSION_IDLE_TIMEOUT], and a small cap would
+ * then refuse every client, interactive ones included, until the oldest expired. At 10,000 that
+ * takes a new abandoned session more often than every 2.88 seconds, for eight hours on end.
+ */
+internal const val HTTP_MAX_SESSIONS = 10_000
 
 /**
  * This process's "running from this JAR" marker; see [UpdateInstaller.markInUse]. A top-level
@@ -411,6 +431,8 @@ internal fun buildHttpRuntime(
     host: String,
     port: Int,
     notifyGraceMillis: Long = HTTP_NOTIFY_GRACE_MILLIS,
+    sessionIdleTimeout: Duration = HTTP_SESSION_IDLE_TIMEOUT,
+    maxSessions: Int = HTTP_MAX_SESSIONS,
     /** Starts the one update check for the process. A parameter so tests need not call GitHub. */
     startCheck: CoroutineScope.(Config) -> Deferred<UpdateChecker.Result>? = { startUpdateCheck(it) },
 ): HttpRuntime {
@@ -469,9 +491,14 @@ internal fun buildHttpRuntime(
         // here — the setting had never worked. installTransportSecurity above does the same checks
         // with that knowledge, and runs first.
         //
-        // Streamable HTTP first: it installs the Ktor SSE plugin that the legacy routes below need,
-        // and installing that plugin twice throws.
-        mcpStreamableHttp(path = STREAMABLE_HTTP_PATH, enableDnsRebindingProtection = false) { newServer() }
+        // Streamable HTTP installs the Ktor SSE plugin that the legacy routes below need (since SDK
+        // 0.16.0 it reuses one that is already installed), so it stays first.
+        mcpStreamableHttp(
+            path = STREAMABLE_HTTP_PATH,
+            enableDnsRebindingProtection = false,
+            sessionIdleTimeout = sessionIdleTimeout,
+            maxSessions = maxSessions,
+        ) { newServer() }
         routing {
             legacySseTransport(LEGACY_SSE_PATH, newServer = newServer)
             legacySseTransport(DEPRECATED_ROOT_SSE_PATH, newServer = newServer)

@@ -71,14 +71,25 @@ class ValueCeilingTest {
             """["${unicode}005b${unicode}002c${unicode}0022",1]""" to 3,
             // Read as values by this parser, though JSON has no such thing.
             "[yes,no,0010]" to 4,
-            // Read as ONE array by this parser, which does not stop at a `]` that a value follows.
-            "[1]2]3]" to 4,
-            "[[]]1]" to 3,
-            """{"a":[1]"two"]{"three":3}]}""" to 6,
-            "[1] [2] ]" to 4,
         )
         for ((text, values) in documents) {
             assertEquals(values, built(text), "what the parser built from $text")
+            assertEquals(values, counted(text), "what was counted in $text")
+        }
+    }
+
+    @Test
+    fun `a value after the end of an array is refused by the parser and not counted`() {
+        // kotlinx.serialization 1.11.0 read each of these as ONE array, not stopping at a `]` that a
+        // value followed; 1.13.0 refuses them. The count stops where the parser's first array ends.
+        val texts = listOf(
+            "[1]2]3]" to 2,
+            "[[]]1]" to 2,
+            "[1] [2] ]" to 2,
+            """{"a":[1]"two"]{"three":3}]}""" to 3,
+        )
+        for ((text, values) in texts) {
+            assertNull(built(text), "the parser refuses $text")
             assertEquals(values, counted(text), "what was counted in $text")
         }
     }
@@ -194,11 +205,12 @@ class ValueCeilingTest {
         assertEquals(1_000_000, built(empties))
         assertFalse(holdsMoreValuesThan(empties))
 
-        // No comma in it, and one opening bracket: the array this parser reads past every `]` of.
-        fun unclosed(values: Int) = "[" + "1]".repeat(values - 1)
-        assertEquals(1_000_000, built(unclosed(1_000_000)))
-        assertFalse(holdsMoreValuesThan(unclosed(1_000_000)))
-        assertTrue(holdsMoreValuesThan(unclosed(1_000_001)))
+        // No comma in it, and one opening bracket: the array kotlinx.serialization 1.11.0 read past every
+        // `]` of, eight million values in sixteen million characters. Since 1.13.0 the parser stops at
+        // the first `]` and refuses the rest, so it is not JSON and not counted as more than that.
+        val unclosed = "[" + "1]".repeat(1_000_000)
+        assertNull(built(unclosed))
+        assertFalse(holdsMoreValuesThan(unclosed))
     }
 
     @Test

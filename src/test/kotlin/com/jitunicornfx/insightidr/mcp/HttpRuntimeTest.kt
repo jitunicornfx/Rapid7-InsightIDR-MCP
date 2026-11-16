@@ -38,6 +38,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * The HTTP transport as it really runs: a bound socket, the real guard, the real MCP routes. The
@@ -73,6 +75,8 @@ class HttpRuntimeTest {
         config: Config,
         notifyGraceMillis: Long = 0,
         update: UpdateChecker.Result? = null,
+        sessionIdleTimeout: Duration = HTTP_SESSION_IDLE_TIMEOUT,
+        maxSessions: Int = HTTP_MAX_SESSIONS,
     ): String = runBlocking {
         val realErr = System.err
         val captured = ByteArrayOutputStream()
@@ -84,6 +88,8 @@ class HttpRuntimeTest {
                 "127.0.0.1",
                 0,
                 notifyGraceMillis = notifyGraceMillis,
+                sessionIdleTimeout = sessionIdleTimeout,
+                maxSessions = maxSessions,
                 startCheck = { update?.let { CompletableDeferred(it) } },
             )
         } finally {
@@ -176,6 +182,7 @@ class HttpRuntimeTest {
     }
 
     @Test
+    @Suppress("DEPRECATION") // SseClientTransport, deprecated in SDK 0.16.0; the server still serves SSE
     fun `legacy sse still works where 0_3 clients expect it, and on its new path`() = runBlocking {
         // This server updates itself. A client configured against the root URL must keep working after
         // an unattended upgrade, or the upgrade is an outage nobody chose.
@@ -217,6 +224,32 @@ class HttpRuntimeTest {
         assertEquals(HttpStatusCode.OK, accepted.status, accepted.bodyAsText())
         assertTrue(accepted.headers["Mcp-Session-Id"] != null, "streamable http assigns a session id")
         assertTrue(SERVER_NAME in accepted.bodyAsText())
+    }
+
+    @Test
+    fun `streamable http sessions are capped, and one left idle expires and makes room`() = runBlocking {
+        // The SDK has expired idle sessions and capped open ones since 0.16.0; this checks that the
+        // limits given to buildHttpRuntime are the ones it applies. The SDK looks for idle sessions
+        // every min(timeout, 5 s), so one second idle is gone within about two.
+        val base = start(tokenConfig, sessionIdleTimeout = 1.seconds, maxSessions = 1)
+        suspend fun post(body: String, session: String? = null) = http.post("$base$STREAMABLE_HTTP_PATH") {
+            header(HttpHeaders.Authorization, "Bearer $token")
+            header(HttpHeaders.Accept, "application/json, text/event-stream")
+            session?.let { header("Mcp-Session-Id", it) }
+            contentType(ContentType.Application.Json)
+            setBody(body)
+        }
+        val first = post(initialize)
+        assertEquals(HttpStatusCode.OK, first.status, first.bodyAsText())
+        val session = first.headers["Mcp-Session-Id"]!!
+        post("""{"jsonrpc":"2.0","method":"notifications/initialized"}""", session).bodyAsText()
+
+        assertEquals(HttpStatusCode.ServiceUnavailable, post(initialize).status, "a second session is over the cap")
+
+        delay(3_500)
+        val ping = """{"jsonrpc":"2.0","id":2,"method":"ping"}"""
+        assertEquals(HttpStatusCode.NotFound, post(ping, session).status, "the idle session has expired")
+        assertEquals(HttpStatusCode.OK, post(initialize).status, "and its place is free again")
     }
 
     @Test
@@ -316,7 +349,7 @@ class HttpRuntimeTest {
 
     @Test
     fun `a notice sent before the client opens its stream is lost, which is what the grace period is for`() = runBlocking {
-        // Measured against SDK 0.15.0, not assumed: a server-initiated message with no open stream to
+        // Measured against SDK 0.15.0 and again on 0.16.0, not assumed: a server-initiated message with no open stream to
         // travel on is DROPPED, not queued. The SDK's own Kotlin client happens to open its stream
         // fast enough to win that race; a client that takes 700 ms does not.
         //

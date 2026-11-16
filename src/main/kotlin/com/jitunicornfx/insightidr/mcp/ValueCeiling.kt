@@ -31,11 +31,14 @@ internal const val MAX_PARSED_VALUES = 1_000_000
  *
  * A value is an object, an array, a string, a number or a literal, at any depth. This counts the
  * places the parser starts one, outside quoted strings, and those are the places kotlinx.serialization
- * 1.11.0 starts one, which are not only the places JSON has. Read from its `JsonTreeReader`: the start
- * of the text; whatever follows a `[`, a `{` or a `,` and is not itself a `}`, `]`, `:` or `,`; and
- * whatever follows a `]` on the same terms, because its array reader does not stop at a `]`. Checked
- * 2026-10-12: `[1]2]3]` parses, as the array 1, 2, 3. A count of commas and opening brackets, which is
- * what JSON would need, called that text two values long, and it can be made eight million.
+ * starts one, which are not only the places JSON has (`[yes,no,0010]` is four values to it). Read from
+ * its `JsonTreeReader`: the start of the text, and whatever follows a `[`, a `{` or a `,` and is not
+ * itself a `}`, `]`, `:` or `,`.
+ *
+ * Up to 1.11.0 its array reader did not stop at a `]` either: `[1]2]3]` parsed, as the array 1, 2, 3,
+ * and this counted on past every `]` for that reason. Since 1.13.0 the array ends at its `]` and that
+ * text is refused, "Expected EOF after parsing" (checked 2026-11-16), so a `]` now ends its array here
+ * as a `}` ends its object, and `[1]1]1]...` counts as the two values read before the parser stops.
  *
  * For a JSON document the count is exact. For anything else it is the most the parser can have built
  * by the time it gives up, because it reads a quoted string, and nothing else, the way this does: to
@@ -58,16 +61,10 @@ internal fun holdsMoreValuesThan(text: String, max: Int = MAX_PARSED_VALUES): Bo
     var depth = 0
     // What was read last lets a value begin here.
     var mayBegin = false
-    // What was read last was a `]`. Whether it ended its array is settled by what is read next.
-    var closing = false
     while (i < text.length) {
         val c = text[i++]
         if (c.isJsonSpace()) continue
         val begins = c != '}' && c != ']' && c != ':' && c != ','
-        if (closing) {
-            closing = false
-            if (!begins && --depth == 0) return false
-        }
         if (mayBegin && begins && ++values > max) return true
         mayBegin = false
         when (c) {
@@ -76,11 +73,7 @@ internal fun holdsMoreValuesThan(text: String, max: Int = MAX_PARSED_VALUES): Bo
                 mayBegin = true
             }
             ',' -> mayBegin = true
-            ']' -> {
-                closing = true
-                mayBegin = true
-            }
-            '}' -> if (--depth == 0) return false
+            ']', '}' -> if (--depth == 0) return false
             '"' -> i = afterString(text, i)
         }
     }
