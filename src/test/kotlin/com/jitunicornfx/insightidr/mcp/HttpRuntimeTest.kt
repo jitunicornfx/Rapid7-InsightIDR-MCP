@@ -37,6 +37,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -250,6 +251,50 @@ class HttpRuntimeTest {
         val ping = """{"jsonrpc":"2.0","id":2,"method":"ping"}"""
         assertEquals(HttpStatusCode.NotFound, post(ping, session).status, "the idle session has expired")
         assertEquals(HttpStatusCode.OK, post(initialize).status, "and its place is free again")
+    }
+
+    @Test
+    fun `a legacy session ends when its client disconnects`() = runBlocking {
+        // On CIO a handler that only waits is not told its client has gone, unless the call is set to
+        // be cancelled on close. Without that, the session below stayed open, a whole server with every
+        // tool, until the server restarted: even failed writes to its dead stream did not end it. A
+        // notification is the probe because it
+        // writes nothing to the stream: the session answers 202 while it exists and 404 once removed.
+        val base = start(tokenConfig)
+        val notification = """{"jsonrpc":"2.0","method":"notifications/initialized"}"""
+        suspend fun notify(path: String, session: String) = http.post("$base$path?sessionId=$session") {
+            header(HttpHeaders.Authorization, "Bearer $token")
+            contentType(ContentType.Application.Json)
+            setBody(notification)
+        }.status
+        for (path in listOf(LEGACY_SSE_PATH, DEPRECATED_ROOT_SSE_PATH)) {
+            val stream = HttpClient(OkHttp) { expectSuccess = false }
+            val session = try {
+                withTimeout(10_000) {
+                    stream.prepareGet("$base$path") {
+                        header(HttpHeaders.Authorization, "Bearer $token")
+                        header(HttpHeaders.Accept, "text/event-stream")
+                    }.execute { response ->
+                        val channel = response.bodyAsChannel()
+                        var id: String? = null
+                        while (id == null) {
+                            val line = channel.readUTF8Line() ?: break
+                            id = Regex("sessionId=([0-9a-fA-F-]+)").find(line)?.groupValues?.get(1)
+                        }
+                        assertNotNull(id, "the endpoint event names the session")
+                        assertEquals(HttpStatusCode.Accepted, notify(path, id), "the session is open over $path")
+                        id
+                    } // leaving execute, and closing the client below, drops the connection
+                }
+            } finally {
+                stream.close()
+            }
+            val gone = withTimeoutOrNull(10_000) {
+                while (notify(path, session) != HttpStatusCode.NotFound) delay(100)
+                true
+            }
+            assertEquals(true, gone, "the session over $path ended with its connection")
+        }
     }
 
     @Test

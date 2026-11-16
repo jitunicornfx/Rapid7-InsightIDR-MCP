@@ -199,7 +199,7 @@ answers `404`, upon which the MCP specification has the client start a new one (
 Opening an event stream counts as activity, keeping one open does not, and it closes with its session.
 At most 10,000 are open at once, and a new one beyond that is refused with `503`; a client that never
 ends its sessions holds each of them for those 8 hours. A legacy SSE session (`/sse`, `/`) has no timer
-and no cap: it ends when the server finds its event stream closed, or when the server restarts.
+and no cap: it ends when its client disconnects or the server restarts.
 
 Run `--help` to see all options. You can also run during development with
 `./gradlew run --args="--stdio"`.
