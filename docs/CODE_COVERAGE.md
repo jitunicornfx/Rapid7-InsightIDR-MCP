@@ -75,10 +75,10 @@ line-by-line highlighting.
 
 ## Current baseline
 
-Measured 2026-11-06 with every task re-run and the Gradle build cache off (Gradle 9.8.1, Kotlin
-2.4.21, JDK 25): **95.5% line / 94.7% method / 84.4% branch** across **652 tests**, none skipped.
-Every tool-domain source file - all v1/v2 IDR domains, the SIEM Alerts API tools, all Log Search
-domains, `Rapid7Client`, `Config`, `ToolSupport` and `LogSearchSupport` - sits at **93-100% line
+Measured 2026-11-16 with every task re-run and the Gradle build cache off (Gradle 9.9.1, Kotlin 2.4.21,
+JaCoCo 0.8.16, JDK 25): **95.5% line / 94.5% method / 84.2% branch** across **654 tests**, none
+skipped. Every tool-domain source file - all v1/v2 IDR domains, the SIEM Alerts API tools, all Log
+Search domains, `Rapid7Client`, `Config`, `ToolSupport` and `LogSearchSupport` - sits at **93-100% line
 coverage**. The files that decide what a response looks like when it reaches the model are at
 **97-100%**: `ResultBudget`, `RepeatedKeys` and `ValueCeiling` for the body, `RateLimit` and
 `QueryContinuation` for what is said about a 429 or a refused continuation. The full **146-tool**
@@ -87,13 +87,13 @@ reads every tool's schema the same way.
 
 The files below the rest, and why:
 
-`Main.kt` sits around **48%**. The Clikt command (option parsing, the `run()` dispatch, the
+`Main.kt` sits around **50%**. The Clikt command (option parsing, the `run()` dispatch, the
 config-error path and the refuse-to-start rule) is tested through injected seams, and
 `buildHttpRuntime` is driven **over a real socket** by `HttpRuntimeTest`: the request guard in front of
-the routes, Streamable HTTP and both legacy SSE paths through the SDK's own clients, and the update
-notice including its grace period. What remains untested is what cannot be run in a unit test:
-`runStdio`, `runServer`, the blocking `engine.start(wait = true)`, and the shutdown hook that applies
-a staged update.
+the routes, Streamable HTTP and both legacy SSE paths through the SDK's own clients, the idle expiry
+and cap on Streamable HTTP sessions, and the update notice including its grace period. What remains
+untested is what cannot be run in a unit test: `runStdio`, `runServer`, the blocking
+`engine.start(wait = true)`, and the shutdown hook that applies a staged update.
 
 `UpdateInstaller.kt`, `SpoolStore.kt` and `UploadPolicy.kt` sit around **89%**. The uncovered
 remainder is environment-bound rather than untested logic: the production `HttpClient(OkHttp)` branch
